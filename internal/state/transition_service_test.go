@@ -976,8 +976,8 @@ func TestTransitionServiceAllowsTerminalToRunningReplayTransition(t *testing.T) 
 			req.EventID = "evt_run_reopen_" + terminalStatus
 			req.AttemptID = "att_run_reopen_" + terminalStatus
 			req.EventSeq = 1
-			req.ReasonCode = "manual_retry_requested"
-			req.ReasonText = "manual retry requested"
+			req.ReasonCode = "manual_rerun_requested"
+			req.ReasonText = "manual rerun requested"
 
 			if err := svc.Apply(context.Background(), req); err != nil {
 				t.Fatalf("apply %s->running transition: %v", terminalStatus, err)
@@ -1093,8 +1093,8 @@ func TestTransitionServiceReplayTerminalRunWritesStandardizedManualRecoveryPaylo
 	generated := 0
 	if _, err := svc.ReplayTerminalRun(context.Background(), ReplayTerminalRunRequest{
 		RunID: "run_1", AnchorNodeID: "work_intake", TargetNodeIDs: []string{"work_intake"}, Reason: "Try the provider again.",
-		ActorID: "local-operator", RoleID: "governance", AuthoritySource: "api.retry_node", RunEventType: "run.retry_reopened",
-		RunReasonCode: "manual_retry_requested", NodeEventType: "attempt.retry_queued", EventPrefix: "retry", OccurredAt: now,
+		ActorID: "local-operator", RoleID: "governance", AuthoritySource: "api.rerun_from_node", RunEventType: "run.rerun_reopened",
+		RunReasonCode: "manual_rerun_requested", NodeEventType: "attempt.rerun_queued", EventPrefix: "rerun", OccurredAt: now,
 		GenerateID: func(prefix string) string {
 			generated++
 			return fmt.Sprintf("%s_manual_recovery_%d", prefix, generated)
@@ -1104,17 +1104,17 @@ func TestTransitionServiceReplayTerminalRunWritesStandardizedManualRecoveryPaylo
 	}
 
 	var reasonCode, payloadJSON string
-	if err := db.QueryRow(`SELECT reason_code, payload_json FROM events WHERE event_type = 'attempt.retry_queued'`).Scan(&reasonCode, &payloadJSON); err != nil {
+	if err := db.QueryRow(`SELECT reason_code, payload_json FROM events WHERE event_type = 'attempt.rerun_queued'`).Scan(&reasonCode, &payloadJSON); err != nil {
 		t.Fatalf("load manual recovery event: %v", err)
 	}
-	if reasonCode != "manual_retry_requested" {
+	if reasonCode != "manual_rerun_requested" {
 		t.Fatalf("manual recovery reason code = %q", reasonCode)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
 		t.Fatalf("decode manual recovery payload: %v", err)
 	}
-	if payload["node_id"] != "work_intake" || payload["node_run_id"] == "" || payload["recovery_trigger"] != "operator_retry" || payload["recovery_phase"] != "scheduled" || payload["error_code"] != "manual_retry_requested" || payload["source_attempt_id"] != "att_1" || payload["source_node_run_id"] != "nr_1" || payload["target_attempt_id"] != "run_1:work_intake:2" || payload["retry_index"] != float64(0) || payload["retry_max"] != float64(0) || payload["scheduled_at"] != now {
+	if payload["node_id"] != "work_intake" || payload["node_run_id"] == "" || payload["recovery_trigger"] != "operator_rerun" || payload["recovery_phase"] != "scheduled" || payload["error_code"] != "manual_rerun_requested" || payload["source_attempt_id"] != "att_1" || payload["source_node_run_id"] != "nr_1" || payload["target_attempt_id"] != "run_1:work_intake:2" || payload["retry_index"] != float64(0) || payload["retry_max"] != float64(0) || payload["scheduled_at"] != now {
 		t.Fatalf("unexpected manual recovery payload: %#v", payload)
 	}
 }

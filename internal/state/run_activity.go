@@ -15,6 +15,7 @@ var runActivityAttemptEventTypes = map[string]struct{}{
 	"attempt.retry_scheduled":     {},
 	"attempt.retry_queued":        {},
 	"attempt.rerun_queued":        {},
+	"attempt.resume_queued":       {},
 	"attempt.final_rework_queued": {},
 	"attempt.failed":              {},
 	"attempt.succeeded":           {},

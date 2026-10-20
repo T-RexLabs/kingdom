@@ -280,7 +280,7 @@ func TestServerAllMVPEndpointsSmoke(t *testing.T) {
 	}
 
 	setRunStatus(t, db, runID, "failed")
-	retryRes := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/runs/" + runID + "/nodes/kickoff/retry", idempotencyKey: "idem-retry", body: map[string]any{"reason": "retry"}})
+	retryRes := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/runs/" + runID + "/rerun-from/kickoff", idempotencyKey: "idem-retry", body: map[string]any{"reason": "retry"}})
 	if retryRes.Code != http.StatusAccepted {
 		t.Fatalf("retry endpoint expected 202, got %d", retryRes.Code)
 	}

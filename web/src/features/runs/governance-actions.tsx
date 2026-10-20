@@ -4,40 +4,42 @@ import { Modal, ModalFooter } from "@/components/ui/modal";
 import { SelectField } from "@/components/ui/select-field";
 import {
   useCreateFinalApproval,
-  useRetryNode,
+  useResumeRun,
   useRerunFromNode,
+  useRunResumePlan,
   type CreateFinalApprovalRequest,
+  type ResumeRunRequest,
+  type RunResumePlan,
   type RunSummary,
-  type RunGraphNode,
 } from "@/api/hooks";
 import {
   Gavel,
   Play,
-  RefreshCw,
+  RotateCcw,
 } from "lucide-react";
 import { useId, useRef, useState, type Ref } from "react";
-import { nodeLabel } from "@/lib/utils";
+import { formatTimestamp, nodeLabel } from "@/lib/utils";
 import { statusLabel } from "@/lib/status-system";
 import { runStatusBannerClass } from "./run-detail-tones";
 import { ApprovalDecisionForm } from "./approval-decision-form";
 import { describeManualGovernanceState } from "./manual-governance-state";
+import type { RunRecoverySelection } from "./run-recovery-selection";
 import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 
 interface GovernanceActionsProps {
   run: RunSummary;
-  failedNodes?: RunGraphNode[];
-  cancelledNodes?: RunGraphNode[];
+  recovery?: RunRecoverySelection;
   showFinalApproval?: boolean;
   showNodeActions?: boolean;
   finalApprovalCardRef?: Ref<HTMLDivElement>;
 }
 
-export function GovernanceActions({ run, failedNodes = [], cancelledNodes = [], showFinalApproval = true, showNodeActions = true, finalApprovalCardRef }: GovernanceActionsProps) {
+export function GovernanceActions({ run, recovery = { nodes: [] }, showFinalApproval = true, showNodeActions = true, finalApprovalCardRef }: GovernanceActionsProps) {
   const governanceState = describeManualGovernanceState(run);
   const isAwaitingApproval = governanceState.isAwaitingFinalApproval;
   const isFailedRun = run.status === "failed";
   const isCancelledRun = run.status === "cancelled";
-  const actionNodes = isCancelledRun ? cancelledNodes : failedNodes;
+  const actionNodes = recovery.nodes;
 
   // Only show governance panel if there are actionable items
   const hasActions =
@@ -49,7 +51,7 @@ export function GovernanceActions({ run, failedNodes = [], cancelledNodes = [], 
     <div className="space-y-3">
       {showFinalApproval && isAwaitingApproval && <FinalApprovalCard run={run} cardRef={finalApprovalCardRef} />}
       {showNodeActions && (isFailedRun || isCancelledRun) && actionNodes.length > 0 && (
-        <RunRecoveryActions key={run.run_id} runId={run.run_id} nodes={actionNodes} />
+        <RunRecoveryActions key={run.run_id} runId={run.run_id} recovery={recovery} />
       )}
     </div>
   );
@@ -111,15 +113,25 @@ export function FinalApprovalCard({ run, cardRef }: { run: RunSummary; cardRef?:
 
 /* ── Run Recovery ── */
 
-type RecoveryAction = "retry" | "rerun";
+type RecoveryAction = "resume" | "rerun";
 
-function RunRecoveryActions({ runId, nodes }: { runId: string; nodes: RunGraphNode[] }) {
-  const retry = useRetryNode(runId);
+function resumeRequest(plan: RunResumePlan | undefined): ResumeRunRequest | null {
+  if (!plan?.available) return null;
+  return {
+    reason: "manual resume from run detail",
+    steps: plan.steps.map((step) => ({ node_id: step.node_id, source_attempt_id: step.source_attempt_id ?? "" })),
+  };
+}
+
+function RunRecoveryActions({ runId, recovery }: { runId: string; recovery: RunRecoverySelection }) {
+  const { nodes, defaultNodeId } = recovery;
+  const resumePlan = useRunResumePlan(runId);
+  const resume = useResumeRun(runId);
   const rerun = useRerunFromNode(runId);
   // These controllers outlive the dialog: dismissing an uncertain response must
-  // never discard its exact target or idempotency key.
-  const recoverableRetry = useRecoverableMutation(
-    "retry", (nodeKey: string, key) => retry.mutateAsync({ value: nodeKey, key }), runId,
+  // never discard its exact confirmed request or idempotency key.
+  const recoverableResume = useRecoverableMutation(
+    "resume", (body: ResumeRunRequest, key) => resume.mutateAsync({ body, key }), runId,
   );
   const recoverableRerun = useRecoverableMutation(
     "rerun", (nodeKey: string, key) => rerun.mutateAsync({ value: nodeKey, key }), runId,
@@ -130,28 +142,38 @@ function RunRecoveryActions({ runId, nodes }: { runId: string; nodes: RunGraphNo
   const [action, setAction] = useState<RecoveryAction | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const recoveryAction = recoverableRetry.hasPendingRecovery ? "retry"
+  const recoveryAction = recoverableResume.hasPendingRecovery ? "resume"
     : recoverableRerun.hasPendingRecovery ? "rerun" : null;
-  const retainedId = recoverableRetry.pendingRequest ?? recoverableRerun.pendingRequest;
+  const plan = resumePlan.data;
+  const confirmed = recoverableResume.pendingRequest ?? resumeRequest(plan);
+  const retainedId = recoverableRerun.pendingRequest;
   const targetId = retainedId ?? selectedId;
   const selected = nodes.find((node) => node.node_id === targetId);
-  const retryLabel = recoveryAction === "retry" ? "Retry Again" : "Retry";
+  const resumeLabel = recoveryAction === "resume" ? "Retry Resume" : "Resume";
   const rerunLabel = recoveryAction === "rerun" ? "Retry Rerun" : "Rerun";
+  const canConfirm = action === "resume" ? confirmed !== null : Boolean(selected || retainedId);
 
   const openAction = (next: RecoveryAction) => {
     if (submitting.current || (recoveryAction && recoveryAction !== next)) return;
-    setSelectedId(retainedId ?? (nodes.length === 1 ? nodes[0].node_id : ""));
+    if (next === "resume") void resumePlan.refetch();
+    setSelectedId(retainedId ?? (defaultNodeId ?? (nodes.length === 1 ? nodes[0].node_id : "")));
     if (!recoveryAction) setError(null);
     setAction(next);
   };
+  const switchToRerun = () => {
+    if (submitting.current || recoveryAction) return;
+    setError(null);
+    setAction("rerun");
+  };
   const close = () => { if (!submitting.current) setAction(null); };
   const queueAction = async () => {
-    if (!action || submitting.current || (!selected && !retainedId)) return;
+    if (!action || submitting.current || !canConfirm) return;
     submitting.current = true;
     setPending(true);
     setError(null);
     try {
-      await (action === "retry" ? recoverableRetry : recoverableRerun).mutateAsync(targetId);
+      if (action === "resume") await recoverableResume.mutateAsync(confirmed!);
+      else await recoverableRerun.mutateAsync(targetId);
       setAction(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to queue recovery. Try again.");
@@ -164,42 +186,76 @@ function RunRecoveryActions({ runId, nodes }: { runId: string; nodes: RunGraphNo
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="outline" onClick={() => openAction("retry")}
+        <Button size="sm" variant="outline" onClick={() => openAction("resume")}
           disabled={pending || recoveryAction === "rerun"}>
-          <RefreshCw className="h-3.5 w-3.5" />{retryLabel}
+          <RotateCcw className="h-3.5 w-3.5" />{resumeLabel}
         </Button>
         <Button size="sm" variant="ghost" onClick={() => openAction("rerun")}
-          disabled={pending || recoveryAction === "retry"}>
+          disabled={pending || recoveryAction === "resume"}>
           <Play className="h-3.5 w-3.5" />{rerunLabel}
         </Button>
       </div>
       {error && !action && <div role="alert"><ErrorBanner message={error} /></div>}
       <Modal open={action !== null} onClose={close} size="sm"
-        title={action === "retry" ? "Retry Step" : "Rerun from Step"}
-        description={action === "retry"
-          ? "Repeat one workflow step in this run."
-          : "Repeat a step and its downstream workflow in this run. Completion restarts at plan drafting."}
+        title={action === "resume" ? "Resume Interrupted Work" : "Rerun from Step"}
+        description={action === "resume"
+          ? "Continue each interrupted step from its saved conversation and partial files in a new attempt. Completed steps are kept."
+          : "Repeat a step and its downstream workflow from the trusted baseline. Completion restarts at plan drafting."}
         footer={<ModalFooter>
           <Button variant="ghost" onClick={close} disabled={pending}>Cancel</Button>
-          <Button onClick={() => void queueAction()} disabled={pending || (!selected && !retainedId)}>
-            {pending ? "Queuing…" : recoveryAction === "retry" ? "Retry Again"
+          {action === "resume" && !confirmed && !recoveryAction && plan && (
+            <Button variant="outline" onClick={switchToRerun} disabled={pending}>Rerun Instead</Button>
+          )}
+          <Button onClick={() => void queueAction()} disabled={pending || !canConfirm}>
+            {pending ? "Queuing…" : recoveryAction === "resume" ? "Retry Resume"
               : recoveryAction === "rerun" ? "Retry Rerun"
-              : action === "retry" ? "Retry Step" : "Rerun from Step"}
+              : action === "resume" ? "Resume" : "Rerun from Step"}
           </Button>
         </ModalFooter>}>
-        <div className="space-y-3">
-          <SelectField id={pickerId} label="Step" value={targetId}
-            placeholder="Choose a workflow step…" onChange={setSelectedId}
-            disabled={pending || recoveryAction !== null}
-            options={[
-              ...nodes.map((node) => ({ value: node.node_id, label: `${nodeLabel(node.node_id)} · ${statusLabel(node.state)}` })),
-              ...(retainedId && !selected ? [{ value: retainedId, label: nodeLabel(retainedId) }] : []),
-            ]} />
-          {selected?.failure_reason && <p className="text-wrap-anywhere text-sm text-foreground-muted">{selected.failure_reason}</p>}
-          {recoveryAction && <p className="text-sm text-foreground-muted">The previous response was not confirmed. Retry the same request to recover its outcome.</p>}
-          {error && <div role="alert"><ErrorBanner message={error} /></div>}
-        </div>
+        {action === "resume" ? (
+          <ResumePlanDetails plan={plan} loading={resumePlan.isPending} loadError={resumePlan.error instanceof Error ? resumePlan.error.message : null} retained={recoveryAction === "resume"} />
+        ) : (
+          <div className="space-y-3">
+            <SelectField id={pickerId} label="Step" value={targetId}
+              placeholder="Choose a workflow step…" onChange={setSelectedId}
+              disabled={pending || recoveryAction !== null}
+              options={[
+                ...nodes.map((node) => ({ value: node.node_id, label: `${nodeLabel(node.node_id)} · ${statusLabel(node.state)}` })),
+                ...(retainedId && !selected ? [{ value: retainedId, label: nodeLabel(retainedId) }] : []),
+              ]} />
+            {selected?.failure_reason && <p className="text-wrap-anywhere text-sm text-foreground-muted">{selected.failure_reason}</p>}
+          </div>
+        )}
+        {(recoveryAction || error) && (
+          <div className="mt-3 space-y-3">
+            {recoveryAction && <p className="text-sm text-foreground-muted">The previous response was not confirmed. Retry the same request to recover its outcome.</p>}
+            {error && <div role="alert"><ErrorBanner message={error} /></div>}
+          </div>
+        )}
       </Modal>
+    </div>
+  );
+}
+
+function ResumePlanDetails({ plan, loading, loadError, retained }: { plan?: RunResumePlan; loading: boolean; loadError: string | null; retained: boolean }) {
+  if (loading && !plan) return <p className="text-sm text-foreground-muted">Checking saved checkpoints…</p>;
+  if (!plan) return <ErrorBanner message={loadError ?? "Unable to load the resume plan."} />;
+  return (
+    <div className="space-y-3">
+      <ul className="space-y-2" aria-label="Interrupted steps">
+        {plan.steps.map((step) => (
+          <li key={step.node_id} className="rounded-md border border-border px-3 py-2 text-sm">
+            <div className="font-medium text-foreground">{nodeLabel(step.node_id)}</div>
+            {step.unavailable_reason
+              ? <p className="text-wrap-anywhere text-foreground-muted">{step.unavailable_reason}</p>
+              : step.checkpoint_captured_at && <p className="text-foreground-muted">Checkpoint saved {formatTimestamp(step.checkpoint_captured_at)}</p>}
+          </li>
+        ))}
+      </ul>
+      {plan.unavailable_reason && <p className="text-wrap-anywhere text-sm text-foreground-muted">{plan.unavailable_reason}</p>}
+      {!plan.available && !retained && (
+        <p className="text-sm text-foreground-muted">Resume is unavailable. Rerun repeats a step from its trusted baseline instead.</p>
+      )}
     </div>
   );
 }

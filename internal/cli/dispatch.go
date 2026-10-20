@@ -312,12 +312,12 @@ func (r *Runtime) run(ctx context.Context, args []string) error {
 		return r.handleRunStart(ctx, args[2:])
 	case len(args) >= 2 && sameHelpPath(args[:2], []string{"run", "status"}):
 		return r.handleRunStatus(ctx, args[2:])
+	case len(args) >= 2 && sameHelpPath(args[:2], []string{"run", "resume"}):
+		return r.handleRunResume(ctx, args[2:])
 	case len(args) >= 3 && sameHelpPath(args[:3], []string{"run", "artifacts", "export"}):
 		return r.handleRunArtifactsExport(ctx, args[3:])
 	case len(args) >= 2 && sameHelpPath(args[:2], []string{"graph", "show"}):
 		return r.handleGraphShow(ctx, args[2:])
-	case len(args) >= 2 && sameHelpPath(args[:2], []string{"node", "retry"}):
-		return r.handleNodeRetry(ctx, args[2:])
 	case len(args) >= 2 && sameHelpPath(args[:2], []string{"node", "rerun-from"}):
 		return r.handleNodeRerunFrom(ctx, args[2:])
 	case len(args) >= 2 && sameHelpPath(args[:2], []string{"timeline", "follow"}):
@@ -349,9 +349,9 @@ var cliCommandRoutes = []commandRoute{
 	{path: []string{"create", "work-order"}},
 	{path: []string{"run", "start"}},
 	{path: []string{"run", "status"}},
+	{path: []string{"run", "resume"}},
 	{path: []string{"run", "artifacts", "export"}},
 	{path: []string{"graph", "show"}},
-	{path: []string{"node", "retry"}},
 	{path: []string{"node", "rerun-from"}},
 	{path: []string{"timeline", "follow"}},
 	{path: []string{"approvals", "list"}},
@@ -1076,42 +1076,66 @@ func (r *Runtime) handleGraphShow(ctx context.Context, args []string) error {
 	return err
 }
 
-func (r *Runtime) handleNodeRetry(ctx context.Context, args []string) error {
-	opts := nodeMutationOptions{}
-	flags := newFlagSet("node retry")
-	bindNodeMutationFlags(flags, &opts, "retry reason")
-	if err := parseLeafFlags(flags, args, []string{"node", "retry"}); err != nil {
+// handleRunResume confirms the plan the server derived, so a frontier that
+// changes between the two requests is rejected instead of resumed blindly.
+func (r *Runtime) handleRunResume(ctx context.Context, args []string) error {
+	opts := runResumeOptions{}
+	flags := newFlagSet("run resume")
+	bindRunResumeFlags(flags, &opts)
+	if err := parseLeafFlags(flags, args, []string{"run", "resume"}); err != nil {
 		return err
 	}
-	if opts.runID == "" || opts.nodeKey == "" || opts.reason == "" {
-		return usageError{err: errors.New("--run-id, --node-key, and --reason are required"), helpTopic: []string{"node", "retry"}}
+	if opts.runID == "" || opts.reason == "" {
+		return usageError{err: errors.New("--run-id and --reason are required"), helpTopic: []string{"run", "resume"}}
 	}
-
 	client, err := r.newResponsesClient()
 	if err != nil {
 		return err
 	}
-	key, err := r.newIdempotencyKey("node-retry")
+	planResponse, err := client.GetRunResumePlanWithResponse(ctx, opts.runID)
 	if err != nil {
 		return err
 	}
-
-	response, err := client.RetryNodeWithResponse(ctx, opts.runID, opts.nodeKey, &gen.RetryNodeParams{
-		IdempotencyKey: key,
-	}, gen.RetryNodeRequest{Reason: opts.reason})
+	if planResponse.JSON200 == nil {
+		return unwrapAPIError(planResponse.StatusCode(), nil, planResponse.JSONDefault, planResponse.Body)
+	}
+	plan := planResponse.JSON200
+	if !plan.Available {
+		return errors.New(resumeUnavailableText(plan))
+	}
+	steps := make([]gen.ResumeRunStep, 0, len(plan.Steps))
+	for _, step := range plan.Steps {
+		steps = append(steps, gen.ResumeRunStep{NodeId: step.NodeId, SourceAttemptId: *step.SourceAttemptId})
+	}
+	key, err := r.newIdempotencyKey("run-resume")
+	if err != nil {
+		return err
+	}
+	response, err := client.ResumeRunWithResponse(ctx, opts.runID, &gen.ResumeRunParams{IdempotencyKey: key}, gen.ResumeRunRequest{Reason: opts.reason, Steps: steps})
 	if err != nil {
 		return err
 	}
 	if response.JSON202 == nil {
 		return unwrapAPIError(response.StatusCode(), response.JSON400, response.JSONDefault, response.Body)
 	}
-
 	if r.config.JSONOutput {
 		return writeJSON(r.stdout, response.JSON202)
 	}
-
-	_, err = fmt.Fprintf(r.stdout, "retry enqueued: run=%s node=%s\n", response.JSON202.RunId, response.JSON202.NodeKey)
+	_, err = fmt.Fprintf(r.stdout, "resume enqueued: run=%s steps=%s\n", response.JSON202.RunId, strings.Join(response.JSON202.ResumedNodeIds, ","))
 	return err
+}
+
+func resumeUnavailableText(plan *gen.RunResumePlan) string {
+	reasons := []string{}
+	if plan.UnavailableReason != nil {
+		reasons = append(reasons, *plan.UnavailableReason)
+	}
+	for _, step := range plan.Steps {
+		if step.UnavailableReason != nil {
+			reasons = append(reasons, step.NodeId+": "+*step.UnavailableReason)
+		}
+	}
+	return "resume is unavailable: " + strings.Join(reasons, "; ") + " Use `kd node rerun-from` to repeat a step from its trusted baseline."
 }
 
 func (r *Runtime) handleNodeRerunFrom(ctx context.Context, args []string) error {

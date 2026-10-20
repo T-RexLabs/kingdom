@@ -25,6 +25,7 @@ type stockHarness struct {
 	*ownerFixture
 	service *Service
 	model   *fakeModel
+	config  ServiceConfig
 }
 
 func newStockHarness(t *testing.T) *stockHarness {
@@ -57,10 +58,17 @@ func newStockHarness(t *testing.T) *stockHarness {
 			t.Fatal(err)
 		}
 	}
-	service, err := NewService(ServiceConfig{
+	h.config = ServiceConfig{
 		BinaryPath: binary, WorkDir: h.workspace, RuntimeRoot: filepath.Join(root, "runtime"), Env: env,
 		Requests: providerrequest.NewAuthority(h.db, func() time.Time { return time.Now().UTC() }),
-	})
+	}
+	h.startService(t)
+	return h
+}
+
+func (h *stockHarness) startService(t *testing.T) {
+	t.Helper()
+	service, err := NewService(h.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +80,6 @@ func newStockHarness(t *testing.T) *stockHarness {
 			t.Errorf("close service: %v", err)
 		}
 	})
-	return h
 }
 
 func (h *stockHarness) planningRequest(invocation, operation, prompt string) ExecuteRequest {
@@ -462,7 +469,7 @@ func TestStockUnavailableToolCallIsHarmlessAndStillProven(t *testing.T) {
 	if len(tools) != 1 || tools[0].Name != "worktree_remove" || tools[0].Status != "error" {
 		t.Fatalf("a call to a tool outside the profile must fail: %#v", tools)
 	}
-	if offered := h.model.Calls()[0].Tools; strings.Join(offered, ",") != "edit,read,shell,write" {
+	if offered := h.model.Calls()[0].Tools; strings.Join(offered, ",") != "edit,glob,grep,read,shell,write" {
 		t.Fatalf("a builder profile must be offered only its own tools: %v", offered)
 	}
 	var grants int
@@ -479,8 +486,141 @@ func TestStockPlanningProfileIsOfferedOnlyReadTools(t *testing.T) {
 	if _, _, err := h.run("session-tools", "op-tools", "inv-tools", h.planningRequest("inv-tools", "op-tools", "TEXT:x")); err != nil {
 		t.Fatal(err)
 	}
-	if offered := h.model.Calls()[0].Tools; strings.Join(offered, ",") != "read" {
+	if offered := h.model.Calls()[0].Tools; strings.Join(offered, ",") != "glob,grep,read" {
 		t.Fatalf("a planning profile must be offered only read tools: %v", offered)
+	}
+}
+
+func TestStockPlanningSearchToolsAreAdmittedAndReturnMatches(t *testing.T) {
+	for _, tool := range []string{"glob", "grep"} {
+		t.Run(tool, func(t *testing.T) {
+			h := newStockHarness(t)
+			if err := os.WriteFile(filepath.Join(h.workspace, "found.txt"), []byte("search-needle\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, response, err := h.run("session-search", "op-search", "inv-search", h.planningRequest("inv-search", "op-search", "SEARCH:"+tool))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tools := response.StreamObservation.Request.Terminal.Tools
+			if len(tools) != 1 || tools[0].Name != tool || tools[0].Status != "completed" {
+				t.Fatalf("search failed: %#v", tools)
+			}
+			calls := h.model.Calls()
+			if len(calls) != 2 || !strings.Contains(strings.Join(calls[1].ToolResults, "\n"), "found.txt") {
+				t.Fatalf("model did not receive search match: %#v", calls)
+			}
+			var grants, completed int
+			if err := h.db.QueryRow(`SELECT count(*),count(outcome) FROM provider_native_grants WHERE tool=?`, tool).Scan(&grants, &completed); err != nil || grants != 1 || completed != 1 {
+				t.Fatalf("search admission and receipt: grants=%d completed=%d err=%v", grants, completed, err)
+			}
+		})
+	}
+}
+
+func TestStockPlanningReadLoadsNestedInstructionsDuringItsStep(t *testing.T) {
+	h := newStockHarness(t)
+	directory := filepath.Join(h.workspace, "nested")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "AGENTS.md"), []byte("# Nested Instructions\nUse nested-instruction-marker when discussing this package.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "source.txt"), []byte("nested-source-marker\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, response, err := h.run("session-instructions", "op-instructions", "inv-instructions", h.planningRequest("inv-instructions", "op-instructions", "READ:nested/source.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Outcome.State != "success" || response.OutputPreview != "DONE" {
+		t.Fatalf("reply did not complete: %#v", response.Outcome)
+	}
+	tools := response.StreamObservation.Request.Terminal.Tools
+	if len(tools) != 1 || tools[0].Name != "read" || tools[0].Status != "completed" {
+		t.Fatalf("read did not complete: %#v", tools)
+	}
+	calls := h.model.Calls()
+	if len(calls) != 2 || !strings.Contains(calls[1].LastUser, "nested-instruction-marker") || !strings.Contains(strings.Join(calls[1].ToolResults, "\n"), "nested-source-marker") {
+		t.Fatalf("model did not receive instructions and read content: %#v", calls)
+	}
+	var sawInstruction bool
+	for _, content := range response.StreamObservation.StagedDiagnosticContent {
+		reader, err := content.Open(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := io.ReadAll(reader)
+		reader.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), `"session.synthetic"`) && strings.Contains(string(raw), "nested-instruction-marker") {
+			var events []struct {
+				Type string `json:"type"`
+				Data struct {
+					AssistantMessageID string `json:"assistantMessageID"`
+					Text               string `json:"text"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &events); err != nil {
+				t.Fatal(err)
+			}
+			active := map[string]bool{}
+			for _, event := range events {
+				switch event.Type {
+				case "session.step.started":
+					active[event.Data.AssistantMessageID] = true
+				case "session.step.ended", "session.step.failed":
+					delete(active, event.Data.AssistantMessageID)
+				case "session.synthetic":
+					if strings.Contains(event.Data.Text, "nested-instruction-marker") && len(active) > 0 {
+						sawInstruction = true
+					}
+				}
+			}
+		}
+	}
+	if !sawInstruction {
+		t.Fatal("stock did not emit an instruction-loading synthetic event during an active step")
+	}
+}
+
+func TestStockCommandRunsInNestedWorkspaceDirectory(t *testing.T) {
+	h := newStockHarness(t)
+	directory := filepath.Join(h.workspace, "packages", "app")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h.runOwner("attempt-nested", "inv-nested")
+	req := h.builderRequest("inv-nested", "attempt-nested", "SHELL64:"+base64.StdEncoding.EncodeToString([]byte("pwd; touch nested.txt"))+" WORKDIR:packages/app")
+	ordinals := h.guardianRecorder(&req, "attempt-nested", "inv-nested")
+	prepared, err := h.service.Prepare(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.bindRun(prepared, "attempt-nested", "inv-nested")
+	response, err := h.service.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := response.StreamObservation.Request.Terminal.Tools
+	if len(tools) != 1 || tools[0].Name != "shell" || tools[0].Status != "completed" || len(*ordinals) != 1 {
+		t.Fatalf("unproven command: tools=%#v ordinals=%v", tools, *ordinals)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "nested.txt")); err != nil {
+		t.Fatalf("nested command did not run: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(h.workspace, "nested.txt")); !os.IsNotExist(err) {
+		t.Fatalf("command ran at workspace root: %v", err)
+	}
+	calls := h.model.Calls()
+	if len(calls) != 2 || !strings.Contains(strings.Join(calls[1].ToolResults, "\n"), directory) {
+		t.Fatalf("nested cwd was not returned: %#v", calls)
+	}
+	if err := providerrequest.RequireResourcesClosedTx(context.Background(), h.db, "binding-inv-nested"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -606,7 +746,7 @@ func TestStockCommandOutsideTheWorkspaceIsRefusedWithTheDirectoryToUse(t *testin
 	var refusals []string
 	for _, call := range h.model.Calls() {
 		for _, result := range call.ToolResults {
-			if strings.Contains(result, "must run in its workspace root") {
+			if strings.Contains(result, "must run within its workspace") {
 				refusals = append(refusals, result)
 			}
 		}

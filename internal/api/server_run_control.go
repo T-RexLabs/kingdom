@@ -166,62 +166,112 @@ func (s *Server) handleRetryExecutionStop(w http.ResponseWriter, r *http.Request
 	})
 }
 
-func (s *Server) handleRetryNode(w http.ResponseWriter, r *http.Request) {
-	runID := strings.TrimSpace(r.PathValue("id"))
-	nodeKey := strings.TrimSpace(r.PathValue("nodeKey"))
-	if !s.runExists(r.Context(), runID) {
-		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run not found", "api.retry_node", map[string]any{"run_id": runID})
-		return
+func resumePlanResponse(runID string, plan state.RunResumePlan) gen.RunResumePlan {
+	steps := make([]gen.RunResumeStep, 0, len(plan.Steps))
+	for _, step := range plan.Steps {
+		item := gen.RunResumeStep{NodeId: step.NodeID}
+		if step.SourceAttemptID != "" {
+			item.SourceAttemptId = &step.SourceAttemptID
+		}
+		if capturedAt, err := time.Parse(time.RFC3339Nano, step.CheckpointCapturedAt); err == nil {
+			item.CheckpointCapturedAt = &capturedAt
+		}
+		if step.UnavailableReason != "" {
+			item.UnavailableReason = &step.UnavailableReason
+		}
+		steps = append(steps, item)
 	}
-	if !s.nodeExistsForRun(r.Context(), runID, nodeKey) {
-		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "node not found for run", "api.retry_node", map[string]any{"run_id": runID, "node_key": nodeKey})
-		return
+	response := gen.RunResumePlan{RunId: runID, Available: plan.Available(), Steps: steps}
+	if plan.UnavailableReason != "" {
+		response.UnavailableReason = &plan.UnavailableReason
 	}
+	return response
+}
 
-	var req gen.RetryNodeRequest
+func (s *Server) handleGetRunResumePlan(w http.ResponseWriter, r *http.Request) {
+	runID := strings.TrimSpace(r.PathValue("id"))
+	if !s.runExists(r.Context(), runID) {
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run not found", "api.get_run_resume_plan", map[string]any{"run_id": runID})
+		return
+	}
+	plan, err := state.LoadRunResumePlan(r.Context(), s.db, runID)
+	if err != nil {
+		s.writeInternalError(w, "derive resume plan failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, resumePlanResponse(runID, plan))
+}
+
+// handleResumeRun continues exactly the frontier the operator confirmed. A
+// changed frontier is a conflict, never a silent switch to other attempts.
+func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
+	runID := strings.TrimSpace(r.PathValue("id"))
+	if !s.runExists(r.Context(), runID) {
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run not found", "api.resume_run", map[string]any{"run_id": runID})
+		return
+	}
+	var req gen.ResumeRunRequest
 	if err := decodeStrictJSON(r, &req); err != nil {
 		s.writeBadRequest(w, err.Error())
 		return
 	}
-
-	actorID, roleID, ok := s.requirePrincipal(w, r, "api.retry_node")
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		s.writeBadRequest(w, "reason is required")
+		return
+	}
+	actorID, roleID, ok := s.requirePrincipal(w, r, "api.resume_run")
 	if !ok {
 		return
 	}
-	runStatus, err := s.runStatusForRun(r.Context(), runID)
+	plan, err := state.LoadRunResumePlan(r.Context(), s.db, runID)
 	if err != nil {
-		s.writeInternalError(w, "fetch run status failed")
+		s.writeInternalError(w, "derive resume plan failed")
 		return
 	}
-	if runStatus != "failed" && runStatus != "cancelled" {
-		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "run must be failed or cancelled before retry", "api.retry_node", map[string]any{"run_id": runID, "run_status": runStatus})
+	if !plan.Available() {
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "resume is not available for this run", "api.resume_run", map[string]any{"run_id": runID, "plan": resumePlanResponse(runID, plan)})
 		return
 	}
-
+	expected := plan.Sources()
+	confirmed := make(map[string]string, len(req.Steps))
+	for _, step := range req.Steps {
+		confirmed[strings.TrimSpace(step.NodeId)] = strings.TrimSpace(step.SourceAttemptId)
+	}
+	stale := len(confirmed) != len(req.Steps) || len(confirmed) != len(expected)
+	for nodeID, attemptID := range expected {
+		if confirmed[nodeID] != attemptID {
+			stale = true
+		}
+	}
+	if stale {
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "the interrupted steps changed; review them before resuming", "api.resume_run", map[string]any{"run_id": runID, "plan": resumePlanResponse(runID, plan)})
+		return
+	}
 	if _, err := s.transitionService.ReplayTerminalRun(r.Context(), state.ReplayTerminalRunRequest{
 		RunID:           runID,
-		AnchorNodeID:    nodeKey,
-		TargetNodeIDs:   []string{nodeKey},
-		Reason:          req.Reason,
+		AnchorNodeID:    plan.TargetNodeIDs[0],
+		TargetNodeIDs:   plan.TargetNodeIDs,
+		ResumeSources:   expected,
+		Reason:          reason,
 		ActorID:         actorID,
 		RoleID:          roleID,
-		AuthoritySource: "api.retry_node",
-		RunEventType:    "run.retry_reopened",
-		RunReasonCode:   "manual_retry_requested",
-		NodeEventType:   "attempt.retry_queued",
-		EventPrefix:     "retry",
+		AuthoritySource: "api.resume_run",
+		RunEventType:    "run.resume_reopened",
+		RunReasonCode:   "manual_resume_requested",
+		NodeEventType:   "attempt.resume_queued",
+		EventPrefix:     "resume",
 		OccurredAt:      s.now().UTC().Format(time.RFC3339),
 		GenerateID:      s.idGenerator,
 	}); err != nil {
-		s.writeRunTransitionApplyError(w, err, "api.retry_node", "retry queue is not allowed for the current run state", "queue node retry failed", map[string]any{"run_id": runID, "node_key": nodeKey})
+		s.writeRunTransitionApplyError(w, err, "api.resume_run", "resume is not allowed for the current run state", "queue resume failed", map[string]any{"run_id": runID})
 		return
 	}
-
-	writeJSON(w, http.StatusAccepted, gen.RetryNodeResult{
-		RunId:         runID,
-		NodeKey:       nodeKey,
-		RetryEnqueued: true,
-	})
+	nodeIDs := make([]string, 0, len(plan.Steps))
+	for _, step := range plan.Steps {
+		nodeIDs = append(nodeIDs, step.NodeID)
+	}
+	writeJSON(w, http.StatusAccepted, gen.ResumeRunResult{RunId: runID, ResumedNodeIds: nodeIDs, ResumeEnqueued: true})
 }
 
 func (s *Server) handleRerunFromNode(w http.ResponseWriter, r *http.Request) {

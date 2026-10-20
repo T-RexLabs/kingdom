@@ -17,7 +17,7 @@ export type RunNodeExecutionPresentation = {
 	heading: string;
 	description: string;
 	announcement?: { role: "status" | "alert"; ariaLive: "polite" | "assertive" };
-	recoveryKind?: "Automatic Recovery" | "Manual Retry" | "Manual Rerun";
+	recoveryKind?: "Automatic Recovery" | OperatorRecoveryLabel;
 	retryDetail?: string;
 	failureDetail?: string;
 	recoveryReason?: string;
@@ -94,7 +94,7 @@ function presentRecovery(
 	handoffState?: RunExecution["handoff_state"],
 ): Omit<RunNodeExecutionPresentation, "status" | "currentAttemptLabel" | "historicalAttemptLabel"> {
 	const automatic = recovery.trigger === "automatic_retry";
-	const recoveryKind = automatic ? "Automatic Recovery" : recovery.trigger === "operator_rerun" ? "Manual Rerun" : "Manual Retry";
+	const recoveryKind = automatic ? "Automatic Recovery" : operatorRecoveryLabel(recovery.trigger);
 	const retryDetail = recovery.retry_max > 0 ? `${automatic ? "Automatic retry" : recoveryKind} ${recovery.retry_index} of ${recovery.retry_max}` : undefined;
 	const reason = recoveryReasonLabel(recovery.reason_code);
 	const attempt = recovery.retry_index + 1;
@@ -215,6 +215,15 @@ function attemptLabels(): Pick<RunNodeExecutionPresentation, "currentAttemptLabe
 
 function presentRetryRelationship(relationship: RunAttemptRetryRelationship): string {
 	const direction = relationship.direction === "source" ? "Recovery from this attempt" : "Recovery to this attempt";
-	const trigger = relationship.trigger === "automatic_retry" ? "Automatic retry" : relationship.trigger === "operator_rerun" ? "Manual Rerun" : "Manual Retry";
+	const trigger = relationship.trigger === "automatic_retry" ? "Automatic retry" : operatorRecoveryLabel(relationship.trigger);
 	return `${direction}: ${trigger}${relationship.retry_max > 0 ? ` ${relationship.retry_index}/${relationship.retry_max}` : ""}`;
+}
+
+type OperatorRecoveryLabel = "Manual Retry" | "Manual Rerun" | "Manual Resume";
+
+// Historical manual Retry records keep their original label.
+function operatorRecoveryLabel(trigger: string): OperatorRecoveryLabel {
+	if (trigger === "operator_resume") return "Manual Resume";
+	if (trigger === "operator_rerun") return "Manual Rerun";
+	return "Manual Retry";
 }

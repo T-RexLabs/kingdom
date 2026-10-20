@@ -857,6 +857,24 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	if err != nil {
 		return err
 	}
+	canonicalWorkspace := executionSpecForNode(result.node.NodeID, result.node.NodeClass).WorkspaceKind == workspaceCanonical
+	if canonicalWorkspace && result.workspacePath != "" {
+		unlock, acquired := o.tryReserveCompletionWorkspace(ctx, result.run.RunID)
+		if !acquired {
+			return workspaceHandoffBlockedError{}
+		}
+		defer unlock()
+	}
+	if canonicalWorkspace && decision.LatestAttempt && !resourceLimitFailure && result.attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && (actualAttemptState == "committed_failure" || actualAttemptState == "committed_cancelled") && result.baseSnapshotID != "" && result.workspacePath != "" {
+		if err := o.captureResumeCheckpoint(ctx, result); err != nil {
+			return err
+		}
+		if _, snapshot, err := o.loadAttemptSnapshotIDs(ctx, result.attemptID); err != nil {
+			return err
+		} else {
+			result.resultSnapshotID = snapshot
+		}
+	}
 	var planningOutput *state.CreateRunPlanningOutputRequest
 	if decision.AllowPlanningOutput {
 		if req, ok := buildRunPlanningOutputRequest(result, now, responseText, execErr); ok {
@@ -977,16 +995,6 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 				o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_validation_rework_queued", o.now().UTC().Format(time.RFC3339Nano), nil)
 			}
 		}
-	}
-	canonicalWorkspace := executionSpecForNode(result.node.NodeID, result.node.NodeClass).WorkspaceKind == workspaceCanonical
-	unlockWorkspace := func() {}
-	if canonicalWorkspace && strings.TrimSpace(result.workspacePath) != "" {
-		var acquired bool
-		unlockWorkspace, acquired = o.tryReserveCompletionWorkspace(ctx, result.run.RunID)
-		if !acquired {
-			return workspaceHandoffBlockedError{}
-		}
-		defer unlockWorkspace()
 	}
 	if canonicalWorkspace && !resourceLimitFailure && strings.TrimSpace(result.workspacePath) != "" && strings.TrimSpace(result.baseSnapshotID) != "" && strings.TrimSpace(result.resultSnapshotID) == "" {
 		snapshot, snapshotErr := o.captureAttemptResultSnapshot(ctx, result, now)

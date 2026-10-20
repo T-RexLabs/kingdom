@@ -59,6 +59,10 @@ func (c canonicalOwner) requireActive(b Binding, registering bool, now time.Time
 	return nil
 }
 func requireSessionReusable(ctx context.Context, q Reader, b Binding, current canonicalOwner) error {
+	resumed, err := resumePredecessorBindings(ctx, q, b, current)
+	if err != nil {
+		return err
+	}
 	// A session already referenced by another unbound invocation has no shared
 	// request evidence. It cannot be adopted as a fresh managed conversation.
 	var unbound int
@@ -102,6 +106,12 @@ func requireSessionReusable(ctx context.Context, q Reader, b Binding, current ca
 		previous, err := loadOwner(ctx, q, old.Owner)
 		if err != nil {
 			return err
+		}
+		if resumed != nil {
+			if _, authorized := resumed[id]; !authorized {
+				return fmt.Errorf("provider session contains a request outside the resume lineage")
+			}
+			continue
 		}
 		if old.Identity.InstanceID != b.Identity.InstanceID || old.Identity.Generation != b.Identity.Generation || old.Identity.Location != b.Identity.Location || old.Owner.Kind != b.Owner.Kind || previous.parent != current.parent || old.LogicalSessionID != b.LogicalSessionID {
 			return fmt.Errorf("provider session belongs to a different conversation or generation")

@@ -196,7 +196,7 @@ func (o *orchestrationLoop) recoverQuarantinedExecutionTargetForManualReplay(ctx
 		return record, nil
 	}
 	if !o.manualTargetRecoveryAuthorized(ctx, runID, nodeRunID, record.UpdatedAt) {
-		return runtimefs.RunExecutionTarget{}, fmt.Errorf("execution target is quarantined and requires an explicit retry or rerun")
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("execution target is quarantined and requires an explicit rerun")
 	}
 	quiescent, err := o.executionStore.RunProviderCommandGuardiansQuiescent(ctx, runID)
 	if err != nil {
@@ -301,7 +301,7 @@ WHERE run_id = ?
   AND entity_type = 'run'
   AND from_state IN ('failed', 'cancelled')
   AND to_state = 'running'
-  AND reason_code IN ('manual_retry_requested', 'manual_rerun_requested')
+  AND reason_code = 'manual_rerun_requested'
 ORDER BY created_at DESC, transition_id DESC
 LIMIT 1`, strings.TrimSpace(runID)).Scan(&replayedAt)
 	if err != nil {
@@ -315,7 +315,7 @@ WHERE run_id = ?
   AND entity_type = 'node'
   AND from_state = 'pending'
   AND to_state = 'ready'
-  AND authority_source IN ('api.retry', 'api.rerun')
+  AND authority_source = 'api.rerun_from_node'
 ORDER BY created_at DESC, transition_id DESC
 LIMIT 1`, strings.TrimSpace(runID), strings.TrimSpace(nodeRunID)).Scan(&queuedAt)
 	if err != nil {

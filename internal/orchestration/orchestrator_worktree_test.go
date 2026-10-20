@@ -797,17 +797,17 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 	if err != nil {
 		t.Fatalf("load quarantined target: %v", err)
 	}
-	if _, err := loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_1", target, quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)); err == nil || !strings.Contains(err.Error(), "requires an explicit retry or rerun") {
+	if _, err := loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_1", target, quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)); err == nil || !strings.Contains(err.Error(), "requires an explicit rerun") {
 		t.Fatalf("automatic recovery err=%v, want explicit-replay rejection", err)
 	}
 	if prunes != 0 || adds != 0 {
 		t.Fatalf("automatic recovery touched managed worktree: prunes=%d adds=%d", prunes, adds)
 	}
-	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_worktree_recovery', 'run_1', NULL, 'run', 'failed', 'running', 'local-operator', 'governance', 'api.retry', 'manual_retry_requested', 'operator confirmed recovery', 'corr_worktree_recovery', 'caus_worktree_recovery', '', '', '`+quarantinedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
-	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_worktree_recovery_node', 'run_1', 'nr_1', 'node', 'pending', 'ready', 'local-operator', 'governance', 'api.retry', 'internal_error', 'operator confirmed recovery', 'corr_worktree_recovery', 'caus_worktree_recovery', '', '', '`+quarantinedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
+	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_worktree_recovery', 'run_1', NULL, 'run', 'failed', 'running', 'local-operator', 'governance', 'api.rerun_from_node', 'manual_rerun_requested', 'operator confirmed recovery', 'corr_worktree_recovery', 'caus_worktree_recovery', '', '', '`+quarantinedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
+	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_worktree_recovery_node', 'run_1', 'nr_1', 'node', 'pending', 'ready', 'local-operator', 'governance', 'api.rerun_from_node', 'internal_error', 'operator confirmed recovery', 'corr_worktree_recovery', 'caus_worktree_recovery', '', '', '`+quarantinedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_worktree_automatic_recovery', 'run_1', 'work_intake', 100, 100, 'ready', 'governance', 'agent_governance', 1, NULL, NULL)`)
 	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_worktree_automatic_recovery', 'run_1', 'nr_worktree_automatic_recovery', 'node', 'pending', 'ready', 'runtime_orchestrator', 'governance', 'runtime.retry', 'automatic_retry', 'automatic retry due', 'corr_worktree_automatic_recovery', 'caus_worktree_automatic_recovery', '', '', '`+quarantinedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
-	if _, err := loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_worktree_automatic_recovery", target, quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)); err == nil || !strings.Contains(err.Error(), "requires an explicit retry or rerun") {
+	if _, err := loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_worktree_automatic_recovery", target, quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)); err == nil || !strings.Contains(err.Error(), "requires an explicit rerun") {
 		t.Fatalf("automatic recovery after explicit retry err=%v, want explicit-replay rejection", err)
 	}
 	if _, err := loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_1", target, quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)); err == nil || !strings.Contains(err.Error(), "waiting for provider process quiescence") {
@@ -883,8 +883,8 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 	if err := fsStore.UpdateExecutionTargetState(context.Background(), runID, "unknown", "", "", prunedAt.Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("quarantine externally pruned worktree target: %v", err)
 	}
-	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_pruned_worktree_recovery', 'run_1', NULL, 'run', 'failed', 'running', 'local-operator', 'governance', 'api.rerun', 'manual_rerun_requested', 'operator confirmed pruned worktree recovery', 'corr_pruned_worktree_recovery', 'caus_pruned_worktree_recovery', '', '', '`+prunedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
-	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_pruned_worktree_recovery_node', 'run_1', 'nr_1', 'node', 'pending', 'ready', 'local-operator', 'governance', 'api.rerun', 'internal_error', 'operator confirmed pruned worktree recovery', 'corr_pruned_worktree_recovery', 'caus_pruned_worktree_recovery', '', '', '`+prunedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
+	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_pruned_worktree_recovery', 'run_1', NULL, 'run', 'failed', 'running', 'local-operator', 'governance', 'api.rerun_from_node', 'manual_rerun_requested', 'operator confirmed pruned worktree recovery', 'corr_pruned_worktree_recovery', 'caus_pruned_worktree_recovery', '', '', '`+prunedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
+	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_pruned_worktree_recovery_node', 'run_1', 'nr_1', 'node', 'pending', 'ready', 'local-operator', 'governance', 'api.rerun_from_node', 'internal_error', 'operator confirmed pruned worktree recovery', 'corr_pruned_worktree_recovery', 'caus_pruned_worktree_recovery', '', '', '`+prunedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
 	target, err = fsStore.GetExecutionTarget(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("load externally pruned target: %v", err)
@@ -1372,7 +1372,6 @@ func TestRunWorktreeCleanupFencesRetryAndRerunBetweenBatches(t *testing.T) {
 		authoritySource string
 		eventPrefix     string
 	}{
-		{name: "retry", runReasonCode: "manual_retry_requested", runEventType: "run.retry_reopened", nodeEventType: "attempt.retry_queued", authoritySource: "api.retry_node", eventPrefix: "retry"},
 		{name: "rerun", runReasonCode: "manual_rerun_requested", runEventType: "run.rerun_reopened", nodeEventType: "attempt.rerun_queued", authoritySource: "api.rerun_from_node", eventPrefix: "rerun"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1627,16 +1626,16 @@ func TestManualRetryCancelsClaimedWorktreeCleanupBeforeDeletionStarts(t *testing
 	var generated int
 	_, err = state.NewTransitionService(db, nil).ReplayTerminalRun(context.Background(), state.ReplayTerminalRunRequest{
 		RunID: "run_1", AnchorNodeID: "work_intake", TargetNodeIDs: []string{"work_intake"},
-		Reason: "retry before worktree deletion starts", ActorID: "local-operator", RoleID: "governance",
-		AuthoritySource: "api.retry_node", RunEventType: "run.retry_reopened", RunReasonCode: "manual_retry_requested",
-		NodeEventType: "attempt.retry_queued", EventPrefix: "retry", OccurredAt: now.Add(time.Second).Format(time.RFC3339Nano),
+		Reason: "rerun before worktree deletion starts", ActorID: "local-operator", RoleID: "governance",
+		AuthoritySource: "api.rerun_from_node", RunEventType: "run.rerun_reopened", RunReasonCode: "manual_rerun_requested",
+		NodeEventType: "attempt.rerun_queued", EventPrefix: "rerun", OccurredAt: now.Add(time.Second).Format(time.RFC3339Nano),
 		GenerateID: func(prefix string) string {
 			generated++
 			return fmt.Sprintf("%s_predelete_retry_%d", prefix, generated)
 		},
 	})
 	if err != nil {
-		t.Fatalf("retry should cancel a claim before deletion starts: %v", err)
+		t.Fatalf("rerun should cancel a claim before deletion starts: %v", err)
 	}
 	started, err := store.BeginCleanupDeletion(context.Background(), claim)
 	if err != nil || started {

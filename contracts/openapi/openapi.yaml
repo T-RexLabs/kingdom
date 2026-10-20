@@ -2151,30 +2151,51 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
-  /runs/{id}/nodes/{nodeKey}/retry:
+  /runs/{id}/resume:
+    get:
+      tags: [runs]
+      operationId: getRunResumePlan
+      summary: Describe whether the run's interrupted steps can resume.
+      description: Derives the interrupted frontier from durable records. Each step names the attempt and checkpoint Resume would continue, or why it cannot. Resume never substitutes a Rerun.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Resume plan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResumePlan"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
     post:
       tags: [runs]
-      operationId: retryNode
-      summary: Queue a retry for one node.
-      description: Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled. If managed worktree deletion has started, the request returns 409 until cleanup completes; after cleanup, submit a new Retry request.
+      operationId: resumeRun
+      summary: Resume the run's interrupted steps from their checkpoints.
+      description: Starts a new attempt for every interrupted frontier step, seeded from its saved conversation and partial files, and releases the steps that depend on them. The request must confirm the exact steps and source attempts from the current plan; a changed frontier returns 409 with the current plan.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/CSRFToken"
         - $ref: "#/components/parameters/RunId"
-        - $ref: "#/components/parameters/NodeKey"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RetryNodeRequest"
+              $ref: "#/components/schemas/ResumeRunRequest"
       responses:
         "202":
-          description: Retry queued.
+          description: Resume queued.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RetryNodeResult"
+                $ref: "#/components/schemas/ResumeRunResult"
         "400":
           $ref: "#/components/responses/BadRequestError"
         "401":
@@ -4027,6 +4048,7 @@ components:
                   provider_incomplete_turn,
                   provider_empty_output,
                   provider_unknown_failure,
+                  provider_protocol_error,
                   provider_cancelled,
                   agent_unresponsive,
                   event_sequence_gap,
@@ -6252,7 +6274,7 @@ components:
           enum: [scheduled, paused, running, recovered, exhausted]
         trigger:
           type: string
-          enum: [automatic_retry, operator_retry, operator_rerun]
+          enum: [automatic_retry, operator_retry, operator_rerun, operator_resume]
         reason_code:
           type: string
           minLength: 1
@@ -6373,7 +6395,7 @@ components:
           enum: [scheduled, paused, running, recovered, exhausted]
         trigger:
           type: string
-          enum: [automatic_retry, operator_retry, operator_rerun]
+          enum: [automatic_retry, operator_retry, operator_rerun, operator_resume]
         reason_code:
           type: string
           minLength: 1
@@ -6560,27 +6582,81 @@ components:
         next_cursor:
           type: string
 
-    RetryNodeRequest:
+    RunResumeStep:
       type: object
       additionalProperties: false
-      required: [reason]
+      required: [node_id]
       properties:
-        reason:
+        node_id:
+          type: string
+          minLength: 1
+        source_attempt_id:
+          type: string
+          minLength: 1
+        checkpoint_captured_at:
+          type: string
+          format: date-time
+        unavailable_reason:
           type: string
           minLength: 1
 
-    RetryNodeResult:
+    RunResumePlan:
       type: object
       additionalProperties: false
-      required: [run_id, node_key, retry_enqueued]
+      required: [run_id, available, steps]
       properties:
         run_id:
           type: string
           minLength: 1
-        node_key:
+        available:
+          type: boolean
+        unavailable_reason:
           type: string
           minLength: 1
-        retry_enqueued:
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunResumeStep"
+
+    ResumeRunStep:
+      type: object
+      additionalProperties: false
+      required: [node_id, source_attempt_id]
+      properties:
+        node_id:
+          type: string
+          minLength: 1
+        source_attempt_id:
+          type: string
+          minLength: 1
+
+    ResumeRunRequest:
+      type: object
+      additionalProperties: false
+      required: [reason, steps]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+        steps:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ResumeRunStep"
+
+    ResumeRunResult:
+      type: object
+      additionalProperties: false
+      required: [run_id, resumed_node_ids, resume_enqueued]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        resumed_node_ids:
+          type: array
+          items:
+            type: string
+        resume_enqueued:
           type: boolean
 
     RetryExecutionStopResult:

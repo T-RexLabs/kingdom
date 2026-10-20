@@ -169,6 +169,13 @@ func (o *orchestrationLoop) snapshotContainsAncestor(ctx context.Context, runID,
 // runs outside that reservation; Git run initialization briefly reserves it.
 func (o *orchestrationLoop) prepareNodeWorkspace(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID string) (preparedNodeWorkspace, error) {
 	kind := executionSpecForNode(node.NodeID, node.NodeClass).WorkspaceKind
+	resume, err := o.loadDispatchResume(ctx, attempt.NodeRunID)
+	if err != nil {
+		return preparedNodeWorkspace{}, err
+	}
+	if resume != nil && kind != workspaceCanonical {
+		return preparedNodeWorkspace{}, fmt.Errorf("resume requires the run's canonical workspace")
+	}
 	if kind == workspaceCanonical {
 		workspace, err := o.resolveExecutionWorkspaceContextForMode(ctx, run.RunID, run.PublishMode)
 		if err != nil {
@@ -176,6 +183,11 @@ func (o *orchestrationLoop) prepareNodeWorkspace(ctx context.Context, run runSna
 		}
 		if strings.TrimSpace(workspace.ExecutionRoot) == "" {
 			return preparedNodeWorkspace{}, fmt.Errorf("execution root is required")
+		}
+		if resume != nil {
+			if err := o.requireResumeWorkspace(ctx, workspace.ExecutionRoot, workspace.TrustedSnapshotID, *resume); err != nil {
+				return preparedNodeWorkspace{}, err
+			}
 		}
 		if err := o.recordAttemptSnapshotBase(ctx, attemptID, workspace.TrustedSnapshotID, attempt.LeaseOwner, attempt.LeaseVersion); err != nil {
 			return preparedNodeWorkspace{}, err
@@ -187,7 +199,12 @@ func (o *orchestrationLoop) prepareNodeWorkspace(ctx context.Context, run runSna
 		}
 		// Cancellation may interrupt restoration between files. Publish ownership
 		// before the first destructive write so recovery cannot trust a partial tree.
-		if err := o.prepareExecutionWorkspaceContext(ctx, workspace.ExecutionRoot, workspace); err != nil {
+		if resume != nil {
+			err = o.seedResumeWorkspace(ctx, workspace, *resume)
+		} else {
+			err = o.prepareExecutionWorkspaceContext(ctx, workspace.ExecutionRoot, workspace)
+		}
+		if err != nil {
 			return preparedNodeWorkspace{}, err
 		}
 		return preparedNodeWorkspace{WorkspacePath: workspace.ExecutionRoot, ProjectRootBoundary: workspace.ProjectRootBoundary, BaseSnapshotID: workspace.TrustedSnapshotID}, nil

@@ -1527,20 +1527,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/runs/{id}/nodes/{nodeKey}/retry": {
+    "/runs/{id}/resume": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Describe whether the run's interrupted steps can resume.
+         * @description Derives the interrupted frontier from durable records. Each step names the attempt and checkpoint Resume would continue, or why it cannot. Resume never substitutes a Rerun.
+         */
+        get: operations["getRunResumePlan"];
         put?: never;
         /**
-         * Queue a retry for one node.
-         * @description Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled. If managed worktree deletion has started, the request returns 409 until cleanup completes; after cleanup, submit a new Retry request.
+         * Resume the run's interrupted steps from their checkpoints.
+         * @description Starts a new attempt for every interrupted frontier step, seeded from its saved conversation and partial files, and releases the steps that depend on them. The request must confirm the exact steps and source attempts from the current plan; a changed frontier returns 409 with the current plan.
          */
-        post: operations["retryNode"];
+        post: operations["resumeRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2294,7 +2298,7 @@ export interface components {
         ErrorEnvelope: {
             error: {
                 /** @enum {string} */
-                code: "transient_transport" | "timeout" | "invalid_output_schema" | "policy_violation" | "dependency_blocked" | "resource_limit_exceeded" | "internal_error" | "llm_rate_limited" | "llm_model_unavailable" | "llm_usage_limit_reached" | "llm_context_overflow" | "llm_invalid_response" | "provider_incomplete_turn" | "provider_empty_output" | "provider_unknown_failure" | "provider_cancelled" | "agent_unresponsive" | "event_sequence_gap" | "idempotency_conflict" | "idempotency_key_expired" | "idempotency_pending";
+                code: "transient_transport" | "timeout" | "invalid_output_schema" | "policy_violation" | "dependency_blocked" | "resource_limit_exceeded" | "internal_error" | "llm_rate_limited" | "llm_model_unavailable" | "llm_usage_limit_reached" | "llm_context_overflow" | "llm_invalid_response" | "provider_incomplete_turn" | "provider_empty_output" | "provider_unknown_failure" | "provider_protocol_error" | "provider_cancelled" | "agent_unresponsive" | "event_sequence_gap" | "idempotency_conflict" | "idempotency_key_expired" | "idempotency_pending";
                 message: string;
                 retryable: boolean;
                 /** @enum {string} */
@@ -3557,7 +3561,7 @@ export interface components {
             /** @enum {string} */
             phase: "scheduled" | "paused" | "running" | "recovered" | "exhausted";
             /** @enum {string} */
-            trigger: "automatic_retry" | "operator_retry" | "operator_rerun";
+            trigger: "automatic_retry" | "operator_retry" | "operator_rerun" | "operator_resume";
             reason_code: string;
             source_attempt_id: string;
             source_node_run_id: string;
@@ -3606,7 +3610,7 @@ export interface components {
             /** @enum {string} */
             phase: "scheduled" | "paused" | "running" | "recovered" | "exhausted";
             /** @enum {string} */
-            trigger: "automatic_retry" | "operator_retry" | "operator_rerun";
+            trigger: "automatic_retry" | "operator_retry" | "operator_rerun" | "operator_resume";
             reason_code: string;
             source_attempt_id: string;
             source_node_run_id: string;
@@ -3687,13 +3691,31 @@ export interface components {
             items: components["schemas"]["TimelineEvent"][];
             next_cursor?: string;
         };
-        RetryNodeRequest: {
-            reason: string;
+        RunResumeStep: {
+            node_id: string;
+            source_attempt_id?: string;
+            /** Format: date-time */
+            checkpoint_captured_at?: string;
+            unavailable_reason?: string;
         };
-        RetryNodeResult: {
+        RunResumePlan: {
             run_id: string;
-            node_key: string;
-            retry_enqueued: boolean;
+            available: boolean;
+            unavailable_reason?: string;
+            steps: components["schemas"]["RunResumeStep"][];
+        };
+        ResumeRunStep: {
+            node_id: string;
+            source_attempt_id: string;
+        };
+        ResumeRunRequest: {
+            reason: string;
+            steps: components["schemas"]["ResumeRunStep"][];
+        };
+        ResumeRunResult: {
+            run_id: string;
+            resumed_node_ids: string[];
+            resume_enqueued: boolean;
         };
         RetryExecutionStopResult: {
             run_id: string;
@@ -7067,7 +7089,33 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
-    retryNode: {
+    getRunResumePlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resume plan. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunResumePlan"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    resumeRun: {
         parameters: {
             query?: never;
             header: {
@@ -7078,23 +7126,22 @@ export interface operations {
             };
             path: {
                 id: components["parameters"]["RunId"];
-                nodeKey: components["parameters"]["NodeKey"];
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RetryNodeRequest"];
+                "application/json": components["schemas"]["ResumeRunRequest"];
             };
         };
         responses: {
-            /** @description Retry queued. */
+            /** @description Resume queued. */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RetryNodeResult"];
+                    "application/json": components["schemas"]["ResumeRunResult"];
                 };
             };
             400: components["responses"]["BadRequestError"];

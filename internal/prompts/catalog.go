@@ -59,6 +59,7 @@ type NodeContract struct {
 	InspectionWorkspace  []string `yaml:"inspection_workspace" json:"inspection_workspace"`
 	ResponseFormat       []string `yaml:"response_format" json:"response_format"`
 	FinalChecks          []string `yaml:"final_checks" json:"final_checks"`
+	ResumeContinuation   []string `yaml:"resume_continuation" json:"resume_continuation,omitempty"`
 }
 
 type PlanningModes struct {
@@ -120,6 +121,10 @@ func LoadDefault(requiredRoleIDs []string) (Catalog, error) {
 		catalog.RolePolicy.Roles[roleID] = role
 	}
 	if err := catalog.Validate(requiredRoleIDs); err != nil {
+		return Catalog{}, err
+	}
+	// Only new revisions must carry it; historical revisions stay valid.
+	if _, err := catalog.ResumeContinuationSection(); err != nil {
 		return Catalog{}, err
 	}
 	return catalog, nil
@@ -408,6 +413,16 @@ func (c Catalog) finalChecks(nodeClass string, providerCompletion bool) []string
 		finalChecksKey = "validation"
 	}
 	return c.NodeContracts[finalChecksKey].FinalChecks
+}
+
+// ResumeContinuationSection explains a checkpointed continuation. Revisions
+// pinned before Resume existed lack it, so their runs cannot be resumed.
+func (c Catalog) ResumeContinuationSection() (string, error) {
+	lines := bulletLines(c.NodeContracts["shared"].ResumeContinuation)
+	if len(lines) == 0 {
+		return "", fmt.Errorf("the run's pinned prompt catalog predates Resume")
+	}
+	return promptSection("Resumed Attempt", strings.Join(lines, "\n")), nil
 }
 
 func (c Catalog) FinalChecksSection(nodeClass string, providerCompletion bool) string {

@@ -83,6 +83,11 @@ type graphShowOptions struct {
 	asASCII   bool
 }
 
+type runResumeOptions struct {
+	runID  string
+	reason string
+}
+
 type nodeMutationOptions struct {
 	runID   string
 	nodeKey string
@@ -208,6 +213,14 @@ func bindGraphShowFlags(flags *flag.FlagSet, opts *graphShowOptions) {
 	flags.StringVar(&opts.runID, "run-id", "", "run `id`")
 	flags.BoolVar(&opts.asMermaid, "mermaid", false, "print Mermaid graph output")
 	flags.BoolVar(&opts.asASCII, "ascii", false, "print ASCII graph output")
+}
+
+func bindRunResumeFlags(flags *flag.FlagSet, opts *runResumeOptions) {
+	if flags == nil || opts == nil {
+		return
+	}
+	flags.StringVar(&opts.runID, "run-id", "", "run `id`")
+	flags.StringVar(&opts.reason, "reason", "", "resume reason `text`")
 }
 
 func bindNodeMutationFlags(flags *flag.FlagSet, opts *nodeMutationOptions, reasonLabel string) {

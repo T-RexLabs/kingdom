@@ -43,10 +43,13 @@ type ExecuteRequest struct {
 	// new one instead.
 	ProviderSessionID string
 	ForceNewSession   bool
-	Model             string
-	Variant           string
-	Agent             string
-	WorkspacePath     string
+	// ResumeFrom explicitly adopts a checkpointed interrupted run conversation.
+	// It never falls back to a new session if the saved context is unavailable.
+	ResumeFrom    *SessionResume
+	Model         string
+	Variant       string
+	Agent         string
+	WorkspacePath string
 	// System is the exact instruction pinned into the request's managed
 	// profile. It is the only instruction channel Kingdom authors.
 	System string

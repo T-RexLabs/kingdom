@@ -68,8 +68,18 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 	}
 	attemptID := composeAttemptID(run.RunID, attempt.NodeID, attempt.Attempt)
 	sessionID := ""
+	var resume *state.AttemptResumeInput
 	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked {
 		sessionID = sessionIDForAttempt(attemptID)
+		var err error
+		if resume, err = o.loadDispatchResume(ctx, attempt.NodeRunID); err != nil {
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "load resume checkpoint", err)
+		}
+		if resume != nil {
+			// The continued conversation keeps its logical session; the
+			// provider request, profile, lease and invocation are all new.
+			sessionID = resume.Binding.LogicalSessionID
+		}
 	}
 	providerLeaseDuration := time.Duration(0)
 	expectedLeaseExpiresAt := ""
@@ -154,7 +164,15 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 	agentForRole := ""
 	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked {
 		resolvedModel, resolvedVariant, modelSource = o.resolveModelForRole(run, node.RequiredRole)
-		prepared, scoped, invocationConfig, promptErr := o.prepareDispatchPrompt(ctx, run, node, attempt, delegatorID)
+		var prepared *promptFile
+		var scoped string
+		var invocationConfig dispatchPromptConfiguration
+		var promptErr error
+		if resume != nil {
+			prepared, invocationConfig, promptErr = o.prepareResumePrompt(ctx, run, node, *resume)
+		} else {
+			prepared, scoped, invocationConfig, promptErr = o.prepareDispatchPrompt(ctx, run, node, attempt, delegatorID)
+		}
 		if promptErr != nil {
 			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "prepare provider prompt", promptErr)
 		}
@@ -292,6 +310,7 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 		responseOnlyWorkspaceCleanupMarkedAt: responseOnlyWorkspaceCleanupMarkedAt,
 		delegator:                            delegatorID,
 		openPrompt:                           providerPromptOpen,
+		resume:                               resume,
 		system:                               systemPrompt,
 		model:                                resolvedModel,
 		variant:                              resolvedVariant,
@@ -1221,7 +1240,7 @@ func (o *orchestrationLoop) awaitExecutionResult(ctx context.Context, attemptID 
 // Execute receive the same description, and the provider holds the prepared
 // identity between them.
 func (o *orchestrationLoop) providerRequest(job asyncExecutionResult) opencode.ExecuteRequest {
-	return opencode.ExecuteRequest{
+	request := opencode.ExecuteRequest{
 		AttemptID:               job.attemptID,
 		InvocationID:            job.providerInvocationID,
 		Model:                   job.model,
@@ -1233,6 +1252,11 @@ func (o *orchestrationLoop) providerRequest(job asyncExecutionResult) opencode.E
 		FirstEventTimeout:       o.firstEventTimeout,
 		StreamInactivityTimeout: o.streamInactivity,
 	}
+	if job.resume != nil {
+		request.ResumeFrom = sessionResumeRequest(job.resume)
+		request.OpenContinuationPrompt = job.openPrompt
+	}
+	return request
 }
 
 // discardProviderRequest releases a prepared request that will not run.
