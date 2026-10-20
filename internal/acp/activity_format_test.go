@@ -48,16 +48,16 @@ func TestNormalizeProgressActivityLabelRewritesProviderStepStarted(t *testing.T)
 func TestToolActivityLabelTodowriteShowsChecklistProgress(t *testing.T) {
 	input := `{"todos":[{"content":"a","status":"completed"},{"content":"b","status":"in_progress"},{"content":"c","status":"pending"},{"content":"d","status":"completed"}]}`
 	got := ToolActivityLabel("todowrite", "completed", "", input)
-	if got != "Checklist · 2/4" {
-		t.Fatalf("ToolActivityLabel(todowrite) = %q, want %q", got, "Checklist · 2/4")
+	if got != "Updated tasks · 2 of 4" {
+		t.Fatalf("ToolActivityLabel(todowrite) = %q, want %q", got, "Updated tasks · 2 of 4")
 	}
 }
 
 func TestToolActivityLabelTodowriteFallsBackWithoutTodos(t *testing.T) {
-	if got := ToolActivityLabel("todowrite", "completed", "", ""); got != "Updated checklist" {
-		t.Fatalf("empty todowrite label = %q, want %q", got, "Updated checklist")
+	if got := ToolActivityLabel("todowrite", "completed", "", ""); got != "Updated tasks" {
+		t.Fatalf("empty todowrite label = %q, want %q", got, "Updated tasks")
 	}
-	if got := ToolActivityLabel("todowrite", "completed", "", "not json"); got != "Updated checklist" {
-		t.Fatalf("malformed todowrite label = %q, want %q", got, "Updated checklist")
+	if got := ToolActivityLabel("todowrite", "completed", "", "not json"); got != "Updated tasks" {
+		t.Fatalf("malformed todowrite label = %q, want %q", got, "Updated tasks")
 	}
 }

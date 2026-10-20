@@ -66,9 +66,9 @@ func ToolActivityLabel(toolName string, status string, toolTitle string, toolInp
 func todoChecklistLabel(toolInput string) string {
 	done, total := todoChecklistCounts(toolInput)
 	if total == 0 {
-		return "Updated checklist"
+		return "Updated tasks"
 	}
-	return fmt.Sprintf("Checklist · %d/%d", done, total)
+	return fmt.Sprintf("Updated tasks · %d of %d", done, total)
 }
 
 func todoChecklistCounts(toolInput string) (int, int) {

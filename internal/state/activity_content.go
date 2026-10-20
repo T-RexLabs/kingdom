@@ -167,14 +167,9 @@ func ReadActivityContentPage(ctx context.Context, db *sql.DB, scope ActivityScop
 	first, last := offset/requestContentChunkBytes, (end-1)/requestContentChunkBytes
 	bytes := make([]byte, 0, int(end-offset))
 	for ordinal := first; ordinal <= last; ordinal++ {
-		var chunk []byte
-		var expectedDigest string
-		if err := tx.QueryRowContext(ctx, `SELECT c.content,d.sha256 FROM request_content_chunks c JOIN activity_content_chunk_digests d ON d.content_id=c.content_id AND d.ordinal=c.ordinal WHERE c.content_id=? AND c.ordinal=?`, contentID, ordinal).Scan(&chunk, &expectedDigest); err != nil {
+		chunk, err := readActivityContentChunkTx(ctx, tx, contentID, ordinal, result.ByteLength)
+		if err != nil {
 			return result, err
-		}
-		hash := sha256.Sum256(chunk)
-		if int64(len(chunk)) != min(int64(requestContentChunkBytes), result.ByteLength-ordinal*requestContentChunkBytes) || hex.EncodeToString(hash[:]) != expectedDigest {
-			return result, fmt.Errorf("activity content integrity mismatch")
 		}
 		startInChunk := max(int64(0), offset-ordinal*requestContentChunkBytes)
 		endInChunk := min(int64(len(chunk)), end-ordinal*requestContentChunkBytes)
@@ -194,4 +189,19 @@ func ReadActivityContentPage(ctx context.Context, db *sql.DB, scope ActivityScop
 		result.NextOffset = offset + int64(length)
 	}
 	return result, nil
+}
+
+// readActivityContentChunkTx returns one immutable chunk after checking its
+// length and digest, so partial reads never trust unverified bytes.
+func readActivityContentChunkTx(ctx context.Context, tx *sql.Tx, contentID string, ordinal, byteLength int64) ([]byte, error) {
+	var chunk []byte
+	var expectedDigest string
+	if err := tx.QueryRowContext(ctx, `SELECT c.content,d.sha256 FROM request_content_chunks c JOIN activity_content_chunk_digests d ON d.content_id=c.content_id AND d.ordinal=c.ordinal WHERE c.content_id=? AND c.ordinal=?`, contentID, ordinal).Scan(&chunk, &expectedDigest); err != nil {
+		return nil, err
+	}
+	hash := sha256.Sum256(chunk)
+	if int64(len(chunk)) != min(int64(requestContentChunkBytes), byteLength-ordinal*requestContentChunkBytes) || hex.EncodeToString(hash[:]) != expectedDigest {
+		return nil, fmt.Errorf("activity content integrity mismatch")
+	}
+	return chunk, nil
 }

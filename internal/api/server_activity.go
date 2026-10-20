@@ -138,6 +138,33 @@ func (s *Server) handleGetActivityContent(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, response)
 }
 
+// handleGetRunExecutionTasks serves the attempt's newest reported task list so
+// the activity view can pin it regardless of which activity pages are loaded.
+func (s *Server) handleGetRunExecutionTasks(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.activityScope(w, r)
+	if !ok {
+		return
+	}
+	list, found, err := state.LatestActivityTaskList(r.Context(), s.db, scope)
+	if err != nil {
+		s.writeInternalError(w, "fetch execution tasks failed")
+		return
+	}
+	response := gen.RunExecutionTaskList{State: gen.None, Tasks: []gen.RunExecutionTask{}}
+	if found {
+		response.State = gen.Available
+		if list.Unreadable {
+			response.State = gen.Unreadable
+		}
+		recordedAt := mustParseRFC3339(list.RecordedAt)
+		response.Sequence, response.RecordedAt = &list.Sequence, &recordedAt
+		for _, task := range list.Tasks {
+			response.Tasks = append(response.Tasks, gen.RunExecutionTask{Content: task.Content, Status: task.Status})
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 func acpRunActivityItemFromEvent(event state.PlanningOperationEvent) (gen.AcpRunActivityItem, bool) {
 	item, ok := acpActivityItemFromPayload(event.PayloadJSON, event.EventID, event.CreatedAt)
 	item.Sequence = event.Seq
