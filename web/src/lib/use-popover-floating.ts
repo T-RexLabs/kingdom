@@ -1,4 +1,5 @@
 import {
+  autoPlacement,
   autoUpdate,
   flip,
   offset,
@@ -84,9 +85,11 @@ export function usePopoverFloating({
 		whileElementsMounted: autoUpdate,
 		middleware: [
 			offset(4),
-			// Lists stay below their trigger by default. Complete panels such as
-			// calendars can opt in to flipping to keep their controls together.
-			...(allowFlip ? [flip({ padding: 8 })] : []),
+			// Menus choose available space rather than treating a temporarily
+			// collapsed measurement as proof that the preferred side fits.
+			...(allowFlip ? [role === "listbox"
+				? autoPlacement({ padding: 8, allowedPlacements: ["bottom-start", "top-start"] })
+				: flip({ padding: 8 })] : []),
 			shift({ padding: 8 }),
 			size({
 				padding: 8,
@@ -99,7 +102,7 @@ export function usePopoverFloating({
 						elements.floating.style.maxWidth = "";
 					}
 					Object.assign(elements.floating.style, {
-						maxHeight: `${Math.min(maxHeight, availableHeight)}px`,
+						maxHeight: `${Math.max(0, Math.min(maxHeight, availableHeight))}px`,
 					});
 				},
 			}),
