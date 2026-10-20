@@ -40,7 +40,7 @@ import { ArrowLeft, Shield, AlertTriangle, XCircle, FileText, FolderOpen, Settin
 import { Link } from "@tanstack/react-router";
 import { DAGVisualization } from "./dag-visualization";
 import { RunExecutionSurface } from "./run-execution-surface";
-import { selectRunExecutionNode } from "./run-execution-selection";
+import { followedAttemptId, selectRunExecutionNode } from "./run-execution-selection";
 import { RunExecutionPicker } from "./run-execution-picker";
 import { RunDiagnostics } from "./run-diagnostics";
 import { RunOutput, RunPublicationPanel } from "./run-output";
@@ -187,8 +187,7 @@ export function RunDetailPage() {
   );
   const selectedExecutionId =
     storedSelectedExecution?.attemptId ??
-    selectedNode?.current_execution?.attempt_id ??
-    null;
+    followedAttemptId(selectedNode, nodeAttempts);
   const executionDetailQuery = useRunExecution(runId, selectedExecutionId, {
     enabled: runReady && executionVisible && !!selectedExecutionId,
   });

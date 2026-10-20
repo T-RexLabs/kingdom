@@ -9,6 +9,7 @@ import { nodeLabel } from "@/lib/utils";
 import { statusLabel } from "@/lib/status-system";
 import { useTheme, roleIdentity } from "@/theme";
 import { executionDisplayStatus } from "./run-status-semantics";
+import { followedAttemptId } from "./run-execution-selection";
 
 export function RunExecutionPicker({
   nodes,
@@ -47,7 +48,8 @@ export function RunExecutionPicker({
   const pickerId = useId();
   const node = nodes.find((item) => item.node_id === selectedNodeId);
   const current = node?.current_execution;
-  const selectedID = selectedAttemptId ?? current?.attempt_id;
+  const followedID = followedAttemptId(node, attempts);
+  const selectedID = selectedAttemptId ?? followedID;
   const selectedDetail = detail?.attempt_id === selectedID ? detail : null;
   const options = [
     ...new Map(
@@ -75,8 +77,7 @@ export function RunExecutionPicker({
               : `${roleIdentity(theme, item.required_role).name} · ${nodeLabel(item.node_id)}`,
         }))}
       />
-      {((node?.attempt_count ?? 0) > 1 ||
-        (!current && (node?.attempt_count ?? 0) > 0)) && (
+      {(node?.attempt_count ?? 0) > 1 && (
         <SelectField
           id={`${pickerId}-attempt`}
           label="Attempt"
@@ -84,19 +85,11 @@ export function RunExecutionPicker({
           className="w-56 max-w-full"
           value={selectedID ?? ""}
           onChange={(value) =>
-            value === "" || value === current?.attempt_id
+            value === followedID
               ? onSelectCurrentAttempt()
               : onSelectAttempt(value)
           }
           options={[
-            ...(!current
-              ? [
-                  {
-                    value: "",
-                    label: `Current Step · ${statusLabel(node?.status ?? "pending")}`,
-                  },
-                ]
-              : []),
             ...(selectedID &&
             !options.some((item) => item.attempt_id === selectedID)
               ? [{ value: selectedID, label: "Selected Attempt" }]
@@ -108,13 +101,13 @@ export function RunExecutionPicker({
           ]}
         />
       )}
-      {selectedID && selectedID !== current?.attempt_id && (
+      {selectedID && followedID && selectedID !== followedID && (
         <button
           type="button"
           className="min-h-10 text-xs text-accent"
           onClick={onSelectCurrentAttempt}
         >
-          {current ? "Return to Current Attempt" : "Return to Current Step"}
+          {current ? "Return to Current Attempt" : "Return to Latest Attempt"}
         </button>
       )}
       {children}

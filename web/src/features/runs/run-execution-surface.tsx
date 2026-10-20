@@ -15,6 +15,8 @@ import {
 } from "./run-conversation";
 import { hasSettledResponse } from "./run-conversation-state";
 import { presentRunNodeExecution } from "./run-execution-presentation";
+import { followedAttemptId } from "./run-execution-selection";
+import { isTerminalRunStatus } from "./run-freshness";
 import { useId, useState, type ReactNode } from "react";
 
 export function RunExecutionSurface({
@@ -75,7 +77,11 @@ export function RunExecutionSurface({
   const viewsId = useId();
   const node = nodes.find((item) => item.node_id === selectedNodeId);
   const current = node?.current_execution;
-  const selectedID = selectedAttemptId ?? current?.attempt_id;
+  const followedID = followedAttemptId(node, attempts);
+  const selectedID = selectedAttemptId ?? followedID ?? undefined;
+  // Following the latest attempt while the step's next attempt has not started.
+  const awaitingNextAttempt =
+    !current && !!selectedID && selectedID === followedID;
   const history = attempts.find((item) => item.attempt_id === selectedID);
   const selectedDetail = detail?.attempt_id === selectedID ? detail : null;
   const hasResponse = hasSettledResponse(selectedDetail);
@@ -150,13 +156,22 @@ export function RunExecutionSurface({
           </span>
         )}
       </RunExecutionPicker>
-      {historical && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/25 bg-accent/5 px-4 py-3 text-xs">
-          <span>
-            Historical Attempt {execution?.attempt ?? ""}
-            {history?.superseded ? " · Superseded" : ""}
-          </span>
-        </div>
+      {awaitingNextAttempt ? (
+        <p className="rounded-lg border border-border px-4 py-3 text-xs text-foreground-muted">
+          Showing attempt {execution?.attempt ?? ""}.{" "}
+          {isTerminalRunStatus(run.status)
+            ? "The next attempt did not start."
+            : "The next attempt has not started yet."}
+        </p>
+      ) : (
+        historical && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/25 bg-accent/5 px-4 py-3 text-xs">
+            <span>
+              Historical Attempt {execution?.attempt ?? ""}
+              {history?.superseded ? " · Superseded" : ""}
+            </span>
+          </div>
+        )
       )}
       {presentation && showNotice && (
         <div
@@ -304,17 +319,18 @@ export function RunExecutionSurface({
             />
           </div>
         )}
-        {node?.execution_ownership === "provider_backed" && (
-          <RunExecutionActivity
-            key={selectedID}
-            runId={run.run_id}
-            attemptId={selectedID ?? null}
-            status={execution?.status}
-            detail={selectedDetail}
-            isVisible={view === "conversation"}
-            isDetailLoading={isDetailLoading}
-          />
-        )}
+        {node?.execution_ownership === "provider_backed" &&
+          (selectedID || !isHistoryLoading) && (
+            <RunExecutionActivity
+              key={selectedID}
+              runId={run.run_id}
+              attemptId={selectedID ?? null}
+              status={execution?.status}
+              detail={selectedDetail}
+              isVisible={view === "conversation"}
+              isDetailLoading={isDetailLoading}
+            />
+          )}
         {node?.execution_ownership === "runtime_owned" &&
           (selectedDetail?.output_status === "observed" &&
           selectedDetail.output_text ? (
