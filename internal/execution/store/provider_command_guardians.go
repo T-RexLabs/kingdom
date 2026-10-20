@@ -785,26 +785,28 @@ func isLowercaseSHA256(value string) bool {
 }
 
 // requireCleanProviderCommandGuardsTx refuses to settle success over a command
-// that was forced down, exited uncleanly, or left a gap in the command
-// ordinals. Closure of every guardian is already proven by the request's
-// resource check in the same transaction.
+// that was forced down, whose guardian could not prove its process tree, or
+// that left a gap in the command ordinals. A command's own exit status is tool
+// output the agent may recover from, not missing evidence. Closure of every
+// guardian is already proven by the request's resource check in the same
+// transaction.
 func requireCleanProviderCommandGuardsTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation, outcome ProviderCompletionOutcome, attemptState string) error {
 	if outcome != ProviderCompletionOutcomeSuccess {
 		return nil
 	}
-	var count, maxOrdinal, forced, unclean int64
+	var count, maxOrdinal, forced, unproven int64
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1), COALESCE(MAX(command_ordinal), 0),
 		COALESCE(SUM(CASE WHEN termination_forced = 1 THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN exit_code IS NULL OR exit_code <> 0 OR COALESCE(exit_signal, 0) <> 0 OR failure_code <> '' THEN 1 ELSE 0 END), 0)
+		COALESCE(SUM(CASE WHEN exit_code IS NULL OR failure_code <> '' THEN 1 ELSE 0 END), 0)
 		FROM provider_process_guards
 		WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID,
-	).Scan(&count, &maxOrdinal, &forced, &unclean); err != nil {
+	).Scan(&count, &maxOrdinal, &forced, &unproven); err != nil {
 		return fmt.Errorf("load provider command guardian settlement state: %w", err)
 	}
 	if forced != 0 {
 		return providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_forced", invocation.ProviderInvocationID, invocation.AttemptID, attemptState)
 	}
-	if unclean != 0 || count != maxOrdinal {
+	if unproven != 0 || count != maxOrdinal {
 		return providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_incomplete", invocation.ProviderInvocationID, invocation.AttemptID, attemptState)
 	}
 	return nil

@@ -119,8 +119,8 @@ func TestSettlementChecksEveryDurableContinuationGuardBeyondThree(t *testing.T) 
 	}
 }
 
-func TestSettlementRejectsEarlierGuardLeaseExitAndOrdinalConflicts(t *testing.T) {
-	for _, mutation := range []string{"lease_version=lease_version+1", "exit_code=2", "command_ordinal=8"} {
+func TestSettlementRejectsEarlierGuardLeaseProofAndOrdinalConflicts(t *testing.T) {
+	for _, mutation := range []string{"lease_version=lease_version+1", "failure_code='process_tree_unproven', failure_text='process tree unproven'", "command_ordinal=8"} {
 		t.Run(mutation, func(t *testing.T) {
 			s, db, req := providerCommandGuardianFixture(t)
 			for ordinal := int64(1); ordinal <= 7; ordinal++ {
@@ -141,7 +141,7 @@ func TestSettlementRejectsEarlierGuardLeaseExitAndOrdinalConflicts(t *testing.T)
 			req.TerminalHandoffID = handoff.Handoff.HandoffID
 			mustExec(t, db, `UPDATE provider_process_guards SET `+mutation+` WHERE guard_id='guard-1'`)
 			if _, err := s.SettleProviderCompletionAndTerminal(context.Background(), req); err == nil {
-				t.Fatal("settled using only the last clean guard")
+				t.Fatal("settled using only the last proven guard")
 			}
 			if countPhase2Table(t, db, "provider_completion_settlements") != 0 {
 				t.Fatal("invalid guard lineage partially settled")
@@ -586,6 +586,25 @@ func TestStoreSettleProviderCompletionAndTerminalRejectsInvalidLeaseWithoutParti
 	}
 }
 
+// A command's own exit status is tool output the agent can react to; a
+// recovered failed command must not keep a successful request from settling.
+func TestStoreSettleProviderCompletionAcceptsQuiescentGuardWithNonzeroExit(t *testing.T) {
+	t.Parallel()
+	s, db, req := unfinishedPhase2ProviderSettlementFixture(t)
+	acknowledgeQuiescentProviderCommandGuardian(t, s, req.Settlement.ProviderInvocationID, req.Settlement.AttemptID, req.Settlement.RunID, req.Settlement.NodeRunID, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion)
+	if _, err := db.Exec(`UPDATE provider_process_guards SET exit_code = 1 WHERE provider_invocation_id = ?`, req.Settlement.ProviderInvocationID); err != nil {
+		t.Fatalf("fail fixture guard: %v", err)
+	}
+	finishBoundRequest(t, s, &req)
+	attachTerminalHandoffToSettlement(t, s, &req)
+	if _, err := s.SettleProviderCompletionAndTerminal(context.Background(), req); err != nil {
+		t.Fatalf("recovered failed command blocked success settlement: %v", err)
+	}
+	if count := countPhase2Table(t, db, "provider_completion_settlements"); count != 1 {
+		t.Fatalf("expected one settlement, got %d", count)
+	}
+}
+
 func TestStoreSettleProviderCompletionAndTerminalRequiresQuiescentCleanGuards(t *testing.T) {
 	acknowledge := func(t *testing.T, s *Store, req *SettleProviderCompletionAndTerminalRequest) {
 		acknowledgeProviderCommandGuardian(t, s, req.Settlement.ProviderInvocationID, req.Settlement.AttemptID, req.Settlement.RunID, req.Settlement.NodeRunID, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion)
@@ -623,10 +642,10 @@ func TestStoreSettleProviderCompletionAndTerminalRequiresQuiescentCleanGuards(t 
 			reason: "provider_process_guard_forced",
 		},
 		{
-			name: "success unclean guard",
+			name: "success unproven guard",
 			prepare: func(t *testing.T, s *Store, db *sql.DB, req *SettleProviderCompletionAndTerminalRequest) {
 				acknowledgeQuiescent(t, s, req)
-				if _, err := db.Exec(`UPDATE provider_process_guards SET exit_code = 2 WHERE provider_invocation_id = ?`, req.Settlement.ProviderInvocationID); err != nil {
+				if _, err := db.Exec(`UPDATE provider_process_guards SET failure_code = 'process_tree_unproven', failure_text = 'process tree unproven' WHERE provider_invocation_id = ?`, req.Settlement.ProviderInvocationID); err != nil {
 					t.Fatalf("fail fixture guard: %v", err)
 				}
 			},
