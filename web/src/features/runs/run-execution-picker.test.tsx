@@ -9,7 +9,7 @@ vi.mock("@/theme", async () => {
   return { ...actual, useTheme: () => ({ theme: actual.builtInThemes[3] }) };
 });
 
-it("offers previous and current views symmetrically when used directly in contextual dialogs", async () => {
+it("follows the latest attempt without a placeholder step option when used directly in contextual dialogs", async () => {
   const props: Parameters<typeof RunExecutionPicker>[0] = {
     nodes: [
       {
@@ -17,10 +17,15 @@ it("offers previous and current views symmetrically when used directly in contex
         required_role: "quality-validator",
         execution_ownership: "provider_backed",
         status: "pending",
-        attempt_count: 1,
+        attempt_count: 2,
       },
     ],
     attempts: [
+      {
+        attempt_id: "latest",
+        attempt: 2,
+        status: "failed",
+      } as RunNodeAttemptHistoryItem,
       {
         attempt_id: "previous",
         attempt: 1,
@@ -39,6 +44,10 @@ it("offers previous and current views symmetrically when used directly in contex
     isHistoryLoading: false,
   };
   const view = render(<RunExecutionPicker {...props} />);
+  expect(
+    screen.getByRole("button", { name: "Select attempt" }),
+  ).toHaveTextContent("Attempt 2 · Failed");
+  expect(screen.queryByRole("button", { name: /Return to/ })).not.toBeInTheDocument();
   await userEvent.click(
     screen.getByRole("button", { name: "Select attempt" }),
   );
@@ -49,7 +58,7 @@ it("offers previous and current views symmetrically when used directly in contex
     screen.getByRole("button", { name: "Select attempt" }),
   ).toHaveTextContent("Attempt 1 · Failed");
   await userEvent.click(
-    screen.getByRole("button", { name: "Return to Current Step" }),
+    screen.getByRole("button", { name: "Return to Latest Attempt" }),
   );
   expect(props.onSelectCurrentAttempt).toHaveBeenCalledOnce();
 });

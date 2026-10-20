@@ -32,6 +32,10 @@ export function activityToolSummary(item: ActivityItem): string {
       // A bounded or absent input preview still has the provider's summary.
     }
   }
+  if (name === "todowrite" || name === "todoread") {
+    const counts = reportedTaskCounts(name === "todowrite" ? item.inputContent?.preview : item.outputContent?.preview);
+    return counts ? `${action} · ${counts.completed} of ${counts.total}` : action;
+  }
   if (["webfetch", "websearch", "glob", "grep"].includes(name)) return item.label.split(/\r?\n/)[0];
   if (!["read", "write", "edit"].includes(name)) return action;
   const fileName = activityToolFileName(item);
@@ -47,6 +51,19 @@ export function activityToolFileName(item: ActivityItem): string | undefined {
     const path = fields.filePath ?? fields.file_path ?? fields.path;
     if (typeof path !== "string") return undefined;
     return path.split(/[\\/]/).filter(Boolean).at(-1);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Completed and total counts from a complete task list preview, when it parses. */
+function reportedTaskCounts(preview: string | undefined): { completed: number; total: number } | undefined {
+  try {
+    const value: unknown = JSON.parse(preview ?? "");
+    const tasks = Array.isArray(value) ? value : (value as { todos?: unknown } | null)?.todos;
+    if (!Array.isArray(tasks) || tasks.length === 0) return undefined;
+    const completed = tasks.filter((task) => (task as { status?: unknown } | null)?.status === "completed").length;
+    return { completed, total: tasks.length };
   } catch {
     return undefined;
   }

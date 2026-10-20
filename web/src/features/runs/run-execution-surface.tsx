@@ -6,6 +6,7 @@ import type {
 } from "@/api/hooks";
 import { RunExecutionPicker } from "./run-execution-picker";
 import { RunExecutionActivity } from "./run-execution-activity";
+import { RunAttemptTasks } from "./run-attempt-tasks";
 import { RoleIdentity } from "@/theme";
 import {
   RunInstructions,
@@ -14,6 +15,8 @@ import {
 } from "./run-conversation";
 import { hasSettledResponse } from "./run-conversation-state";
 import { presentRunNodeExecution } from "./run-execution-presentation";
+import { followedAttemptId } from "./run-execution-selection";
+import { isTerminalRunStatus } from "./run-freshness";
 import { useId, useState, type ReactNode } from "react";
 
 export function RunExecutionSurface({
@@ -74,7 +77,11 @@ export function RunExecutionSurface({
   const viewsId = useId();
   const node = nodes.find((item) => item.node_id === selectedNodeId);
   const current = node?.current_execution;
-  const selectedID = selectedAttemptId ?? current?.attempt_id;
+  const followedID = followedAttemptId(node, attempts);
+  const selectedID = selectedAttemptId ?? followedID ?? undefined;
+  // Following the latest attempt while the step's next attempt has not started.
+  const awaitingNextAttempt =
+    !current && !!selectedID && selectedID === followedID;
   const history = attempts.find((item) => item.attempt_id === selectedID);
   const selectedDetail = detail?.attempt_id === selectedID ? detail : null;
   const hasResponse = hasSettledResponse(selectedDetail);
@@ -118,7 +125,7 @@ export function RunExecutionSurface({
 
   return (
     <section
-      className="mx-auto max-w-3xl space-y-3"
+      className="mx-auto flex h-full min-h-0 w-full max-w-3xl flex-col gap-3"
       aria-label="Agent activity"
     >
       <RunExecutionPicker
@@ -149,13 +156,22 @@ export function RunExecutionSurface({
           </span>
         )}
       </RunExecutionPicker>
-      {historical && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/25 bg-accent/5 px-4 py-3 text-xs">
-          <span>
-            Historical Attempt {execution?.attempt ?? ""}
-            {history?.superseded ? " · Superseded" : ""}
-          </span>
-        </div>
+      {awaitingNextAttempt ? (
+        <p className="rounded-lg border border-border px-4 py-3 text-xs text-foreground-muted">
+          Showing attempt {execution?.attempt ?? ""}.{" "}
+          {isTerminalRunStatus(run.status)
+            ? "The next attempt did not start."
+            : "The next attempt has not started yet."}
+        </p>
+      ) : (
+        historical && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/25 bg-accent/5 px-4 py-3 text-xs">
+            <span>
+              Historical Attempt {execution?.attempt ?? ""}
+              {history?.superseded ? " · Superseded" : ""}
+            </span>
+          </div>
+        )
       )}
       {presentation && showNotice && (
         <div
@@ -261,6 +277,7 @@ export function RunExecutionSurface({
         role="tabpanel"
         aria-labelledby={`${viewsId}-instructions`}
         hidden={view !== "instructions"}
+        className="min-h-0 flex-1 overflow-y-auto"
       >
         {view === "instructions" && (
           <RunInstructions
@@ -277,6 +294,7 @@ export function RunExecutionSurface({
           role="tabpanel"
           aria-labelledby={`${viewsId}-response`}
           hidden={view !== "response"}
+          className="min-h-0 flex-1 overflow-y-auto"
         >
           <RunFinalResponse key={selectedID} detail={selectedDetail} />
         </div>
@@ -286,30 +304,44 @@ export function RunExecutionSurface({
         role="tabpanel"
         aria-labelledby={`${viewsId}-conversation`}
         hidden={view !== "conversation"}
+        className="flex min-h-0 flex-1 flex-col"
       >
         {node?.execution_ownership === "provider_backed" && (
-          <div className="pt-4 text-sm font-medium">
-            <RoleIdentity
-              role={node.required_role}
-              showResponsibility={false}
+          <div className="space-y-1 pt-1">
+            <div className="text-sm font-medium">
+              <RoleIdentity
+                role={node.required_role}
+                showResponsibility={false}
+              />
+            </div>
+            <RunAttemptTasks
+              key={selectedID}
+              runId={run.run_id}
+              attemptId={selectedID ?? null}
+              status={execution?.status}
             />
           </div>
         )}
-        {node?.execution_ownership === "provider_backed" && (
-          <RunExecutionActivity
-            key={selectedID}
-            runId={run.run_id}
-            attemptId={selectedID ?? null}
-            status={execution?.status}
-            detail={selectedDetail}
-            isVisible={view === "conversation"}
-            isDetailLoading={isDetailLoading}
-          />
-        )}
+        {node?.execution_ownership === "provider_backed" &&
+          (selectedID || !isHistoryLoading) && (
+            <div className="min-h-0 flex-1">
+              <RunExecutionActivity
+                key={selectedID}
+                runId={run.run_id}
+                attemptId={selectedID ?? null}
+                status={execution?.status}
+                detail={selectedDetail}
+                isVisible={view === "conversation"}
+                isDetailLoading={isDetailLoading}
+              />
+            </div>
+          )}
         {node?.execution_ownership === "runtime_owned" &&
           (selectedDetail?.output_status === "observed" &&
           selectedDetail.output_text ? (
-            <RunRuntimeResponse key={selectedID} detail={selectedDetail} />
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <RunRuntimeResponse key={selectedID} detail={selectedDetail} />
+            </div>
           ) : (
             <p className="py-5 text-sm text-foreground-muted">
               Kingdom handles this step. Its transitions appear in Audit.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RunExecution, RunNodeExecution } from "@/api/hooks";
-import { selectRunExecutionNode } from "./run-execution-selection";
+import { followedAttemptId, selectRunExecutionNode } from "./run-execution-selection";
 
 function node(
   id: string,
@@ -76,5 +76,29 @@ describe("run conversation selection", () => {
   it("falls back honestly when no provider attempt exists", () => {
     expect(selectRunExecutionNode([node("future")])?.node_id).toBe("future");
     expect(selectRunExecutionNode([])).toBeNull();
+  });
+});
+
+describe("followedAttemptId", () => {
+  const step = (overrides: Partial<RunNodeExecution>): RunNodeExecution => ({
+    node_id: "implementation",
+    required_role: "builder",
+    execution_ownership: "provider_backed",
+    status: "pending",
+    attempt_count: 0,
+    ...overrides,
+  });
+  const attempts = [
+    { attempt_id: "second", attempt: 2 },
+    { attempt_id: "third", attempt: 3 },
+    { attempt_id: "first", attempt: 1 },
+  ];
+
+  it("follows the current attempt, else the latest recorded one, else none", () => {
+    expect(followedAttemptId(step({ attempt_count: 4, current_execution: { attempt_id: "fourth" } as RunNodeExecution["current_execution"] }), attempts)).toBe("fourth");
+    expect(followedAttemptId(step({ attempt_count: 3 }), attempts)).toBe("third");
+    expect(followedAttemptId(step({ attempt_count: 3 }), [])).toBeNull();
+    expect(followedAttemptId(step({}), attempts)).toBeNull();
+    expect(followedAttemptId(null, attempts)).toBeNull();
   });
 });

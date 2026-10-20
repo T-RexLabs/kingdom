@@ -1405,6 +1405,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/{id}/executions/{attemptId}/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch the agent's most recent reported task list for one attempt. */
+        get: operations["getRunExecutionTasks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{id}/executions/{attemptId}/activity/{eventId}/content/{field}": {
         parameters: {
             query?: never;
@@ -2931,6 +2948,21 @@ export interface components {
             sha256?: string;
             /** @description Authenticated API-relative scoped URL for bounded text reads; prefix the configured API base path. */
             content_url?: string;
+        };
+        /** @description The agent's latest task list exactly as its todo tools reported it. Kingdom never infers tasks. `none` means no list was reported; `unreadable` means the newest snapshot could not be parsed, so no older (stale) list is substituted. */
+        RunExecutionTaskList: {
+            /** @enum {string} */
+            state: "none" | "available" | "unreadable";
+            tasks: components["schemas"]["RunExecutionTask"][];
+            /** @description Activity sequence of the snapshot; present unless state is none. */
+            sequence?: number;
+            /** Format: date-time */
+            recorded_at?: string;
+        };
+        RunExecutionTask: {
+            content: string;
+            /** @description Provider-reported status, typically pending, in_progress, completed or cancelled. */
+            status: string;
         };
         ActivityContentPage: {
             text: string;
@@ -6878,6 +6910,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AcpRunActivityResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getRunExecutionTasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["RunId"];
+                attemptId: components["parameters"]["AttemptId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The newest complete task list snapshot across the attempt's whole activity history. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunExecutionTaskList"];
                 };
             };
             400: components["responses"]["BadRequestError"];

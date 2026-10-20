@@ -609,6 +609,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /runs/{id}/graph", s.handleGetRunGraph)
 	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}/activity", s.handleGetActivity)
 	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}/activity/{eventId}/content/{field}", s.handleGetActivityContent)
+	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}/tasks", s.handleGetRunExecutionTasks)
 	mux.HandleFunc("GET /acp/runs/{runId}/activity/{eventId}/content/{field}", s.handleGetActivityContent)
 	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}/publication/{batchId}/entries", s.handleListRunPublicationEntries)
 	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}/instructions", s.handleGetExecutionInstructions)

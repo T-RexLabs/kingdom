@@ -63,4 +63,10 @@ describe("quiet tool summaries", () => {
     ).toBe("Read");
     expect(activityToolSummary(tool({ label: "Tool Call" }))).toBe("Tool Call");
   });
+  it("counts completed tasks from a complete task snapshot and stays honest about partial ones", () => {
+    const todos = '{"todos":[{"content":"a","status":"completed"},{"content":"b","status":"pending"}]}';
+    expect(activityToolSummary(tool({ toolName: "todowrite", inputContent: { availability: "available", preview: todos } }))).toBe("Update Tasks · 1 of 2");
+    expect(activityToolSummary(tool({ toolName: "todoread", outputContent: { availability: "available", preview: '[{"content":"a","status":"completed"}]' } }))).toBe("Read Tasks · 1 of 1");
+    expect(activityToolSummary(tool({ toolName: "todowrite", inputContent: { availability: "available", preview: '{"todos":[{"con' } }))).toBe("Update Tasks");
+  });
 });

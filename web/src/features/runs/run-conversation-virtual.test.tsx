@@ -131,7 +131,10 @@ it("keeps the inline settled response outside virtual activity and resets its so
   await user.click(within(response).getByText("Response Details"));
   expect(response.querySelector("pre")).toBeVisible();
   expect(response.querySelector("pre")?.textContent).toBe(data.text);
-  expect(screen.queryByRole("button", { name: "Show Activity" })).not.toBeInTheDocument();
+  // A settled reply folds the attempt's work above it, as in planning.
+  const toggle = screen.getByRole("button", { name: "Show Activity" });
+  expect(toggle.compareDocumentPosition(response) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await user.click(toggle);
   const scroller = await screen.findByTestId("virtuoso-scroller");
   expect(screen.queryByText("Provider Message")).not.toBeInTheDocument();
   expect(screen.getAllByRole("heading", { name: "Canonical Result" })).toHaveLength(1);

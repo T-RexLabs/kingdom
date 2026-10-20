@@ -40,7 +40,8 @@ import { ArrowLeft, Shield, AlertTriangle, XCircle, FileText, FolderOpen, Settin
 import { Link } from "@tanstack/react-router";
 import { DAGVisualization } from "./dag-visualization";
 import { RunExecutionSurface } from "./run-execution-surface";
-import { selectRunExecutionNode } from "./run-execution-selection";
+import { followedAttemptId, selectRunExecutionNode } from "./run-execution-selection";
+import { useScrollViewportHeight } from "@/lib/use-scroll-viewport-height";
 import { RunExecutionPicker } from "./run-execution-picker";
 import { RunDiagnostics } from "./run-diagnostics";
 import { RunOutput, RunPublicationPanel } from "./run-output";
@@ -104,6 +105,11 @@ export function RunDetailPage() {
   const queryClient = useQueryClient();
   const runMountStartedAtRef = useRef(0);
   const activeTab: RunDetailTab = search.tab ?? "workflow";
+  // Agent Activity fills the page viewport once scrolled, keeping the tabs,
+  // pickers and agent identity in view while the activity scrolls inside.
+  const fillsViewport = activeTab === "execution";
+  const [scrollViewport, setScrollViewport] = useState<HTMLDivElement | null>(null);
+  const viewportHeight = useScrollViewportHeight(scrollViewport, fillsViewport);
   const panel = search.panel;
   const detailSection = search.section ?? "context";
   const [diagnosticsRunId, setDiagnosticsRunId] = useState<string | null>(null);
@@ -187,8 +193,7 @@ export function RunDetailPage() {
   );
   const selectedExecutionId =
     storedSelectedExecution?.attemptId ??
-    selectedNode?.current_execution?.attempt_id ??
-    null;
+    followedAttemptId(selectedNode, nodeAttempts);
   const executionDetailQuery = useRunExecution(runId, selectedExecutionId, {
     enabled: runReady && executionVisible && !!selectedExecutionId,
   });
@@ -861,7 +866,10 @@ export function RunDetailPage() {
           <span className="truncate font-mono">{run.run_id}</span>
         </span>
       </PageHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto px-page py-7">
+      <div
+        ref={setScrollViewport}
+        className="min-h-0 flex-1 overflow-y-auto px-page py-7"
+      >
         <div className="mx-auto w-full max-w-5xl space-y-5">
           <header className="space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-4">
@@ -1018,8 +1026,18 @@ export function RunDetailPage() {
               showFinalApproval={false}
             />
           )}
-          <section className="min-w-0">
-            <div className="flex flex-wrap items-center justify-between gap-x-4 border-b border-border">
+          <section
+            className={cn(
+              "min-w-0",
+              fillsViewport && "flex min-h-[28rem] flex-col",
+            )}
+            style={
+              fillsViewport && viewportHeight
+                ? { height: viewportHeight }
+                : undefined
+            }
+          >
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 border-b border-border">
               <nav
                 data-ui-tabs=""
                 role="tablist"
@@ -1078,7 +1096,10 @@ export function RunDetailPage() {
               id={`run-tabpanel-${activeTab}`}
               role="tabpanel"
               aria-label={tabs.find((tab) => tab.id === activeTab)?.label}
-              className="min-w-0 py-5"
+              className={cn(
+                "min-w-0",
+                fillsViewport ? "flex min-h-0 flex-1 flex-col pt-4" : "py-5",
+              )}
             >
               {activeTab === "workflow" &&
                 (graph ? (

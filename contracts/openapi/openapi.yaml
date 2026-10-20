@@ -1963,6 +1963,30 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
+  /runs/{id}/executions/{attemptId}/tasks:
+    get:
+      tags: [runs]
+      operationId: getRunExecutionTasks
+      summary: Fetch the agent's most recent reported task list for one attempt.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/AttemptId"
+      responses:
+        "200":
+          description: The newest complete task list snapshot across the attempt's whole activity history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunExecutionTaskList"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
   /runs/{id}/executions/{attemptId}/activity/{eventId}/content/{field}:
     get:
       tags: [runs]
@@ -5019,6 +5043,36 @@ components:
         content_url:
           type: string
           description: Authenticated API-relative scoped URL for bounded text reads; prefix the configured API base path.
+
+    RunExecutionTaskList:
+      type: object
+      additionalProperties: false
+      required: [state, tasks]
+      description: >-
+        The agent's latest task list exactly as its todo tools reported it. Kingdom
+        never infers tasks. `none` means no list was reported; `unreadable` means the
+        newest snapshot could not be parsed, so no older (stale) list is substituted.
+      properties:
+        state: { type: string, enum: [none, available, unreadable] }
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunExecutionTask"
+        sequence:
+          type: integer
+          minimum: 1
+          description: Activity sequence of the snapshot; present unless state is none.
+        recorded_at: { type: string, format: date-time }
+
+    RunExecutionTask:
+      type: object
+      additionalProperties: false
+      required: [content, status]
+      properties:
+        content: { type: string }
+        status:
+          type: string
+          description: Provider-reported status, typically pending, in_progress, completed or cancelled.
 
     ActivityContentPage:
       type: object

@@ -197,19 +197,23 @@ describe("focused provider activity", () => {
     }));
     expect(screen.queryByRole("button", { name: "Show Activity" })).not.toBeInTheDocument();
   });
-  it("keeps the scrollable activity before the response after settlement and resets its scope on attempt change", () => {
+  it("folds thinking and tool calls above the response once the attempt settles and resets its scope on attempt change", async () => {
     state.items = observedThoughtAndTool();
     const view = render(<RunExecutionActivity runId="run" attemptId="a" status="running" />);
-    const history = screen.getByRole("region", { name: "Provider activity history" });
+    expect(screen.getByRole("region", { name: "Provider activity history" })).toBeVisible();
     view.rerender(<RunExecutionActivity runId="run" attemptId="a" status="succeeded" detail={{
       attempt_id: "a", output_status: "settled", settlement_status: "succeeded", output_text: "## Complete result",
     } as import("@/api/hooks").RunExecutionDetail} />);
     const response = screen.getByRole("region", { name: "Final response" });
-    expect(screen.getByRole("region", { name: "Provider activity history" })).toBe(history);
-    expect(history.compareDocumentPosition(response) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const toggle = screen.getByRole("button", { name: "Show Activity" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("region", { name: "Provider activity history" })).not.toBeInTheDocument();
+    expect(toggle.compareDocumentPosition(response) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(toggle);
+    expect(screen.getByRole("region", { name: "Provider activity history" })).toBeVisible();
     expect(state.historyProps).toHaveBeenLastCalledWith(expect.objectContaining({ scopeKey: JSON.stringify(["run", "a"]) }));
     view.rerender(<RunExecutionActivity runId="run" attemptId="b" status="running" />);
-    expect(history).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show Activity" })).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Provider activity history" })).toBeVisible();
     expect(state.historyProps).toHaveBeenLastCalledWith(expect.objectContaining({ scopeKey: JSON.stringify(["run", "b"]) }));
   });

@@ -34,6 +34,9 @@ vi.mock("./run-conversation", () => ({
 vi.mock("./timeline-panel", () => ({
   TimelinePanel: () => <div data-testid="timeline-panel" />,
 }));
+vi.mock("./run-attempt-tasks", () => ({
+  RunAttemptTasks: () => null,
+}));
 vi.mock("./run-execution-activity", () => ({
   RunExecutionActivity: ({ isVisible, isDetailLoading }: { isVisible: boolean; isDetailLoading: boolean }) => (
     <div data-testid="run-execution-activity" data-visible={isVisible} data-loading={isDetailLoading} />
@@ -230,19 +233,39 @@ describe("focused execution inspector", () => {
     expect(screen.getByTestId("run-execution-activity")).toBe(conversation);
     expect(conversation).toBeVisible();
   });
-  it("offers the attempt selector immediately while the next generation is queued", async () => {
+  it("follows the latest attempt while the next one has not started, then the new attempt", async () => {
+    const latest = historyAttempt({ attempt_id: "attempt-latest", attempt: 2, status: "failed" });
     const props = renderSurface({
-      nodes: [node({ status: "pending", attempt_count: 1, current_execution: undefined })],
+      nodes: [node({ status: "pending", attempt_count: 2, current_execution: undefined })],
+      attempts: [historyAttempt(), latest],
     });
     const picker = screen.getByRole("button", { name: "Select attempt" });
-    expect(picker).toHaveTextContent("Current Step · Pending");
+    expect(picker).toHaveTextContent("Attempt 2 · Failed");
+    expect(screen.getByText("Showing attempt 2. The next attempt has not started yet.")).toBeVisible();
+    expect(screen.queryByText(/Historical Attempt/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Return to/ })).not.toBeInTheDocument();
     await userEvent.click(picker);
+    expect(screen.queryByRole("option", { name: /Current Step/ })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("option", { name: "Attempt 1 · Failed" }));
     expect(props.onSelectAttempt).toHaveBeenCalledWith("attempt-old");
+
     props.view.rerender(<RunExecutionSurface {...props} selectedAttemptId="attempt-old" />);
-    expect(screen.getByRole("button", { name: "Select attempt" })).toHaveTextContent("Attempt 1 · Failed");
-    await userEvent.click(screen.getByRole("button", { name: "Return to Current Step" }));
+    expect(screen.getByText(/Historical Attempt 1/)).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Return to Latest Attempt" }));
     expect(props.onSelectCurrentAttempt).toHaveBeenCalledOnce();
+
+    // Once the next attempt starts, following moves to it.
+    props.view.rerender(<RunExecutionSurface {...props} nodes={[node({ attempt_count: 3, current_execution: execution({ attempt: 3 }) })]} />);
+    expect(screen.queryByText(/next attempt/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Select attempt" })).toHaveTextContent("Attempt 3 · Active · Current");
+  });
+  it("says the next attempt did not start once the run has ended", () => {
+    renderSurface({
+      run: { ...run, status: "cancelled" },
+      nodes: [node({ status: "cancelled", attempt_count: 1, current_execution: undefined })],
+    });
+    expect(screen.queryByRole("button", { name: "Select attempt" })).not.toBeInTheDocument();
+    expect(screen.getByText("Showing attempt 1. The next attempt did not start.")).toBeVisible();
   });
   it("labels review and validation verdicts as rework while genuine errors remain failed", async () => {
     renderSurface({ attempts: [

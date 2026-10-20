@@ -51,3 +51,18 @@ function observedTime(node: RunNodeExecution): number {
   }
   return 0;
 }
+
+/**
+ * The attempt a step shows until the operator picks one: its current attempt,
+ * or, while its next attempt has not started, the latest recorded one.
+ */
+export function followedAttemptId(
+  node: RunNodeExecution | null | undefined,
+  attempts: readonly { attempt_id: string; attempt: number }[],
+): string | null {
+  if (node?.current_execution) return node.current_execution.attempt_id;
+  if (!node?.attempt_count) return null;
+  let latest: { attempt_id: string; attempt: number } | null = null;
+  for (const item of attempts) if (!latest || item.attempt > latest.attempt) latest = item;
+  return latest?.attempt_id ?? null;
+}

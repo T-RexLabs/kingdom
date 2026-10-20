@@ -9,6 +9,7 @@ import {
 import { RunFinalResponse } from "./run-conversation";
 import { hasSettledResponse } from "./run-conversation-state";
 import { ActivityHistory } from "@/features/activity/activity-history";
+import { ActivityDisclosure } from "@/features/activity/activity-disclosure";
 import { ActivitySources } from "@/features/activity/activity-sources";
 import { selectLiveRunActivity, useLiveRunActivity } from "./run-live-activity";
 import {
@@ -76,6 +77,9 @@ function RunAttemptActivity({
     [state.items],
   );
   const hasHistory = conversationItems.length > 0 || durable.gaps.length > 0;
+  // Like a finished planner reply: once the attempt settles with a response,
+  // its thinking and tool calls fold away. Without one, the activity is the record.
+  const folded = hasFinished && hasSettledResponse(detail);
   const phaseLabel =
     liveExecutionLabel(detail?.progress_reason_code, detail?.progress_event_type) ??
     state.items.filter((item) => item.kind === "progress").at(-1)?.label;
@@ -91,7 +95,7 @@ function RunAttemptActivity({
       </p>
     );
   return (
-    <section ref={activityRef} className="space-y-2" aria-label="Provider activity">
+    <section ref={activityRef} className="flex h-full min-h-0 flex-col gap-2" aria-label="Provider activity">
       <h3 className="sr-only">Provider Activity</h3>
       {showPhase && (
         <p role="status" className="py-2 text-sm text-foreground-muted">
@@ -141,18 +145,42 @@ function RunAttemptActivity({
           New live activity is awaiting durable reconciliation.
         </p>
       )}
-      {hasHistory && (
-        <ActivityHistory
-          scopeKey={JSON.stringify([runId, attemptId])}
-          items={conversationItems}
-          gaps={durable.gaps}
-          isLoadingMore={durable.isLoadingMore}
-          loadError={durable.loadError}
-          loadMore={durable.loadMore}
-        />
+      {hasHistory && !folded && (
+        <div className="min-h-0 flex-1">
+          <ActivityHistory
+            fill
+            scopeKey={JSON.stringify([runId, attemptId])}
+            items={conversationItems}
+            gaps={durable.gaps}
+            isLoadingMore={durable.isLoadingMore}
+            loadError={durable.loadError}
+            loadMore={durable.loadMore}
+          />
+        </div>
       )}
-      <RunFinalResponse key={attemptId} detail={detail} />
-      <ActivitySources sources={state.sources} />
+      {/* While the history streams it owns the space; once folded, the work,
+          response and sources scroll together. */}
+      <div
+        className={
+          hasHistory && !folded
+            ? "max-h-[45%] shrink-0 overflow-y-auto"
+            : "min-h-0 flex-1 space-y-2 overflow-y-auto"
+        }
+      >
+        {hasHistory && folded && (
+          <ActivityDisclosure
+            scopeKey={JSON.stringify([runId, attemptId])}
+            items={conversationItems}
+            gaps={durable.gaps}
+            isLoadingMore={durable.isLoadingMore}
+            loadError={durable.loadError}
+            loadMore={durable.loadMore}
+            isLive={false}
+          />
+        )}
+        <RunFinalResponse key={attemptId} detail={detail} />
+        <ActivitySources sources={state.sources} />
+      </div>
     </section>
   );
 }

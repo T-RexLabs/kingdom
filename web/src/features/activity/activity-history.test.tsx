@@ -193,7 +193,7 @@ describe("full provider content", () => {
     ).toBeVisible();
   });
 
-  it.each(["todowrite", "todoread"])("renders the actual %s task snapshot without inventing unknown task statuses", async (toolName) => {
+  it.each(["todowrite", "todoread"])("summarizes the %s task snapshot in one row and keeps the exact list in its details", async (toolName) => {
     const content = availableActivityContent(JSON.stringify({ todos: [
       { content: "Inspect the existing route", status: "completed" },
       { content: "Implement the change", status: "in_progress" },
@@ -208,11 +208,16 @@ describe("full provider content", () => {
       </VirtuosoMockContext.Provider>,
       { wrapper: wrapper() },
     );
+    const action = toolName === "todowrite" ? "Update Tasks" : "Read Tasks";
+    await waitFor(() => expect(screen.getByText(`${action} · 1 of 3`)).toBeVisible());
+    // The pinned task list owns the full snapshot; the feed stays one line per update.
+    expect(screen.queryByText("Inspect the existing route")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByText(`${action} · 1 of 3`));
+    await userEvent.click(screen.getByText(toolName === "todowrite" ? "Input" : "Output"));
     await waitFor(() => expect(screen.getByText("Inspect the existing route")).toBeVisible());
     expect(screen.getByText("1 of 3 Completed")).toBeVisible();
     expect(screen.getByText("In Progress")).toBeVisible();
     expect(screen.getByText("awaiting_review")).toBeVisible();
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("shows running tools quietly without inferring activity from an unspecified status", async () => {
