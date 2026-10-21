@@ -115,7 +115,7 @@ func TestSessionCheckpointRejectsUnexpectedContext(t *testing.T) {
 			})
 			done := make(chan struct{})
 			close(done)
-			service := &Service{requests: &requestRuntime{authority: h.authority}, attempt: &serviceStart{done: done, client: client}}
+			service := &Service{requests: &requestRuntime{authority: h.authority}, attempt: &serviceStart{done: done, requestSession: requestSession{client: client}}}
 			if _, err := service.CaptureSessionCheckpoint(context.Background(), h.identity); err == nil || !strings.Contains(err.Error(), tc.want) || (tc.stopFailed != "" && !errors.Is(err, providerrequest.ErrResourcesOpen)) {
 				t.Fatalf("want %q, got %v", tc.want, err)
 			}

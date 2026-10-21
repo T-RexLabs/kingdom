@@ -23,7 +23,7 @@ type Prepared struct {
 type request struct {
 	invocationID string
 	attemptID    string
-	started      *serviceStart
+	started      *requestSession
 	directory    string
 	profile      profile
 	identity     providerexecution.RequestIdentity
@@ -146,10 +146,10 @@ func (s *Service) Prepare(ctx context.Context, req ExecuteRequest) (Prepared, er
 		return Prepared{}, err
 	}
 	prepared := &request{
-		invocationID: req.InvocationID, attemptID: req.AttemptID, started: started, directory: directory, profile: p, model: model,
+		invocationID: req.InvocationID, attemptID: req.AttemptID, started: &started.requestSession, directory: directory, profile: p, model: model,
 		stop: make(chan struct{}), done: make(chan struct{}),
 	}
-	sessionID, reused, err := s.prepareSession(ctx, started, req, prepared)
+	sessionID, reused, err := prepareSession(ctx, &started.requestSession, req, prepared)
 	if err == nil {
 		prepared.identity = providerexecution.RequestIdentity{InstanceID: started.instanceID, Generation: generation, Location: directory, SessionID: sessionID, ProfileID: p.id, RequestID: p.requestID}
 		prepared.reused = reused
@@ -179,10 +179,10 @@ func requirePrepareRequest(req ExecuteRequest) error {
 
 // prepareSession continues the requested session when this server has kept its
 // history since creation, and otherwise creates a fresh one.
-func (s *Service) prepareSession(ctx context.Context, started *serviceStart, req ExecuteRequest, prepared *request) (string, bool, error) {
+func prepareSession(ctx context.Context, started *requestSession, req ExecuteRequest, prepared *request) (string, bool, error) {
 	client, directory := started.client, prepared.directory
 	if req.ResumeFrom != nil {
-		return s.resumeSession(ctx, started, *req.ResumeFrom, prepared)
+		return resumeSession(ctx, started, *req.ResumeFrom, prepared)
 	}
 	if sessionID := req.ProviderSessionID; sessionID != "" && !req.ForceNewSession && started.capture.tracked(sessionID) {
 		info, err := client.Session(ctx, directory, sessionID)

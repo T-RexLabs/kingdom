@@ -67,13 +67,19 @@ type Service struct {
 	attempt *serviceStart
 }
 
-type serviceStart struct {
-	done       chan struct{}
+// requestSession contains only the OpenCode protocol connection and capture.
+// Process ownership belongs to the backend and is never inferred from this data.
+type requestSession struct {
 	client     *Client
-	process    *serviceProcess
 	instanceID string
 	capture    *capture
-	err        error
+}
+
+type serviceStart struct {
+	requestSession
+	done    chan struct{}
+	process *serviceProcess
+	err     error
 }
 
 type serviceProcess struct {
