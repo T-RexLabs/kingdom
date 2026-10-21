@@ -21,7 +21,7 @@ func (s *PlanningStore) CreateOperation(ctx context.Context, req CreatePlanningO
 	if err != nil {
 		return PlanningOperation{}, fmt.Errorf("begin create planning operation: %w", err)
 	}
-	operation, err := insertPlanningOperation(ctx, tx, req)
+	operation, err := s.insertPlanningOperation(ctx, tx, req)
 	if err != nil {
 		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning operation", err)
 	}
@@ -34,7 +34,7 @@ func (s *PlanningStore) CreateOperation(ctx context.Context, req CreatePlanningO
 	return operation, nil
 }
 
-func insertPlanningOperation(ctx context.Context, exec sqlExecutor, req CreatePlanningOperationRequest) (PlanningOperation, error) {
+func (s *PlanningStore) insertPlanningOperation(ctx context.Context, exec *sql.Tx, req CreatePlanningOperationRequest) (PlanningOperation, error) {
 	row := PlanningOperation{
 		OperationID:                strings.TrimSpace(req.OperationID),
 		PlanningSessionID:          strings.TrimSpace(req.PlanningSessionID),
@@ -56,10 +56,7 @@ func insertPlanningOperation(ctx context.Context, exec sqlExecutor, req CreatePl
 		FinishedAt:                 nullableString(req.FinishedAt),
 	}
 	row.AcpRunID = acp.PlannerRunID(row.OperationID)
-	queryer, ok := exec.(sqlQueryRower)
-	if !ok {
-		return PlanningOperation{}, fmt.Errorf("planning operation context binding requires QueryRow")
-	}
+	queryer := exec
 	// The outer join is deliberate: no row at all means the session does not
 	// exist, while a row with a NULL snapshot means the session's adopted
 	// pointer is dangling. Those are different failures and must not share
@@ -123,6 +120,9 @@ func insertPlanningOperation(ctx context.Context, exec sqlExecutor, req CreatePl
 	if err != nil {
 		return PlanningOperation{}, fmt.Errorf("insert planning operation: %w", err)
 	}
+	if err := s.captureOperationAccess(ctx, exec, row); err != nil {
+		return PlanningOperation{}, err
+	}
 	return row, nil
 }
 
@@ -159,7 +159,7 @@ func (s *PlanningStore) CreateReplyBundle(ctx context.Context, req CreatePlannin
 	if _, err := insertPlanningMessage(ctx, tx, req.UserMessage); err != nil {
 		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning reply bundle", err)
 	}
-	operation, err := insertPlanningOperation(ctx, tx, req.Operation)
+	operation, err := s.insertPlanningOperation(ctx, tx, req.Operation)
 	if err != nil {
 		rollbackErr := rollbackPlanningTx(tx, "create planning reply bundle", err)
 		if IsUniqueViolation(err) {
@@ -216,7 +216,7 @@ func (s *PlanningStore) CreateFormalizeBundle(ctx context.Context, req CreatePla
 	if err != nil {
 		return PlanningOperation{}, fmt.Errorf("begin create planning formalize bundle: %w", err)
 	}
-	operation, err := insertPlanningOperation(ctx, tx, req.Operation)
+	operation, err := s.insertPlanningOperation(ctx, tx, req.Operation)
 	if err != nil {
 		rollbackErr := rollbackPlanningTx(tx, "create planning formalize bundle", err)
 		if IsUniqueViolation(err) {
@@ -266,7 +266,7 @@ func (s *PlanningStore) CreateGenerateTitleBundle(ctx context.Context, req Creat
 	if err != nil {
 		return PlanningOperation{}, fmt.Errorf("begin create planning generate title bundle: %w", err)
 	}
-	operation, err := insertPlanningOperation(ctx, tx, req.Operation)
+	operation, err := s.insertPlanningOperation(ctx, tx, req.Operation)
 	if err != nil {
 		rollbackErr := rollbackPlanningTx(tx, "create planning generate title bundle", err)
 		if IsUniqueViolation(err) {
@@ -319,7 +319,7 @@ func (s *PlanningStore) CreateRegenerateBundle(ctx context.Context, req CreateRe
 		return PlanningOperation{}, fmt.Errorf("begin create regenerate bundle: %w", err)
 	}
 
-	operation, err := insertPlanningOperation(ctx, tx, req.Operation)
+	operation, err := s.insertPlanningOperation(ctx, tx, req.Operation)
 	if err != nil {
 		rollbackErr := rollbackPlanningTx(tx, "create regenerate bundle", err)
 		if IsUniqueViolation(err) {

@@ -448,8 +448,9 @@ type FinalizeGenerateTitleAbortRequest struct {
 }
 
 type PlanningStore struct {
-	db         *sql.DB
-	leaseClock func() time.Time
+	resolveAccess PlanningAccessResolver
+	db            *sql.DB
+	leaseClock    func() time.Time
 }
 
 // SetLeaseClock sets the clock that judges whether an operation lease is still
@@ -484,8 +485,12 @@ type sqlQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-func NewPlanningStore(db *sql.DB) *PlanningStore {
-	return &PlanningStore{db: db}
+func NewPlanningStore(db *sql.DB, options ...PlanningStoreOption) *PlanningStore {
+	s := &PlanningStore{db: db}
+	for _, option := range options {
+		option(s)
+	}
+	return s
 }
 
 func validatePlanningSessionCreate(req CreatePlanningSessionRequest) error {

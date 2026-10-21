@@ -2843,8 +2843,22 @@ export interface components {
         CancelAcpRunRequest: {
             reason?: string;
         };
+        /**
+         * @description Exact hosted connection revision. Accepted only by a project-bound hosted API with a trusted selection resolver; hosted runtime activation is not yet available. Not accepted in local mode.
+         * @example {
+         *       "id": "2d53972c-7a93-46f4-9ef1-8d23f4ca760b",
+         *       "revision": 3
+         *     }
+         */
+        ModelConnectionReference: {
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            revision: number;
+        };
         PlanningAgentModelSelection: {
             model: string;
+            connection?: components["schemas"]["ModelConnectionReference"];
             thinking_effort?: string;
         };
         /** @enum {string} */
@@ -3225,6 +3239,7 @@ export interface components {
         };
         RunModelSelectionEntry: {
             model: string;
+            connection?: components["schemas"]["ModelConnectionReference"];
             thinking_effort?: string;
         };
         /**

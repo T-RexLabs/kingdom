@@ -16,6 +16,8 @@ This guide is a map of the current system and the rules that shape it. Use the s
 
 The web app, command line, and API all work with the same local runtime. They do not each maintain a separate view of a run.
 
+The hosted foundations can bind a project database to one central project. A hosted model selection includes an exact connection ID and revision. The API takes the actor from its trusted authenticator, checks current membership and connection visibility, and validates the exact model and thinking effort from a cached catalog for that connection revision. It stores the complete run selection with all role overrides in the run creation transaction. Planning stores the requesting actor's checked selection with each new operation. Automatic titles copy the exact causal reply snapshot; retries keep their existing snapshot. A missing or foreign snapshot prevents enqueue. These snapshots contain credential references, never secrets, and the worker must check current access again before dispatch. Local API requests do not accept connection references. The hosted execution backend remains disabled pending remote authority, tool, and closure integration.
+
 ## How Work Moves
 
 Planning is a separate workspace where an operator can shape a task before making a Work Order. It is optional. A Work Order can also be created directly. A planner turn that fails stays in the conversation as a failed reply with its reason; the planner never sees it, and retrying it adds a new reply beside it.

@@ -15,6 +15,7 @@ import (
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/execution/access"
 	"kingdom/internal/state"
 	"kingdom/internal/workspace"
 
@@ -286,6 +287,11 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	pinnedAccess, err := s.runAccessSnapshot(r.Context(), normalizedModelSelection)
+	if err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		s.writeInternalError(w, "create run failed")
@@ -318,6 +324,13 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		s.writeInternalError(w, "create run failed")
 		return
 	}
+	if pinnedAccess != nil {
+		if err := access.CaptureRunTx(r.Context(), tx, runID, *pinnedAccess); err != nil {
+			s.writeInternalError(w, "capture run model access failed")
+			return
+		}
+	}
+
 	if err := state.CaptureRunAgentConfigurationSnapshotTx(r.Context(), tx, runID, now); err != nil {
 		s.writeInternalError(w, "capture run agent configuration failed")
 		return
@@ -491,6 +504,22 @@ func (s *Server) workOrderExists(ctx context.Context, workOrderID string) bool {
 }
 
 func (s *Server) normalizeRunModelSelection(ctx context.Context, selection *gen.RunModelSelection) (*gen.RunModelSelection, string, error) {
+	if s.hostedSelection != nil {
+		return normalizeHostedRunSelection(selection)
+	}
+	if selection != nil {
+		if selection.Global.Connection != nil {
+			return nil, "", fmt.Errorf("model connections are not accepted in local mode")
+		}
+		if selection.RoleOverrides != nil {
+			for _, entry := range *selection.RoleOverrides {
+				if entry.Connection != nil {
+					return nil, "", fmt.Errorf("model connections are not accepted in local mode")
+				}
+			}
+		}
+	}
+
 	if ctx == nil {
 		ctx = context.Background()
 	}
