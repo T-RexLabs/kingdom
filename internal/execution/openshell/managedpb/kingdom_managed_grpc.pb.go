@@ -21,14 +21,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ManagedExecutions_FinalizeRuntime_FullMethodName      = "/kingdom.openshell.managed.v1.ManagedExecutions/FinalizeRuntime"
-	ManagedExecutions_GetArchivedExecution_FullMethodName = "/kingdom.openshell.managed.v1.ManagedExecutions/GetArchivedExecution"
-	ManagedExecutions_ReadArchivedOutput_FullMethodName   = "/kingdom.openshell.managed.v1.ManagedExecutions/ReadArchivedOutput"
-	ManagedExecutions_DescribeRuntime_FullMethodName      = "/kingdom.openshell.managed.v1.ManagedExecutions/DescribeRuntime"
-	ManagedExecutions_StartExecution_FullMethodName       = "/kingdom.openshell.managed.v1.ManagedExecutions/StartExecution"
-	ManagedExecutions_GetExecution_FullMethodName         = "/kingdom.openshell.managed.v1.ManagedExecutions/GetExecution"
-	ManagedExecutions_CancelExecution_FullMethodName      = "/kingdom.openshell.managed.v1.ManagedExecutions/CancelExecution"
-	ManagedExecutions_ReadOutput_FullMethodName           = "/kingdom.openshell.managed.v1.ManagedExecutions/ReadOutput"
+	ManagedExecutions_DeleteFinalizedRuntime_FullMethodName = "/kingdom.openshell.managed.v1.ManagedExecutions/DeleteFinalizedRuntime"
+	ManagedExecutions_FinalizeRuntime_FullMethodName        = "/kingdom.openshell.managed.v1.ManagedExecutions/FinalizeRuntime"
+	ManagedExecutions_GetArchivedExecution_FullMethodName   = "/kingdom.openshell.managed.v1.ManagedExecutions/GetArchivedExecution"
+	ManagedExecutions_ReadArchivedOutput_FullMethodName     = "/kingdom.openshell.managed.v1.ManagedExecutions/ReadArchivedOutput"
+	ManagedExecutions_DescribeRuntime_FullMethodName        = "/kingdom.openshell.managed.v1.ManagedExecutions/DescribeRuntime"
+	ManagedExecutions_StartExecution_FullMethodName         = "/kingdom.openshell.managed.v1.ManagedExecutions/StartExecution"
+	ManagedExecutions_GetExecution_FullMethodName           = "/kingdom.openshell.managed.v1.ManagedExecutions/GetExecution"
+	ManagedExecutions_CancelExecution_FullMethodName        = "/kingdom.openshell.managed.v1.ManagedExecutions/CancelExecution"
+	ManagedExecutions_ReadOutput_FullMethodName             = "/kingdom.openshell.managed.v1.ManagedExecutions/ReadOutput"
 )
 
 // ManagedExecutionsClient is the client API for ManagedExecutions service.
@@ -44,6 +45,7 @@ const (
 // Every method, including DescribeRuntime, requires gateway authentication and
 // workspace authorization. Unsupported peers must reject before admission.
 type ManagedExecutionsClient interface {
+	DeleteFinalizedRuntime(ctx context.Context, in *DeleteFinalizedRuntimeRequest, opts ...grpc.CallOption) (*DeleteFinalizedRuntimeResponse, error)
 	FinalizeRuntime(ctx context.Context, in *FinalizeRuntimeRequest, opts ...grpc.CallOption) (*RuntimeArchive, error)
 	GetArchivedExecution(ctx context.Context, in *ArchivedExecutionRequest, opts ...grpc.CallOption) (*ExecutionStatus, error)
 	ReadArchivedOutput(ctx context.Context, in *ReadArchivedOutputRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OutputChunk], error)
@@ -60,6 +62,16 @@ type managedExecutionsClient struct {
 
 func NewManagedExecutionsClient(cc grpc.ClientConnInterface) ManagedExecutionsClient {
 	return &managedExecutionsClient{cc}
+}
+
+func (c *managedExecutionsClient) DeleteFinalizedRuntime(ctx context.Context, in *DeleteFinalizedRuntimeRequest, opts ...grpc.CallOption) (*DeleteFinalizedRuntimeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteFinalizedRuntimeResponse)
+	err := c.cc.Invoke(ctx, ManagedExecutions_DeleteFinalizedRuntime_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *managedExecutionsClient) FinalizeRuntime(ctx context.Context, in *FinalizeRuntimeRequest, opts ...grpc.CallOption) (*RuntimeArchive, error) {
@@ -173,6 +185,7 @@ type ManagedExecutions_ReadOutputClient = grpc.ServerStreamingClient[OutputChunk
 // Every method, including DescribeRuntime, requires gateway authentication and
 // workspace authorization. Unsupported peers must reject before admission.
 type ManagedExecutionsServer interface {
+	DeleteFinalizedRuntime(context.Context, *DeleteFinalizedRuntimeRequest) (*DeleteFinalizedRuntimeResponse, error)
 	FinalizeRuntime(context.Context, *FinalizeRuntimeRequest) (*RuntimeArchive, error)
 	GetArchivedExecution(context.Context, *ArchivedExecutionRequest) (*ExecutionStatus, error)
 	ReadArchivedOutput(*ReadArchivedOutputRequest, grpc.ServerStreamingServer[OutputChunk]) error
@@ -191,6 +204,9 @@ type ManagedExecutionsServer interface {
 // pointer dereference when methods are called.
 type UnimplementedManagedExecutionsServer struct{}
 
+func (UnimplementedManagedExecutionsServer) DeleteFinalizedRuntime(context.Context, *DeleteFinalizedRuntimeRequest) (*DeleteFinalizedRuntimeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteFinalizedRuntime not implemented")
+}
 func (UnimplementedManagedExecutionsServer) FinalizeRuntime(context.Context, *FinalizeRuntimeRequest) (*RuntimeArchive, error) {
 	return nil, status.Error(codes.Unimplemented, "method FinalizeRuntime not implemented")
 }
@@ -234,6 +250,24 @@ func RegisterManagedExecutionsServer(s grpc.ServiceRegistrar, srv ManagedExecuti
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&ManagedExecutions_ServiceDesc, srv)
+}
+
+func _ManagedExecutions_DeleteFinalizedRuntime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteFinalizedRuntimeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ManagedExecutionsServer).DeleteFinalizedRuntime(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ManagedExecutions_DeleteFinalizedRuntime_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ManagedExecutionsServer).DeleteFinalizedRuntime(ctx, req.(*DeleteFinalizedRuntimeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _ManagedExecutions_FinalizeRuntime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -373,6 +407,10 @@ var ManagedExecutions_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "kingdom.openshell.managed.v1.ManagedExecutions",
 	HandlerType: (*ManagedExecutionsServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "DeleteFinalizedRuntime",
+			Handler:    _ManagedExecutions_DeleteFinalizedRuntime_Handler,
+		},
 		{
 			MethodName: "FinalizeRuntime",
 			Handler:    _ManagedExecutions_FinalizeRuntime_Handler,

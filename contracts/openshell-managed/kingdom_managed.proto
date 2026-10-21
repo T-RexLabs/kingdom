@@ -15,6 +15,9 @@ import "options.proto";
 // Every method, including DescribeRuntime, requires gateway authentication and
 // workspace authorization. Unsupported peers must reject before admission.
 service ManagedExecutions {
+  rpc DeleteFinalizedRuntime(DeleteFinalizedRuntimeRequest) returns (DeleteFinalizedRuntimeResponse) {
+    option (.openshell.options.v1.authorization) = { auth_mode: "bearer" scope: "sandbox:write" workspace_role: "admin" };
+  }
   rpc FinalizeRuntime(FinalizeRuntimeRequest) returns (RuntimeArchive) {
     option (.openshell.options.v1.authorization) = { auth_mode: "bearer" scope: "sandbox:write" workspace_role: "admin" };
   }
@@ -65,6 +68,12 @@ message DescribeRuntimeResponse {
   string subject_id = 6;
 }
 
+// Project tools receive a strictly narrower filesystem policy. Only trusted
+// provider/helper launches use the original sandbox profile.
+enum CommandScope {
+  COMMAND_SCOPE_SANDBOX = 0;
+  COMMAND_SCOPE_PROJECT_TOOL = 1;
+}
 message CommandSpec {
   repeated string argv = 1;
   string workdir = 2;
@@ -72,6 +81,7 @@ message CommandSpec {
   bytes stdin = 4;
   google.protobuf.Duration execution_timeout = 5;
   uint64 output_limit_bytes = 6;
+  CommandScope scope = 7;
 }
 message ExecutionSelector {
   string workspace = 1;
@@ -203,4 +213,32 @@ message ReadArchivedOutputRequest {
   ArchivedExecutionRequest execution = 1;
   uint64 after_sequence = 2;
   uint32 limit = 3;
+}
+
+// Deletion uses the immutable finalized sandbox ID, never a reusable name.
+message DeleteFinalizedRuntimeRequest {
+  string archive_id = 1;
+  RuntimeBinding runtime = 2;
+}
+enum RuntimeDeletionState {
+  RUNTIME_DELETION_STATE_UNSPECIFIED = 0;
+  RUNTIME_DELETION_STATE_PENDING = 1;
+  RUNTIME_DELETION_STATE_ABSENT = 2;
+}
+message DeleteFinalizedRuntimeResponse {
+  RuntimeDeletionState state = 1;
+  RuntimeDeletionReceipt receipt = 2;
+}
+// Created only after the trusted driver and gateway have completed deletion
+// of this exact sandbox ID. Gateway retains it before returning ABSENT.
+// Digest uses domain kingdom.openshell.runtime-deletion.v1\0 followed by
+// canonical known-field protobuf bytes with receipt_sha256 cleared.
+message RuntimeDeletionReceipt {
+  uint32 schema_version = 1;
+  string gateway_id = 2;
+  string workspace_id = 3;
+  string subject_id = 4;
+  RuntimeBinding runtime = 5;
+  string archive_id = 6;
+  bytes receipt_sha256 = 7;
 }
