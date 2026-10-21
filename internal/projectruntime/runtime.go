@@ -7,9 +7,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"kingdom/internal/api"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/external"
 	kingdom "kingdom/internal/orchestration"
@@ -41,7 +43,9 @@ type Config struct {
 	Authenticator                                  api.Authenticator
 	// ProviderService is dedicated to this project. Ownership transfers after
 	// configuration validation succeeds, including on construction failure.
-	ProviderService                              *opencode.Service
+	ProviderService      opencode.Backend
+	ProviderModelCatalog api.ProviderModelCatalog
+
 	ExternalAdapter                              external.Adapter
 	GitHubSharedAppSlug, GitHubSharedAppClientID string
 }
@@ -63,13 +67,19 @@ type providerLifecycle interface {
 type Instance struct {
 	Handler         *api.Server
 	Runtime         *kingdom.Runtime
-	ProviderService *opencode.Service
+	ProviderService opencode.Backend
 	runtime         consumerRuntime
 	api             consumerAPI
 	provider        providerLifecycle
 }
 
 func validate(cfg Config) error {
+	if cfg.ProviderService != nil {
+		v := reflect.ValueOf(cfg.ProviderService)
+		if v.Kind() == reflect.Pointer && v.IsNil() {
+			return errors.New("provider backend must not be a typed nil")
+		}
+	}
 	if cfg.Mode != Local && cfg.Mode != Hosted {
 		return errors.New("project runtime mode must be explicit")
 	}
@@ -77,10 +87,15 @@ func validate(cfg Config) error {
 		if cfg.Authenticator == nil || cfg.ProviderService == nil || len(cfg.OperatorCredential) != 0 {
 			return errors.New("hosted project requires an explicit provider and authenticator without a local credential")
 		}
-		// Service currently has a local guardian backend only. An injected local
-		// service is not proof of sandbox isolation. This gate must remain closed
-		// until Service reports a verified managed backend from its own configuration.
+		if cfg.ProviderService.ExecutionBackend() != providerexecution.BackendOpenShell || cfg.ProviderModelCatalog == nil {
+			return ErrHostedProviderUnavailable
+		}
+		// A reported backend kind is necessary but is not proof of verified remote
+		// closure. Hosted activation stays disabled until that path is integrated.
 		return ErrHostedProviderUnavailable
+	}
+	if cfg.ProviderService != nil && cfg.ProviderService.ExecutionBackend() != providerexecution.BackendLocal {
+		return errors.New("local project requires a local provider backend")
 	}
 	if cfg.Authenticator != nil {
 		return errors.New("local project cannot use hosted authentication")
@@ -123,6 +138,14 @@ func New(ctx context.Context, cfg Config) (instance *Instance, err error) {
 			instance = nil
 		}
 	}()
+	catalog := cfg.ProviderModelCatalog
+	if catalog == nil {
+		source, ok := p.(api.OpenCodeModelSource)
+		if !ok {
+			return instance, errors.New("provider requires an explicit model catalog")
+		}
+		catalog = api.NewOpenCodeProviderModelCatalog(source, nil, api.ProviderModelCatalogTTL)
+	}
 	runtime, err := kingdom.NewRuntime(kingdom.Config{DB: cfg.DB,
 		StartupContext:      ctx,
 		Paths:               cfg.Paths,
@@ -148,7 +171,7 @@ func New(ctx context.Context, cfg Config) (instance *Instance, err error) {
 		AutonomousApprovalsDefault: cfg.AutonomousApprovals,
 		ProviderEngine:             cfg.ProviderEngine,
 		ProviderService:            p,
-		ProviderModelCatalog:       api.NewOpenCodeProviderModelCatalog(p, nil, api.ProviderModelCatalogTTL),
+		ProviderModelCatalog:       catalog,
 		ProviderPolicyPath:         cfg.Paths.ProviderPolicyPath,
 		ProviderPolicySchemaPath:   cfg.Paths.ProviderPolicySchemaPath,
 		ProjectRoot:                cfg.ProjectRoot,

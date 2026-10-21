@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"kingdom/internal/api"
+	"kingdom/internal/apigen"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/theme"
@@ -185,3 +187,37 @@ func TestForcedCloseOrdersConsumersBeforeProviderAndJoinsErrors(t *testing.T) {
 		t.Fatal(order)
 	}
 }
+
+type backendProbe struct {
+	*opencode.Service
+	kind providerexecution.Backend
+}
+
+func (p backendProbe) ExecutionBackend() providerexecution.Backend { return p.kind }
+func (p backendProbe) Models(context.Context) ([]opencode.Model, error) {
+	panic("host model discovery must not run")
+}
+
+type explicitCatalog struct{}
+
+func (explicitCatalog) Snapshot(context.Context, bool) (api.ProviderModelCatalogSnapshot, error) {
+	return api.ProviderModelCatalogSnapshot{}, nil
+}
+func TestHostedBackendDeclarationDoesNotActivateWithoutVerifiedClosure(t *testing.T) {
+	remote := backendProbe{kind: providerexecution.BackendOpenShell}
+	for _, catalog := range []api.ProviderModelCatalog{nil, explicitCatalog{}} {
+		instance, err := New(context.Background(), Config{Mode: Hosted, ProviderService: remote, Authenticator: authStub{}, ProviderModelCatalog: catalog})
+		if instance != nil || !errors.Is(err, ErrHostedProviderUnavailable) {
+			t.Fatalf("hosted execution activated: %v", err)
+		}
+	}
+	if err := validate(Config{Mode: Local, ProviderService: remote}); err == nil {
+		t.Fatal("managed backend silently used in local mode")
+	}
+	var absent *opencode.Service
+	if err := validate(Config{Mode: Local, ProviderService: absent}); err == nil {
+		t.Fatal("typed nil backend accepted")
+	}
+}
+
+func (explicitCatalog) List(context.Context, bool) ([]apigen.ProviderModel, error) { return nil, nil }

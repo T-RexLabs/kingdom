@@ -60,9 +60,9 @@ type ServerConfig struct {
 	ArtifactDownloadURL        string
 	AutonomousApprovalsDefault *bool
 	ProviderEngine             string
-	// ProviderService runs planner requests. It is shared with run execution and
-	// model discovery, and is closed by the process that created it.
-	ProviderService          *opencode.Service
+	// ProviderService runs planner requests and is shared with run execution.
+	// The assembly owns its lifecycle; model discovery is injected separately.
+	ProviderService          opencode.Provider
 	ProviderModelCatalog     ProviderModelCatalog
 	ProviderPolicyPath       string
 	ProviderPolicySchemaPath string

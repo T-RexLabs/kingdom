@@ -68,7 +68,7 @@ OpenCode is the supported provider engine. GitHub Issues can be imported as proj
 
 | If you are changing | Start here |
 | --- | --- |
-| Startup and service assembly | `internal/cli/install_mode.go` and `cmd/kingdomd/main.go` |
+| Startup and service assembly | `internal/projectruntime/`, `internal/cli/install_mode.go`, and `cmd/kingdomd/main.go` |
 | HTTP routes and request handling | `internal/api/` and `contracts/openapi/openapi.yaml` |
 | Durable state, transitions, and audit | `internal/state/` |
 | Workflow rules and bundled workflows | `internal/core/workflow/` and `internal/bootstrapassets/files/workflows/` |

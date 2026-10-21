@@ -218,7 +218,21 @@ func ClaimDispatchTx(ctx context.Context, tx *sql.Tx, owner Owner, ref Reference
 		return false, nil
 	}
 	if op.Kind != Stop && r.AdmissionClosed {
-		return false, ErrAdmissionClosed
+		var purpose string
+		err := tx.QueryRowContext(ctx, `SELECT purpose FROM managed_executions WHERE operation_id=?`, id).Scan(&purpose)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+		if purpose != string(WorkspaceExport) {
+			return false, ErrAdmissionClosed
+		}
+		var pending int
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM remote_operations o WHERE o.allocation=? AND o.kind='execute' AND o.operation_id<>? AND NOT EXISTS(SELECT 1 FROM managed_execution_receipts r WHERE r.operation_id=o.operation_id)`, ref.Allocation, id).Scan(&pending); err != nil {
+			return false, err
+		}
+		if pending != 0 {
+			return false, ErrConflict
+		}
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE remote_operations SET delivery='delivery_uncertain' WHERE operation_id=? AND delivery='prepared'`, id)
 	if err != nil {
