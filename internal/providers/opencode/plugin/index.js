@@ -9,13 +9,13 @@ import path from "node:path"
 // inherit the server environment, so the credential is read once, removed from
 // the environment, and kept for the later locations.
 const CONFIGURATION = Symbol.for("kingdom.runtime.configuration")
-const NAMES = ["KINGDOM_AUTHORITY_URL", "KINGDOM_AUTHORITY_TOKEN", "KINGDOM_INSTANCE_ID", "KINGDOM_OUTBOX_DIR"]
+const NAMES = ["KINGDOM_AUTHORITY_URL", "KINGDOM_AUTHORITY_TOKEN", "KINGDOM_INSTANCE_ID", "KINGDOM_OUTBOX_DIR", "KINGDOM_NATIVE_MODE"]
 globalThis[CONFIGURATION] ??= (() => {
   const values = NAMES.map((name) => process.env[name])
   for (const name of NAMES) delete process.env[name]
   return values
 })()
-const [authority, token, instanceID, outbox] = globalThis[CONFIGURATION]
+const [authority, token, instanceID, outbox, nativeMode] = globalThis[CONFIGURATION]
 
 const NATIVE_TOOLS = ["write", "edit", "patch", "read", "glob", "grep"]
 const RECEIPT_ATTEMPTS = 3
@@ -82,6 +82,7 @@ export default {
   id: "kingdom.runtime",
   async setup(ctx) {
     if (!authority || !token || !instanceID || !outbox) throw new Error("Kingdom runtime configuration is missing")
+    if (nativeMode && nativeMode !== "managed") throw new Error("Kingdom native execution mode is invalid")
     const location = ctx.location.directory
     const generation = crypto.randomUUID()
     // Profiles are never redefined: the server resolves an agent by ID at every
@@ -157,6 +158,20 @@ export default {
           const nativeExecute = tool.execute
           tool.execute = async (input, context) => {
             const identity = identityFor(context)
+            if (nativeMode === "managed") {
+              const cancel = () => void call("/v1/command/cancel", { identity }).catch(() => {})
+              context.signal.throwIfAborted()
+              context.signal.addEventListener("abort", cancel, { once: true })
+              try {
+                const result = await call("/v1/native/invoke", { identity, messageID: context.messageID, callID: context.id, tool: name, input }, context.signal)
+                if (result.version !== 1 || result.tool !== name) throw new Error("Invalid managed file result")
+                if (!result.ok) throw new Error(result.error?.message || "Managed file operation failed")
+                if (!result.result || result.error) throw new Error("Invalid managed file result")
+                return result.result
+              } finally {
+                context.signal.removeEventListener("abort", cancel)
+              }
+            }
             const grant = await call("/v1/native/admit", { identity, messageID: context.messageID, callID: context.id, tool: name, input })
             if (!grant.execute) throw new Error("Native operation was already admitted; refusing to run it again")
             let nativeStarted = false

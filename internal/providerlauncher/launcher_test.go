@@ -44,7 +44,7 @@ func TestStrictJobAndNoInheritedCredentials(t *testing.T) {
 	j = job()
 	t.Setenv("OPENAI_API_KEY", "host-secret")
 	env := strings.Join(environment(j), "\n")
-	if strings.Contains(env, "host-secret") || strings.Contains(env, "OPENAI_API_KEY") || !strings.Contains(env, "OPENCODE_CONFIG_PROJECT_DISABLE=1") {
+	if strings.Contains(env, "host-secret") || strings.Contains(env, "OPENAI_API_KEY") || !strings.Contains(env, "OPENCODE_CONFIG_PROJECT_DISABLE=1") || !strings.Contains(env, "KINGDOM_NATIVE_MODE=managed") {
 		t.Fatal("unsafe environment")
 	}
 	spec, e := Command(j)

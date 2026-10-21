@@ -11,6 +11,7 @@ import (
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
+	"kingdom/internal/filetoolhelper"
 )
 
 // ManagedCallbackScope owns the authenticated handler until Release. Its
@@ -25,9 +26,8 @@ type ManagedCallbackAuthorizer interface {
 	// admission fencing. It never permits starting a new effect.
 	Begin(context.Context, string, bool) (ManagedCallbackScope, error)
 }
-type ManagedNativeAuthority interface {
-	AdmitNative(context.Context, providerrequest.NativeCall) (providerrequest.Grant, error)
-	FinishNative(context.Context, providerexecution.RequestIdentity, providerrequest.NativeReceipt) error
+type ManagedNativeTools interface {
+	InvokeNative(context.Context, providerrequest.NativeCall) (filetoolhelper.Result, error)
 }
 type ManagedCommandInput struct {
 	Identity                        providerexecution.RequestIdentity
@@ -49,8 +49,8 @@ type ManagedCommands interface {
 
 // NewManagedCallbackHandler creates no listener and has no local executor.
 // The worker mounts it behind its authenticated HTTPS endpoint.
-func NewManagedCallbackHandler(auth ManagedCallbackAuthorizer, authority ManagedNativeAuthority, commands ManagedCommands) (http.Handler, error) {
-	if nilManagedDependency(auth) || nilManagedDependency(authority) || nilManagedDependency(commands) {
+func NewManagedCallbackHandler(auth ManagedCallbackAuthorizer, native ManagedNativeTools, commands ManagedCommands) (http.Handler, error) {
+	if nilManagedDependency(auth) || nilManagedDependency(native) || nilManagedDependency(commands) {
 		return nil, errors.New("managed callback dependencies required")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,8 +62,8 @@ func NewManagedCallbackHandler(auth ManagedCallbackAuthorizer, authority Managed
 		}
 		receipt := false
 		switch r.URL.Path {
-		case "/v1/native/admit", "/v1/command/invoke":
-		case "/v1/native/finish", "/v1/command/cancel":
+		case "/v1/native/invoke", "/v1/command/invoke":
+		case "/v1/command/cancel":
 			receipt = true
 		default:
 			refuse(http.StatusNotFound)
@@ -112,23 +112,18 @@ func NewManagedCallbackHandler(auth ManagedCallbackAuthorizer, authority Managed
 		// Reject identity substitution before any canonical mutation or command call.
 		var response any
 		switch r.URL.Path {
-		case "/v1/native/admit":
+		case "/v1/native/invoke":
 			var in nativeAdmission
 			if decodeStrict(raw, &in) != nil || in.Identity != scope.Identity {
 				refuse(http.StatusForbidden)
 				return
 			}
-			var grant providerrequest.Grant
-			grant, err = authority.AdmitNative(scope.Context, providerrequest.NativeCall{Identity: in.Identity, MessageID: in.MessageID, CallID: in.CallID, Tool: in.Tool, Input: in.Input})
-			response = map[string]any{"execute": grant.Execute, "grantID": grant.ID, "identityDigest": grant.Digest}
-		case "/v1/native/finish":
-			var in nativeReceipt
-			if decodeStrict(raw, &in) != nil || in.Identity != scope.Identity {
-				refuse(http.StatusForbidden)
-				return
+			var result filetoolhelper.Result
+			result, err = native.InvokeNative(scope.Context, providerrequest.NativeCall{Identity: in.Identity, MessageID: in.MessageID, CallID: in.CallID, Tool: in.Tool, Input: in.Input})
+			if err == nil {
+				err = result.Validate(in.Tool)
 			}
-			err = authority.FinishNative(scope.Context, in.Identity, in.providerReceipt())
-			response = map[string]bool{"acknowledged": true}
+			response = result
 		case "/v1/command/invoke":
 			var in commandInput
 			if decodeStrict(raw, &in) != nil || in.Identity != scope.Identity {

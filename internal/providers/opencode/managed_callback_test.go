@@ -15,6 +15,7 @@ import (
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
+	"kingdom/internal/filetoolhelper"
 )
 
 type callbackFixture struct {
@@ -67,7 +68,7 @@ func callbackOwner() *callbackFixture {
 	return &callbackFixture{identity: providerexecution.RequestIdentity{InstanceID: "instance", Generation: "generation", Location: "/workspace/project", SessionID: "session", ProfileID: "profile", RequestID: "request"}, result: ManagedCommandResult{ExecutionID: "remote-operation", Closed: true, Output: "output", Exit: 0}}
 }
 func TestManagedCallbacksRejectForeignIdentityBeforeEffects(t *testing.T) {
-	for _, route := range []string{"/v1/native/admit", "/v1/native/finish", "/v1/command/invoke", "/v1/command/cancel"} {
+	for _, route := range []string{"/v1/native/invoke", "/v1/command/invoke", "/v1/command/cancel"} {
 		t.Run(route, func(t *testing.T) {
 			f := callbackOwner()
 			other := f.identity
@@ -82,18 +83,15 @@ func TestManagedCallbacksRejectForeignIdentityBeforeEffects(t *testing.T) {
 func TestManagedCallbacksFenceAdmissionsButAcceptLateReceipts(t *testing.T) {
 	f := callbackOwner()
 	f.fenced = true
-	for _, route := range []string{"/v1/native/admit", "/v1/command/invoke"} {
+	for _, route := range []string{"/v1/native/invoke", "/v1/command/invoke"} {
 		if w := callbackRequest(t, f, route, "owned", map[string]any{"identity": f.identity}); w.Code != http.StatusForbidden {
 			t.Fatal(w.Code)
 		}
 	}
-	if w := callbackRequest(t, f, "/v1/native/finish", "owned", nativeReceipt{Identity: f.identity, GrantID: "grant", IdentityDigest: "digest", Outcome: "succeeded"}); w.Code != http.StatusOK {
-		t.Fatal(w.Code)
-	}
 	if w := callbackRequest(t, f, "/v1/command/cancel", "owned", commandCancellation{Identity: f.identity}); w.Code != http.StatusOK {
 		t.Fatal(w.Code)
 	}
-	if f.admitted+f.invoked != 0 || f.finished != 1 || f.cancelled != 1 || f.released != 2 {
+	if f.admitted+f.invoked != 0 || f.finished != 0 || f.cancelled != 1 || f.released != 1 {
 		t.Fatalf("fence changed receipts: %+v", f)
 	}
 }
@@ -117,11 +115,11 @@ func TestManagedCallbacksRedactErrorsAndRequireRemoteClosure(t *testing.T) {
 }
 func TestManagedCallbacksRejectBadCapabilityAndUnknownFields(t *testing.T) {
 	f := callbackOwner()
-	w := callbackRequest(t, f, "/v1/native/admit", "foreign", nativeAdmission{Identity: f.identity})
+	w := callbackRequest(t, f, "/v1/native/invoke", "foreign", nativeAdmission{Identity: f.identity})
 	if w.Code != http.StatusForbidden || f.admitted != 0 {
 		t.Fatal("foreign capability accepted")
 	}
-	w = callbackRequest(t, f, "/v1/native/admit", "owned", map[string]any{"identity": f.identity, "actor": "forged"})
+	w = callbackRequest(t, f, "/v1/native/invoke", "owned", map[string]any{"identity": f.identity, "actor": "forged"})
 	if w.Code != http.StatusForbidden || f.admitted != 0 || f.released != 1 {
 		t.Fatal("unknown authority field accepted")
 	}
@@ -155,7 +153,7 @@ func TestManagedCallbackRevocationInterruptsBodyUpload(t *testing.T) {
 		t.Fatal(e)
 	}
 	body := &stalledCallbackBody{closed: make(chan struct{})}
-	r := httptest.NewRequest(http.MethodPost, "/v1/native/admit", body)
+	r := httptest.NewRequest(http.MethodPost, "/v1/native/invoke", body)
 	r.Header.Set("Authorization", "Bearer owned")
 	done := make(chan struct{})
 	go func() { defer close(done); h.ServeHTTP(httptest.NewRecorder(), r) }()
@@ -218,5 +216,22 @@ func TestManagedCallbackRevocationInterruptsResponseWrite(t *testing.T) {
 	case <-released:
 	case <-time.After(time.Second):
 		t.Fatal("revocation left response writer and handler ownership blocked")
+	}
+}
+
+func (f *callbackFixture) InvokeNative(context.Context, providerrequest.NativeCall) (filetoolhelper.Result, error) {
+	f.admitted++
+	return filetoolhelper.Result{Version: 1, Tool: "read", OK: true, Result: &filetoolhelper.ToolResult{Output: "safe", Content: "safe"}}, f.fail
+}
+func TestManagedNativeEffectsUseConfinedExecutorOnly(t *testing.T) {
+	f := callbackOwner()
+	for _, route := range []string{"/v1/native/admit", "/v1/native/finish"} {
+		if w := callbackRequest(t, f, route, "owned", nativeAdmission{Identity: f.identity}); w.Code != http.StatusNotFound {
+			t.Fatalf("unsafe native route still available: %s %d", route, w.Code)
+		}
+	}
+	w := callbackRequest(t, f, "/v1/native/invoke", "owned", nativeAdmission{Identity: f.identity, Tool: "read", Input: json.RawMessage(`{"path":"a"}`)})
+	if w.Code != http.StatusOK || f.admitted != 1 || f.finished != 0 || !strings.Contains(w.Body.String(), `"content":"safe"`) {
+		t.Fatalf("confined native call failed: %d %s", w.Code, w.Body.String())
 	}
 }

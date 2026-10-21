@@ -8,16 +8,21 @@ import (
 	"strings"
 
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/securefs"
 	"kingdom/internal/workspacearchive"
 	"kingdom/internal/workspacetransfer"
 )
 
+type ManagedReceiptAuthority interface {
+	FinishNative(context.Context, providerexecution.RequestIdentity, providerrequest.NativeReceipt) error
+}
+
 // RecoverManagedReceipts consumes a private host staging directory produced by
 // ValidateExport for the fixed receipts helper. The worker must first verify
 // the exact helper identity, clean receipt, complete output and archive hash.
 // No workload path becomes a host path; the only reader root is this staging.
-func RecoverManagedReceipts(ctx context.Context, staged *workspacearchive.Staged, identity providerexecution.RequestIdentity, authority ManagedNativeAuthority) error {
+func RecoverManagedReceipts(ctx context.Context, staged *workspacearchive.Staged, identity providerexecution.RequestIdentity, authority ManagedReceiptAuthority) error {
 	limits := workspacetransfer.ReceiptLimits()
 	if staged == nil || identity.Validate() != nil || nilManagedDependency(authority) || len(staged.Manifest.Entries) > limits.Entries || staged.Manifest.ExpandedBytes < 0 || staged.Manifest.ExpandedBytes > limits.ExpandedBytes {
 		return errors.New("invalid managed receipt archive")

@@ -34,7 +34,7 @@ KD_GO_SOURCES := $(shell find cmd internal web -type f -name '*.go' ! -name '*_t
 BOOTSTRAP_ASSETS := $(shell find internal/bootstrapassets/files -type f)
 DB_MIGRATIONS := $(shell find internal/dbmigrations -maxdepth 1 -type f -name '*.sql')
 
-.PHONY: help install build dev-web test test-web lint-web test-race test-integration test-e2e test-github-smoke test-opencode-security-smoke vet coverage-core scripts-check verify contracts-generate contracts-check openapi-lint tool-versions
+.PHONY: help install build dev-web test test-plugin test-web lint-web test-race test-integration test-e2e test-github-smoke test-opencode-security-smoke vet coverage-core scripts-check verify contracts-generate contracts-check openapi-lint tool-versions
 
 ##@ Setup and Build
 help: ## Show supported make targets
@@ -52,6 +52,9 @@ dev-web: $(WEB_NODE_MODULES_STAMP) ## Start the web app in Vite dev mode
 ##@ Verification
 test: $(WEB_DIST_INDEX) ## Run `go test ./...`
 	$(GO) test ./...
+
+test-plugin: ## Verify local and hosted OpenCode tool routing
+	node --test scripts/tests/opencode_plugin.test.mjs
 
 test-web: $(WEB_NODE_MODULES_STAMP) ## Run the frontend unit test suite
 	$(WEB_PNPM) test
@@ -90,7 +93,7 @@ scripts-check: ## Run lightweight script verification checks
 	bash -n scripts/*.sh
 	python3 -m unittest discover -s scripts/tests -p "test_*.py"
 
-verify: test test-web lint-web test-race vet coverage-core contracts-check ## Run the main verification sweep
+verify: test test-plugin test-web lint-web test-race vet coverage-core contracts-check ## Run the main verification sweep
 
 ##@ Contracts
 contracts-check: $(WEB_NODE_MODULES_STAMP) ## Verify generated OpenAPI types are up to date
