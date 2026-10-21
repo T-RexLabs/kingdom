@@ -117,6 +117,9 @@ func scanBinding(row *sql.Row) (Binding, error) {
 // BindTx must be called in the invocation activation transaction, after that
 // transaction has linked its exact canonical owner and provider session.
 func BindTx(ctx context.Context, tx *sql.Tx, b Binding, now time.Time) error {
+	if err := requireLocalBinding(ctx, tx, b); err != nil {
+		return err
+	}
 	if err := b.Identity.Validate(); err != nil {
 		return err
 	}
@@ -215,11 +218,12 @@ func CloseAdmissionTx(ctx context.Context, tx *sql.Tx, id string, identity provi
 	if now.IsZero() {
 		return fmt.Errorf("admission close time is required")
 	}
-	if b.AdmissionClosedAt != "" {
-		return nil
+	if b.AdmissionClosedAt == "" {
+		if _, err = tx.ExecContext(ctx, `UPDATE provider_requests SET admission_closed_at=? WHERE binding_id=?`, now.UTC().Format(time.RFC3339Nano), id); err != nil {
+			return err
+		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE provider_requests SET admission_closed_at=? WHERE binding_id=?`, now.UTC().Format(time.RFC3339Nano), id)
-	return err
+	return CloseOwnerRemoteAdmissionTx(ctx, tx, b.Owner, now.UTC().Format(time.RFC3339Nano))
 }
 
 // ForOwner resolves the one binding attached to an exact canonical invocation.

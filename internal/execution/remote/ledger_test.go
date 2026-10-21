@@ -268,33 +268,40 @@ func TestRollbackDoesNotLeavePartialCommand(t *testing.T) {
 	transaction(t, db, func(tx *sql.Tx) error { _, err := PrepareCommandTx(ctx, tx, r.Owner, conflict); return err })
 }
 
-func TestAllocationCounterDoesNotReuseRemovedHighestID(t *testing.T) {
+func TestLedgerRetainsDebtAndAllocationSequence(t *testing.T) {
 	db := openLedger(t, ":memory:")
-	first := reserve(t, db)
+	first := bound(t, db)
+	cmd := command(first)
+	transaction(t, db, func(tx *sql.Tx) error { _, err := PrepareCommandTx(ctx, tx, first.Owner, cmd); return err })
+	for _, table := range []string{"remote_commands", "remote_operations", "remote_runtimes"} {
+		t.Run(table, func(t *testing.T) {
+			reject(t, db, nil, func(tx *sql.Tx) error {
+				_, err := tx.Exec("DELETE FROM " + table)
+				if err != nil && !strings.Contains(err.Error(), "must be retained") {
+					t.Fatalf("unexpected retention error: %v", err)
+				}
+				return err
+			})
+		})
+	}
 	second := reserve(t, db)
-	// Simulate administrative archival. The package intentionally exposes no
-	// deletion API, but SQLite's retained sequence must still protect allocation.
-	transaction(t, db, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`DELETE FROM remote_operations WHERE allocation=?`, second.Reference.Allocation); err != nil {
-			return err
-		}
-		_, err := tx.Exec(`DELETE FROM remote_runtimes WHERE allocation=?`, second.Reference.Allocation)
-		return err
-	})
-	third := reserve(t, db)
-	if third.Reference.Allocation <= second.Reference.Allocation || third.Reference.Allocation <= first.Reference.Allocation {
-		t.Fatal("allocation reused")
+	var sequence int64
+	if err := db.QueryRow(`SELECT seq FROM sqlite_sequence WHERE name='remote_runtimes'`).Scan(&sequence); err != nil {
+		t.Fatal(err)
+	}
+	if second.Reference.Allocation <= first.Reference.Allocation || sequence != second.Reference.Allocation {
+		t.Fatal("allocation sequence not retained")
 	}
 }
 
 func TestPlanningCannotPrepareCommands(t *testing.T) {
 	db := openLedger(t, ":memory:")
-	r := reserve(t, db)
+	var r Reservation
 	transaction(t, db, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE remote_runtimes SET owner_kind='planning' WHERE allocation=?`, r.Reference.Allocation)
+		var err error
+		r, err = ReserveRuntimeTx(ctx, tx, Owner{Kind: "planning", InvocationID: uuid.NewString(), BindingID: uuid.NewString(), LeaseOwner: "worker", LeaseVersion: 1}, Target{"worker", "gateway", "workspace"}, uuid.NewString(), digest)
 		return err
 	})
-	r.Owner.Kind = "planning"
 	transaction(t, db, func(tx *sql.Tx) error {
 		_, err := ClaimDispatchTx(ctx, tx, r.Owner, r.Reference, r.Reference.CreationID)
 		return err

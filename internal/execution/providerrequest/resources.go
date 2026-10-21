@@ -15,6 +15,9 @@ func RequireResourcesClosedTx(ctx context.Context, q Reader, id string) error {
 	if err != nil {
 		return err
 	}
+	if err := requireNoRemoteReservation(ctx, q, b.Owner); err != nil {
+		return err
+	}
 	if b.AdmissionClosedAt == "" {
 		return openResources(OpenAdmissionOpen, "admission is open")
 	}

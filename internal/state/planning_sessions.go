@@ -452,6 +452,9 @@ func (s *PlanningStore) DeleteSession(ctx context.Context, planningSessionID str
 		if _, err := tx.ExecContext(ctx, `UPDATE provider_requests SET binding_id=binding_id WHERE 0`); err != nil {
 			return err
 		}
+		if err := providerrequest.RequirePlanningSessionDisposedTx(ctx, tx, trimmedID); err != nil {
+			return err
+		}
 		rows, err := tx.QueryContext(ctx, `SELECT pr.planning_invocation_id FROM provider_requests pr JOIN planning_provider_invocations pi ON pi.planning_provider_invocation_id=pr.planning_invocation_id WHERE pi.planning_session_id=?`, trimmedID)
 		if err != nil {
 			return err
