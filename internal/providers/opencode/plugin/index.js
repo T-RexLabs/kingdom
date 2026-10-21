@@ -202,7 +202,13 @@ export default {
             return {
               output: { output: result.output, exit: result.exit, truncated: result.truncated, status: "completed" },
               content: result.output,
-              metadata: { guardID: result.guardID, exit: result.exit, quiescent: result.quiescent, truncated: result.truncated },
+              metadata: {
+                ...(result.executionID
+                  ? { executionID: result.executionID, closed: result.closed }
+                  : { guardID: result.guardID, quiescent: result.quiescent }),
+                exit: result.exit,
+                truncated: result.truncated,
+              },
             }
           } finally {
             context.signal.removeEventListener("abort", cancel)
