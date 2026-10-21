@@ -9,6 +9,7 @@ import (
 	"errors"
 	"google.golang.org/protobuf/encoding/protowire"
 	"hash"
+	"path"
 	"sort"
 	"strings"
 
@@ -18,7 +19,7 @@ import (
 	pb "kingdom/internal/execution/openshell/managedpb"
 )
 
-const Capability = "openshell.kingdom.managed-execution.v1"
+const Capability = "openshell.kingdom.managed-execution.v2"
 const StartMethod = "/kingdom.openshell.managed.v1.ManagedExecutions/StartExecution"
 const MaxOutputBytes = 16 * 1024 * 1024
 const MaxOutputChunks = 4096
@@ -137,6 +138,12 @@ func ValidateStart(r *pb.StartExecutionRequest) error {
 		return ErrProtocol
 	}
 	c := r.Command
+	if c.Scope != pb.CommandScope_COMMAND_SCOPE_SANDBOX && c.Scope != pb.CommandScope_COMMAND_SCOPE_PROJECT_TOOL {
+		return ErrProtocol
+	}
+	if c.Scope == pb.CommandScope_COMMAND_SCOPE_PROJECT_TOOL && (len(c.Environment) != 0 || path.Clean(c.Workdir) != c.Workdir || c.Workdir != "/workspace/project" && !strings.HasPrefix(c.Workdir, "/workspace/project/")) {
+		return ErrProtocol
+	}
 	if len(c.Argv) == 0 || len(c.Argv) > 4096 || c.Argv[0] == "" || !strings.HasPrefix(c.Workdir, "/") || len(c.Workdir) > 4096 || strings.ContainsRune(c.Workdir, 0) || c.OutputLimitBytes == 0 || c.OutputLimitBytes > MaxOutputBytes || len(c.Environment) > 256 {
 		return ErrProtocol
 	}

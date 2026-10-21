@@ -114,3 +114,29 @@ func TestStatusRequiresMatchingDurableWatermark(t *testing.T) {
 		t.Fatal("mismatched watermark")
 	}
 }
+
+func TestProjectToolScopeRejectsWidening(t *testing.T) {
+	_, request, _, _ := fixture(t)
+	request.Command.Scope = pb.CommandScope_COMMAND_SCOPE_PROJECT_TOOL
+	request.Command.Workdir = "/workspace/project"
+	request.Command.Environment = nil
+	if err := ValidateStart(request); err != nil {
+		t.Fatal(err)
+	}
+	for _, directory := range []string{"/workspace", "/workspace/.kingdom-provider", "/workspace/project/../.kingdom-provider", "/workspace/project/./a", "/workspace/project/"} {
+		copy := proto.Clone(request).(*pb.StartExecutionRequest)
+		copy.Command.Workdir = directory
+		if ValidateStart(copy) == nil {
+			t.Fatalf("widened directory accepted: %s", directory)
+		}
+	}
+	request.Command.Environment = map[string]string{"CAPABILITY": "private"}
+	if ValidateStart(request) == nil {
+		t.Fatal("tool inherited runtime environment")
+	}
+	request.Command.Environment = nil
+	request.Command.Scope = pb.CommandScope(2)
+	if ValidateStart(request) == nil {
+		t.Fatal("unknown scope accepted")
+	}
+}
