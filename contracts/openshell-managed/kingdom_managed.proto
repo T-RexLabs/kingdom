@@ -1,0 +1,159 @@
+// SPDX-License-Identifier: Apache-2.0
+syntax = "proto3";
+package kingdom.openshell.managed.v1;
+option go_package = "kingdom/internal/execution/openshell/managedpb;managedpb";
+
+import "google/protobuf/duration.proto";
+import "options.proto";
+
+// Version 1 fingerprints encode decoded known fields with protobuf field order
+// and map keys in ascending byte order. Omitted/default scalars canonicalize to
+// the same value; message presence remains significant. Unknown fields are
+// ignored and confer no behavior. New behavior requires a negotiated capability
+// revision. Receipt hashing clears receipt_sha256 before canonical encoding.
+// Custom, opt-in Kingdom runtime extension. This is not an NVIDIA stable API.
+// Every method, including DescribeRuntime, requires gateway authentication and
+// workspace authorization. Unsupported peers must reject before admission.
+service ManagedExecutions {
+  rpc DescribeRuntime(DescribeRuntimeRequest) returns (DescribeRuntimeResponse) {
+    option (.openshell.options.v1.authorization) = { auth_mode: "bearer" scope: "sandbox:read" workspace_role: "user" };
+  }
+  rpc StartExecution(StartExecutionRequest) returns (ExecutionStatus) {
+    option (.openshell.options.v1.authorization) = { auth_mode: "bearer" scope: "sandbox:write" workspace_role: "user" };
+  }
+  rpc GetExecution(GetExecutionRequest) returns (ExecutionStatus) {
+    option (.openshell.options.v1.authorization) = { auth_mode: "bearer" scope: "sandbox:read" workspace_role: "user" };
+  }
+  rpc CancelExecution(CancelExecutionRequest) returns (ExecutionStatus) {
+    option (.openshell.options.v1.authorization) = { auth_mode: "bearer" scope: "sandbox:write" workspace_role: "user" };
+  }
+  rpc ReadOutput(ReadOutputRequest) returns (stream OutputChunk) {
+    option (.openshell.options.v1.authorization) = { auth_mode: "bearer" scope: "sandbox:read" workspace_role: "user" };
+  }
+}
+
+// Returned by an authenticated deployment; callers copy this binding, not
+// invent its identities. A profile name supplied by a workload is not proof.
+// Admission rechecks the complete binding against the actual trusted owner.
+message RuntimeBinding {
+  string sandbox_id = 1;
+  string boundary_generation = 2;
+  string main_process_instance_id = 3;
+  bytes deployment_profile_sha256 = 4;
+}
+message DescribeRuntimeRequest {
+  string workspace = 1;
+  string sandbox = 2;
+}
+message DescribeRuntimeResponse {
+  RuntimeBinding runtime = 1;
+  string capability = 2;
+  uint64 maximum_output_bytes = 3;
+  // Authenticated gateway-derived owner, never a caller assertion.
+  string gateway_id = 4;
+  string workspace_id = 5;
+  string subject_id = 6;
+}
+
+message CommandSpec {
+  repeated string argv = 1;
+  string workdir = 2;
+  map<string, string> environment = 3;
+  bytes stdin = 4;
+  google.protobuf.Duration execution_timeout = 5;
+  uint64 output_limit_bytes = 6;
+}
+message ExecutionSelector {
+  string workspace = 1;
+  string sandbox = 2;
+  string request_id = 3;
+  RuntimeBinding runtime = 4;
+}
+message StartExecutionRequest {
+  ExecutionSelector execution = 1;
+  CommandSpec command = 2;
+}
+message GetExecutionRequest { ExecutionSelector execution = 1; }
+message CancelExecutionRequest {
+  ExecutionSelector execution = 1;
+  // Independent durable cancellation operation UUID. Reuse cannot retarget.
+  string request_id = 2;
+}
+message ReadOutputRequest {
+  ExecutionSelector execution = 1;
+  uint64 after_sequence = 2;
+  // Bounded number of retained chunks, not an unbounded live subscription.
+  uint32 limit = 3;
+}
+
+// Gateway-derived ownership, never accepted from a public caller as authority.
+// This typed binding also crosses the authenticated supervisor/boundary path.
+message CommandIdentity {
+  uint32 schema_version = 1;
+  string gateway_id = 2;
+  string workspace_id = 3;
+  string subject_id = 4;
+  string method = 5;
+  string request_id = 6;
+  bytes original_request_sha256 = 7;
+  bytes effective_spec_sha256 = 8;
+  string boundary_request_id = 9;
+  RuntimeBinding runtime = 10;
+}
+
+enum ExecutionState {
+  EXECUTION_STATE_UNSPECIFIED = 0;
+  EXECUTION_STATE_ADMITTED = 1;
+  EXECUTION_STATE_RUNNING = 2;
+  EXECUTION_STATE_CLOSED = 3;
+  EXECUTION_STATE_UNRESOLVED = 4;
+}
+message ExecutionStatus {
+  CommandIdentity identity = 1;
+  ExecutionState state = 2;
+  TerminalReceipt terminal = 3;
+  uint64 durable_output_sequence = 4;
+}
+
+// Produced only by the trusted owner after kernel closure and durable storage.
+// Missing/unknown proof is UNRESOLVED, never a fabricated terminal receipt.
+message TerminalReceipt {
+  uint32 schema_version = 1;
+  CommandIdentity identity = 2;
+  oneof exit_status {
+    int32 exit_code = 3;
+    uint32 signal = 4;
+  }
+  bool group_closed = 5;
+  bool termination_requested = 6;
+  bool forced_cleanup = 7;
+  // A process fact. Workflow success also requires complete output and its own
+  // request/admission/settlement checks; exit zero alone grants no authority.
+  bool process_clean = 8;
+  OutputManifest output = 9;
+  bytes receipt_sha256 = 10;
+  // True only when the trusted owner delivered the complete fixed stdin.
+  // Required for success independently of process closure.
+  bool input_complete = 11;
+}
+message OutputManifest {
+  uint64 last_sequence = 1;
+  uint64 total_bytes = 2;
+  // SHA-256 over contiguous output frames: uint32 big-endian canonical
+  // OutputChunk byte length, then canonical known-field protobuf bytes.
+  // Frames include sequence and stream, not only payload data.
+  bytes sha256 = 3;
+  bool complete = 4;
+  bool gap = 5;
+  bool truncated = 6;
+}
+enum OutputStream {
+  OUTPUT_STREAM_UNSPECIFIED = 0;
+  OUTPUT_STREAM_STDOUT = 1;
+  OUTPUT_STREAM_STDERR = 2;
+}
+message OutputChunk {
+  uint64 sequence = 1;
+  OutputStream stream = 2;
+  bytes data = 3;
+}

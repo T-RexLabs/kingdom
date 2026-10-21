@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: Apache-2.0
+syntax = "proto3";
+package kingdom.openshell.managed.v1;
+option go_package = "kingdom/internal/execution/openshell/managedpb;managedpb";
+import "kingdom_managed.proto";
+
+// Internal only. This context is installed by the authenticated gateway relay,
+// never copied from a public request. The boundary also checks gateway and
+// sandbox generation against its authenticated SandboxProtocol session.
+message ManagedAuthority {
+  string gateway_id = 1;
+  string workspace_id = 2;
+  string subject_id = 3;
+  string sandbox_id = 4;
+  string boundary_generation = 5;
+}
+message ManagedBoundaryRequest {
+  ManagedAuthority authority = 1;
+  oneof operation {
+    ManagedDescribe describe = 10;
+    ManagedStart start = 11;
+    ManagedGet get = 12;
+    ManagedCancel cancel = 13;
+    ManagedRead read = 14;
+  }
+}
+message ManagedDescribe {}
+message ManagedStart {
+  CommandIdentity identity = 1;
+  CommandSpec effective_spec = 2;
+}
+message ManagedGet { CommandIdentity identity = 1; }
+message ManagedCancel {
+  CommandIdentity identity = 1;
+  string cancellation_request_id = 2;
+}
+message ManagedRead {
+  CommandIdentity identity = 1;
+  uint64 after_sequence = 2;
+  uint32 limit = 3;
+}
+message ManagedBoundaryResponse {
+  oneof result {
+    DescribeRuntimeResponse runtime = 10;
+    ExecutionStatus status = 11;
+    ManagedOutputBatch output = 12;
+  }
+}
+// Internal response remains within the existing 1 MiB control frame limit.
+// Return at most 512 KiB of encoded chunks per batch. next_sequence is the
+// exact next expected sequence, including on an empty batch. A missing retained
+// chunk is an error, not an adjusted cursor. Public streaming uses the chunks.
+message ManagedOutputBatch {
+  repeated OutputChunk chunks = 1;
+  uint64 next_sequence = 2;
+  uint64 durable_output_sequence = 3;
+}
+
+// Reachable only through an authenticated gateway-created managed relay.
+service ManagedRelay {
+  rpc Exchange(ManagedBoundaryRequest) returns (ManagedBoundaryResponse);
+}
