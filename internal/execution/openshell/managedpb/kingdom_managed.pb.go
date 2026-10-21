@@ -1426,7 +1426,9 @@ type RuntimeArchiveManifest struct {
 	WorkspaceId   string                 `protobuf:"bytes,3,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
 	Runtime       *RuntimeBinding        `protobuf:"bytes,4,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	// Strict ascending boundary_request_id byte order; no duplicate identities.
-	Commands      []*ArchivedCommand `protobuf:"bytes,5,rep,name=commands,proto3" json:"commands,omitempty"`
+	Commands []*ArchivedCommand `protobuf:"bytes,5,rep,name=commands,proto3" json:"commands,omitempty"`
+	// Schema 2 binds an authenticated owner even for an empty runtime.
+	SubjectId     string `protobuf:"bytes,6,opt,name=subject_id,json=subjectId,proto3" json:"subject_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1494,6 +1496,13 @@ func (x *RuntimeArchiveManifest) GetCommands() []*ArchivedCommand {
 		return x.Commands
 	}
 	return nil
+}
+
+func (x *RuntimeArchiveManifest) GetSubjectId() string {
+	if x != nil {
+		return x.SubjectId
+	}
+	return ""
 }
 
 type RuntimeArchive struct {
@@ -1979,14 +1988,16 @@ const file_kingdom_managed_proto_rawDesc = "" +
 	"\x0fArchivedCommand\x12I\n" +
 	"\bidentity\x18\x01 \x01(\v2-.kingdom.openshell.managed.v1.CommandIdentityR\bidentity\x12%\n" +
 	"\x0ereceipt_sha256\x18\x02 \x01(\fR\rreceiptSha256\x12D\n" +
-	"\x06output\x18\x03 \x01(\v2,.kingdom.openshell.managed.v1.OutputManifestR\x06output\"\x94\x02\n" +
+	"\x06output\x18\x03 \x01(\v2,.kingdom.openshell.managed.v1.OutputManifestR\x06output\"\xb3\x02\n" +
 	"\x16RuntimeArchiveManifest\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12\x1d\n" +
 	"\n" +
 	"gateway_id\x18\x02 \x01(\tR\tgatewayId\x12!\n" +
 	"\fworkspace_id\x18\x03 \x01(\tR\vworkspaceId\x12F\n" +
 	"\aruntime\x18\x04 \x01(\v2,.kingdom.openshell.managed.v1.RuntimeBindingR\aruntime\x12I\n" +
-	"\bcommands\x18\x05 \x03(\v2-.kingdom.openshell.managed.v1.ArchivedCommandR\bcommands\"\xaa\x01\n" +
+	"\bcommands\x18\x05 \x03(\v2-.kingdom.openshell.managed.v1.ArchivedCommandR\bcommands\x12\x1d\n" +
+	"\n" +
+	"subject_id\x18\x06 \x01(\tR\tsubjectId\"\xaa\x01\n" +
 	"\x0eRuntimeArchive\x12\x1d\n" +
 	"\n" +
 	"archive_id\x18\x01 \x01(\tR\tarchiveId\x12P\n" +

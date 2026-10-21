@@ -31,7 +31,7 @@ func DeletionDigest(receipt *pb.RuntimeDeletionReceipt) ([]byte, error) {
 	return h.Sum(nil), nil
 }
 func ValidateDeletionReceipt(receipt *pb.RuntimeDeletionReceipt, owner Owner, archive *pb.RuntimeArchive) error {
-	if receipt == nil || owner.Validate() != nil || archive == nil || archive.Manifest == nil || receipt.SchemaVersion != 1 || receipt.GatewayId != owner.GatewayID || receipt.WorkspaceId != owner.WorkspaceID || receipt.SubjectId != owner.SubjectID || !proto.Equal(receipt.Runtime, owner.Runtime) || receipt.ArchiveId != archive.ArchiveId || !proto.Equal(archive.Manifest.Runtime, owner.Runtime) {
+	if receipt == nil || owner.Validate() != nil || archive == nil || archive.Manifest == nil || archive.Manifest.SchemaVersion != 2 || archive.Manifest.SubjectId != owner.SubjectID || receipt.SchemaVersion != 1 || receipt.GatewayId != owner.GatewayID || receipt.WorkspaceId != owner.WorkspaceID || receipt.SubjectId != owner.SubjectID || !proto.Equal(receipt.Runtime, owner.Runtime) || receipt.ArchiveId != archive.ArchiveId || !proto.Equal(archive.Manifest.Runtime, owner.Runtime) {
 		return ErrProtocol
 	}
 	archiveDigest, err := ArchiveDigest(archive.Manifest)
@@ -60,15 +60,10 @@ func (p DeletionProof) Receipt() *pb.RuntimeDeletionReceipt {
 // not a closure receipt; callers must retain the disposal obligation.
 func (c *ArchiveClient) DeleteFinalized(ctx context.Context) (DeletionProof, error) {
 	var empty DeletionProof
-	if c == nil || c.archive == nil || len(c.commands) == 0 {
+	if c == nil || c.archive == nil {
 		return empty, ErrProtocol
 	}
-	var owner Owner
-	for _, command := range c.commands {
-		identity := command.Identity
-		owner = Owner{GatewayID: identity.GatewayId, WorkspaceID: identity.WorkspaceId, SubjectID: identity.SubjectId, Runtime: identity.Runtime}
-		break
-	}
+	owner := c.owner
 	response, e := c.wire.DeleteFinalizedRuntime(ctx, &pb.DeleteFinalizedRuntimeRequest{ArchiveId: c.archive.ArchiveId, Runtime: proto.Clone(owner.Runtime).(*pb.RuntimeBinding)}, limits()...)
 	if e != nil {
 		return empty, e

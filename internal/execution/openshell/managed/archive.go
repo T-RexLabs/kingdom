@@ -30,11 +30,11 @@ func ArchiveDigest(manifest *pb.RuntimeArchiveManifest) ([]byte, error) {
 // An archive digest alone does not prove that no operation was omitted. This
 // verifies identity and manifests, not successful execution or workspace export.
 func ValidateArchive(archive *pb.RuntimeArchive, owner Owner, expected []*pb.CommandIdentity) error {
-	if owner.Validate() != nil || archive == nil || archive.Manifest == nil || len(expected) == 0 || len(expected) > MaxRuntimeCommands || proto.Size(archive) > MaxControlBytes {
+	if owner.Validate() != nil || archive == nil || archive.Manifest == nil || len(expected) > MaxRuntimeCommands || proto.Size(archive) > MaxControlBytes {
 		return ErrProtocol
 	}
 	m := archive.Manifest
-	if m.SchemaVersion != 1 || m.GatewayId != owner.GatewayID || m.WorkspaceId != owner.WorkspaceID || !proto.Equal(m.Runtime, owner.Runtime) || len(m.Commands) != len(expected) {
+	if m.SchemaVersion != 2 || m.SubjectId != owner.SubjectID || m.GatewayId != owner.GatewayID || m.WorkspaceId != owner.WorkspaceID || !proto.Equal(m.Runtime, owner.Runtime) || len(m.Commands) != len(expected) {
 		return ErrProtocol
 	}
 	want := make(map[string]*pb.CommandIdentity, len(expected))
@@ -65,7 +65,7 @@ func ValidateArchive(archive *pb.RuntimeArchive, owner Owner, expected []*pb.Com
 // on RPC error and may retry only this exact runtime. This method cannot settle
 // a workflow or substitute for local durable retention of the returned archive.
 func (c *Client) Finalize(ctx context.Context, expected []*pb.CommandIdentity) (*pb.RuntimeArchive, error) {
-	if len(expected) == 0 || len(expected) > MaxRuntimeCommands {
+	if len(expected) > MaxRuntimeCommands {
 		return nil, ErrProtocol
 	}
 	boundaries, requests := map[string]bool{}, map[string]bool{}
@@ -88,6 +88,7 @@ func (c *Client) Finalize(ctx context.Context, expected []*pb.CommandIdentity) (
 // ArchiveClient reads a previously retained, validated archive without requiring
 // a live sandbox or Describe call. Gateway authentication remains required.
 type ArchiveClient struct {
+	owner    Owner
 	wire     pb.ManagedExecutionsClient
 	archive  *pb.RuntimeArchive
 	commands map[string]*pb.ArchivedCommand
@@ -98,7 +99,8 @@ func NewArchiveClient(wire pb.ManagedExecutionsClient, owner Owner, archive *pb.
 		return nil, ErrProtocol
 	}
 	saved := proto.Clone(archive).(*pb.RuntimeArchive)
-	c := &ArchiveClient{wire: wire, archive: saved, commands: make(map[string]*pb.ArchivedCommand, len(saved.Manifest.Commands))}
+	owner.Runtime = proto.Clone(owner.Runtime).(*pb.RuntimeBinding)
+	c := &ArchiveClient{owner: owner, wire: wire, archive: saved, commands: make(map[string]*pb.ArchivedCommand, len(saved.Manifest.Commands))}
 	for _, command := range saved.Manifest.Commands {
 		c.commands[command.Identity.RequestId] = command
 	}

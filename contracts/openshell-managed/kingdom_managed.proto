@@ -197,6 +197,8 @@ message RuntimeArchiveManifest {
   RuntimeBinding runtime = 4;
   // Strict ascending boundary_request_id byte order; no duplicate identities.
   repeated ArchivedCommand commands = 5;
+  // Schema 2 binds an authenticated owner even for an empty runtime.
+  string subject_id = 6;
 }
 message RuntimeArchive {
   // Lowercase hex manifest_sha256, immutable and content addressed.

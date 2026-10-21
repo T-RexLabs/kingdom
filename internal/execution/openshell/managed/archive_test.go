@@ -68,7 +68,7 @@ func TestArchiveCanonicalVector(t *testing.T) {
 func archiveFixture(t *testing.T) (Owner, *pb.CommandIdentity, *pb.TerminalReceipt, *pb.RuntimeArchive) {
 	t.Helper()
 	owner, _, identity, receipt := fixture(t)
-	manifest := &pb.RuntimeArchiveManifest{SchemaVersion: 1, GatewayId: owner.GatewayID, WorkspaceId: owner.WorkspaceID, Runtime: owner.Runtime, Commands: []*pb.ArchivedCommand{{Identity: identity, ReceiptSha256: receipt.ReceiptSha256, Output: receipt.Output}}}
+	manifest := &pb.RuntimeArchiveManifest{SchemaVersion: 2, SubjectId: owner.SubjectID, GatewayId: owner.GatewayID, WorkspaceId: owner.WorkspaceID, Runtime: owner.Runtime, Commands: []*pb.ArchivedCommand{{Identity: identity, ReceiptSha256: receipt.ReceiptSha256, Output: receipt.Output}}}
 	digest, err := ArchiveDigest(manifest)
 	if err != nil {
 		t.Fatal(err)

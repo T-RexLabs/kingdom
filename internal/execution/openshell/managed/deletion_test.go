@@ -104,3 +104,28 @@ func TestDeletionCanonicalVector(t *testing.T) {
 		t.Fatal("canonical bytes mismatch", e)
 	}
 }
+
+func TestEmptyArchivePinsOwnerAndDeletesWithoutSyntheticCommand(t *testing.T) {
+	owner, _, _, archive := archiveFixture(t)
+	archive.Manifest.Commands = nil
+	archive.ManifestSha256, _ = ArchiveDigest(archive.Manifest)
+	archive.ArchiveId = hex.EncodeToString(archive.ManifestSha256)
+	receipt := &pb.RuntimeDeletionReceipt{SchemaVersion: 1, GatewayId: owner.GatewayID, WorkspaceId: owner.WorkspaceID, SubjectId: owner.SubjectID, Runtime: owner.Runtime, ArchiveId: archive.ArchiveId}
+	receipt.ReceiptSha256, _ = DeletionDigest(receipt)
+	wire := &deletionWire{response: &pb.DeleteFinalizedRuntimeResponse{State: pb.RuntimeDeletionState_RUNTIME_DELETION_STATE_ABSENT, Receipt: receipt}}
+	client, err := NewArchiveClient(wire, owner, archive, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.DeleteFinalized(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, subject := range []string{"", "foreign"} {
+		archive.Manifest.SubjectId = subject
+		archive.ManifestSha256, _ = ArchiveDigest(archive.Manifest)
+		archive.ArchiveId = hex.EncodeToString(archive.ManifestSha256)
+		if ValidateArchive(archive, owner, nil) == nil {
+			t.Fatal("unbound empty archive accepted")
+		}
+	}
+}

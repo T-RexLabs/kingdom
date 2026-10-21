@@ -72,7 +72,7 @@ func disposalFixture(t *testing.T) (*Disposer, remote.Reservation, *disposalWire
 	if e != nil {
 		t.Fatal(e)
 	}
-	m := &pb.RuntimeArchiveManifest{SchemaVersion: 1, GatewayId: owner.GatewayID, WorkspaceId: owner.WorkspaceID, Runtime: owner.Runtime}
+	m := &pb.RuntimeArchiveManifest{SchemaVersion: 2, SubjectId: owner.SubjectID, GatewayId: owner.GatewayID, WorkspaceId: owner.WorkspaceID, Runtime: owner.Runtime}
 	for _, id := range ids {
 		receipt, _, e := remote.ReadManagedReceipt(ctx, w.db, r.Owner, r.Reference, id.RequestId)
 		if e != nil {

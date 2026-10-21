@@ -68,7 +68,14 @@ func DisposalInventory(ctx context.Context, q Reader, owner Owner, ref Reference
 		}
 		identities = append(identities, receipt.Identity)
 	}
-	if len(identities) == 0 || len(identities) > managed.MaxRuntimeCommands {
+	if len(identities) == 0 {
+		discovered, err := ReadRuntimeOwner(ctx, q, owner, ref)
+		if err != nil {
+			return expected, nil, err
+		}
+		expected = discovered
+	}
+	if len(identities) > managed.MaxRuntimeCommands {
 		return expected, nil, ErrConflict
 	}
 	return expected, identities, nil

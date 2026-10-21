@@ -41,6 +41,11 @@ invocation's immutable credential revision.
 
 ## Runtime Archives
 
+Authenticated runtime discovery durably registers the exact runtime and owner before
+any command starts. Registration blocks native lifecycle changes until finalization.
+Archive manifest schema 2 includes the authenticated subject, including when the
+runtime has no commands. Schema 1 manifests are not accepted by this capability.
+
 Finalization closes admission and archives every retained command before native
 lifecycle operations may remove the runtime. An unknown command or unverified
 receipt keeps deletion blocked. The manifest orders commands by their boundary

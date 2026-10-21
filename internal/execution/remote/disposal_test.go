@@ -22,7 +22,7 @@ func TestRuntimeDisposalRetainsExactArchive(t *testing.T) {
 	})
 	transaction(t, db, func(tx *sql.Tx) error { return CloseAdmissionTx(ctx, tx, r.Owner, r.Reference) })
 	transaction(t, db, func(tx *sql.Tx) error { return PrepareRuntimeDisposalTx(ctx, tx, r.Owner, r.Reference) })
-	manifest := &pb.RuntimeArchiveManifest{SchemaVersion: 1, GatewayId: expected.GatewayID, WorkspaceId: expected.WorkspaceID, Runtime: expected.Runtime, Commands: []*pb.ArchivedCommand{{Identity: identity, ReceiptSha256: receipt.ReceiptSha256, Output: receipt.Output}}}
+	manifest := &pb.RuntimeArchiveManifest{SchemaVersion: 2, SubjectId: expected.SubjectID, GatewayId: expected.GatewayID, WorkspaceId: expected.WorkspaceID, Runtime: expected.Runtime, Commands: []*pb.ArchivedCommand{{Identity: identity, ReceiptSha256: receipt.ReceiptSha256, Output: receipt.Output}}}
 	digest, e := managed.ArchiveDigest(manifest)
 	if e != nil {
 		t.Fatal(e)
@@ -63,7 +63,7 @@ func TestArchiveCannotSubstituteReceiptOrPermitNewExport(t *testing.T) {
 		_, e := PrepareManagedExecutionTx(ctx, tx, r.Owner, r.Reference, WorkspaceExport, expected, export)
 		return e
 	})
-	manifest := &pb.RuntimeArchiveManifest{SchemaVersion: 1, GatewayId: expected.GatewayID, WorkspaceId: expected.WorkspaceID, Runtime: expected.Runtime, Commands: []*pb.ArchivedCommand{{Identity: identity, ReceiptSha256: make([]byte, 32), Output: receipt.Output}}}
+	manifest := &pb.RuntimeArchiveManifest{SchemaVersion: 2, SubjectId: expected.SubjectID, GatewayId: expected.GatewayID, WorkspaceId: expected.WorkspaceID, Runtime: expected.Runtime, Commands: []*pb.ArchivedCommand{{Identity: identity, ReceiptSha256: make([]byte, 32), Output: receipt.Output}}}
 	digest, _ := managed.ArchiveDigest(manifest)
 	archive := &pb.RuntimeArchive{ArchiveId: hex.EncodeToString(digest), ManifestSha256: digest, Manifest: manifest}
 	reject(t, db, ErrConflict, func(tx *sql.Tx) error { return RecordRuntimeArchiveTx(ctx, tx, r.Owner, r.Reference, archive) })
@@ -111,4 +111,28 @@ func TestDisposalIncludesNeverStartedDispositionWithoutInventedReceipt(t *testin
 		_, e := ClaimDispatchTx(ctx, tx, r.Owner, r.Reference, request.Execution.RequestId)
 		return e
 	})
+}
+
+func TestEmptyDisposalRequiresRetainedAuthenticatedDiscovery(t *testing.T) {
+	db := openLedger(t, ":memory:")
+	r := bound(t, db)
+	expected, _, _ := managedRequest(t, r)
+	reject(t, db, nil, func(tx *sql.Tx) error { return PrepareRuntimeDisposalTx(ctx, tx, r.Owner, r.Reference) })
+	transaction(t, db, func(tx *sql.Tx) error { return RecordRuntimeOwnerTx(ctx, tx, r.Owner, r.Reference, expected) })
+	transaction(t, db, func(tx *sql.Tx) error { return CloseAdmissionTx(ctx, tx, r.Owner, r.Reference) })
+	actual, ids, err := DisposalInventory(ctx, db, r.Owner, r.Reference)
+	if err != nil || len(ids) != 0 || actual.SubjectID != expected.SubjectID {
+		t.Fatal("empty discovery inventory", err)
+	}
+	transaction(t, db, func(tx *sql.Tx) error { return PrepareRuntimeDisposalTx(ctx, tx, r.Owner, r.Reference) })
+	manifest := &pb.RuntimeArchiveManifest{SchemaVersion: 2, SubjectId: actual.SubjectID, GatewayId: actual.GatewayID, WorkspaceId: actual.WorkspaceID, Runtime: actual.Runtime}
+	digest, err := managed.ArchiveDigest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := &pb.RuntimeArchive{ArchiveId: hex.EncodeToString(digest), Manifest: manifest, ManifestSha256: digest}
+	transaction(t, db, func(tx *sql.Tx) error { return RecordRuntimeArchiveTx(ctx, tx, r.Owner, r.Reference, archive) })
+	if _, err := ReadRuntimeArchive(ctx, db, r.Owner, r.Reference); err != nil {
+		t.Fatal(err)
+	}
 }
