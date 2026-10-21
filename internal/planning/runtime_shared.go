@@ -86,7 +86,7 @@ func (d runtimeDeps) agentContext(ctx context.Context, operation state.PlanningO
 		WriteExternalContext: writeExternal,
 		ExternalSnapshotIDs:  snapshotIDs,
 		VisitMessages:        messages,
-		ModelSelection:       decodeModelSelection(session.ModelSelectionJSON),
+		ModelSelection:       decodeModelSelection(operation.ModelSelectionJSON),
 		ForceNewSession:      forceNewSession,
 	}, nil
 }

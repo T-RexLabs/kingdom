@@ -134,26 +134,28 @@ type PlanningContextSnapshot struct {
 }
 
 type PlanningOperation struct {
-	OperationID                string
-	AcpRunID                   string
-	PlanningSessionID          string
-	PlanningContextSnapshotID  *string
-	Type                       PlanningOperationType
-	Status                     PlanningOperationStatus
-	RequestPayloadJSON         string
-	LeaseOwner                 string
-	LeaseExpiresAt             *string
-	LeaseVersion               int
-	LastHeartbeatAt            *string
-	ProviderSessionID          *string
-	ActiveProviderInvocationID *string
-	ObservedOutputText         string
-	Error                      *string
-	ResultRef                  *string
-	CanonicalSettlementID      *string
-	CreatedAt                  string
-	StartedAt                  *string
-	FinishedAt                 *string
+	ModelSelectionJSON              string
+	ModelSelectionSourceOperationID string
+	OperationID                     string
+	AcpRunID                        string
+	PlanningSessionID               string
+	PlanningContextSnapshotID       *string
+	Type                            PlanningOperationType
+	Status                          PlanningOperationStatus
+	RequestPayloadJSON              string
+	LeaseOwner                      string
+	LeaseExpiresAt                  *string
+	LeaseVersion                    int
+	LastHeartbeatAt                 *string
+	ProviderSessionID               *string
+	ActiveProviderInvocationID      *string
+	ObservedOutputText              string
+	Error                           *string
+	ResultRef                       *string
+	CanonicalSettlementID           *string
+	CreatedAt                       string
+	StartedAt                       *string
+	FinishedAt                      *string
 	// AutomaticRetry is populated only by a due retry claim. It is not stored
 	// on planning_operations; retry_decisions remains durable authority.
 	AutomaticRetry bool
@@ -248,24 +250,27 @@ type CreatePlanningContextSnapshotRequest struct {
 }
 
 type CreatePlanningOperationRequest struct {
-	OperationID                string
-	PlanningSessionID          string
-	Type                       PlanningOperationType
-	Status                     PlanningOperationStatus
-	RequestPayloadJSON         string
-	LeaseOwner                 string
-	LeaseExpiresAt             string
-	LeaseVersion               int
-	LastHeartbeatAt            string
-	ProviderSessionID          string
-	ActiveProviderInvocationID string
-	ObservedOutputText         string
-	Error                      string
-	ResultRef                  string
-	CanonicalSettlementID      string
-	CreatedAt                  string
-	StartedAt                  string
-	FinishedAt                 string
+	// ModelSelectionSourceOperationID binds an automatic title to its causal operation.
+	// Empty captures the current session selection in the enqueue transaction.
+	ModelSelectionSourceOperationID string
+	OperationID                     string
+	PlanningSessionID               string
+	Type                            PlanningOperationType
+	Status                          PlanningOperationStatus
+	RequestPayloadJSON              string
+	LeaseOwner                      string
+	LeaseExpiresAt                  string
+	LeaseVersion                    int
+	LastHeartbeatAt                 string
+	ProviderSessionID               string
+	ActiveProviderInvocationID      string
+	ObservedOutputText              string
+	Error                           string
+	ResultRef                       string
+	CanonicalSettlementID           string
+	CreatedAt                       string
+	StartedAt                       string
+	FinishedAt                      string
 }
 
 type AppendPlanningOperationEventRequest struct {

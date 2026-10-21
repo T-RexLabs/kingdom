@@ -81,9 +81,22 @@ func insertPlanningOperation(ctx context.Context, exec sqlExecutor, req CreatePl
 		return PlanningOperation{}, fmt.Errorf("%w: %q", ErrPlanningContextSnapshotUnavailable, row.PlanningSessionID)
 	}
 	row.PlanningContextSnapshotID = nullableString(snapshotID.String)
+	row.ModelSelectionSourceOperationID = strings.TrimSpace(req.ModelSelectionSourceOperationID)
+	if row.ModelSelectionSourceOperationID != "" {
+		if row.Type != PlanningOperationTypeGenerateTitle {
+			return PlanningOperation{}, fmt.Errorf("only automatic titles can inherit a model selection")
+		}
+		if err := queryer.QueryRowContext(ctx, `SELECT model_selection_json FROM planning_operations WHERE operation_id=? AND planning_session_id=? AND type='reply'`, row.ModelSelectionSourceOperationID, row.PlanningSessionID).Scan(&row.ModelSelectionJSON); err != nil {
+			return PlanningOperation{}, fmt.Errorf("bind causal model selection: %w", err)
+		}
+	} else {
+		if err := queryer.QueryRowContext(ctx, `SELECT model_selection_json FROM planning_sessions WHERE planning_session_id=?`, row.PlanningSessionID).Scan(&row.ModelSelectionJSON); err != nil {
+			return PlanningOperation{}, fmt.Errorf("bind model selection: %w", err)
+		}
+	}
 	_, err := exec.ExecContext(ctx,
-		`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, model_selection_json, model_selection_source_operation_id, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.OperationID,
 		row.AcpRunID,
 		row.PlanningSessionID,
@@ -91,6 +104,8 @@ func insertPlanningOperation(ctx context.Context, exec sqlExecutor, req CreatePl
 		row.Type,
 		row.Status,
 		row.RequestPayloadJSON,
+		row.ModelSelectionJSON,
+		row.ModelSelectionSourceOperationID,
 		row.LeaseOwner,
 		nullableStringValue(row.LeaseExpiresAt),
 		row.LeaseVersion,
@@ -1065,7 +1080,7 @@ func (s *PlanningStore) GetOperationByAcpRunID(ctx context.Context, acpRunID str
 func getPlanningOperation(ctx context.Context, query sqlQueryRower, operationID string) (PlanningOperation, bool, error) {
 	var row PlanningOperation
 	err := scanPlanningOperation(query.QueryRowContext(ctx,
-		`SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+		`SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, model_selection_json, model_selection_source_operation_id, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
 		 FROM planning_operations WHERE operation_id = ?`,
 		strings.TrimSpace(operationID),
 	), &row)
@@ -1081,7 +1096,7 @@ func getPlanningOperation(ctx context.Context, query sqlQueryRower, operationID 
 func getPlanningOperationByAcpRunID(ctx context.Context, query sqlQueryRower, acpRunID string) (PlanningOperation, bool, error) {
 	var row PlanningOperation
 	err := scanPlanningOperation(query.QueryRowContext(ctx,
-		`SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+		`SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, model_selection_json, model_selection_source_operation_id, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
 		 FROM planning_operations WHERE acp_run_id = ?`,
 		strings.TrimSpace(acpRunID),
 	), &row)
@@ -1099,7 +1114,7 @@ func (s *PlanningStore) ListSessionOperations(ctx context.Context, planningSessi
 		limit = DefaultPlanningOperationListLimit
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+		`SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, model_selection_json, model_selection_source_operation_id, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
 		 FROM planning_operations
 		 WHERE planning_session_id = ?
 		 ORDER BY created_at DESC, operation_id DESC
@@ -1132,7 +1147,7 @@ func (s *PlanningStore) GetLatestOperationByResultRef(ctx context.Context, plann
 	}
 	var row PlanningOperation
 	err := scanPlanningOperation(s.db.QueryRowContext(ctx,
-		`SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+		`SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, model_selection_json, model_selection_source_operation_id, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
 		 FROM planning_operations
 		 WHERE planning_session_id = ? AND result_ref = ?
 		 ORDER BY created_at DESC, operation_id DESC
@@ -1177,7 +1192,7 @@ func (s *PlanningStore) ListLatestOperationsByResultRefs(ctx context.Context, pl
 		placeholders = append(placeholders, "?")
 		args = append(args, resultRef)
 	}
-	query := `SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+	query := `SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, model_selection_json, model_selection_source_operation_id, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
 		 FROM planning_operations
 		 WHERE planning_session_id = ? AND result_ref IN (` + strings.Join(placeholders, ",") + `)
 		 ORDER BY created_at DESC, operation_id DESC`
@@ -1232,7 +1247,7 @@ func (s *PlanningStore) ListOperationsByStatusPage(ctx context.Context, afterCre
 		args = append(args, status)
 	}
 	args = append(args, trimmedAfterCreatedAt, trimmedAfterCreatedAt, trimmedAfterCreatedAt, trimmedAfterOperationID, limit)
-	query := `SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+	query := `SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, model_selection_json, model_selection_source_operation_id, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
 		 FROM planning_operations
 		 WHERE status IN (` + strings.Join(placeholders, ", ") + `)
 		   AND (? = '' OR created_at > ? OR (created_at = ? AND operation_id > ?))
@@ -1322,7 +1337,7 @@ func (s *PlanningStore) claimOperationOnce(ctx context.Context, operationID stri
 		     finished_at = NULL
 		 WHERE operation_id = ? AND status = ?
 		 RETURNING operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status,
-		           request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at,
+		           request_payload_json, model_selection_json, model_selection_source_operation_id, lease_owner, lease_expires_at, lease_version, last_heartbeat_at,
 		           provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref,
 		           canonical_settlement_id, created_at, started_at, finished_at`,
 		PlanningOperationStatusRunning,
@@ -1381,6 +1396,8 @@ func scanPlanningOperation(row scannable, dest *PlanningOperation) error {
 		&dest.Type,
 		&dest.Status,
 		&dest.RequestPayloadJSON,
+		&dest.ModelSelectionJSON,
+		&dest.ModelSelectionSourceOperationID,
 		&dest.LeaseOwner,
 		&leaseExpiresAt,
 		&dest.LeaseVersion,

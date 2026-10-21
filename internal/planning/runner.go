@@ -557,7 +557,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(turn.Metadata, err), turn.Metadata.FinalText)
 	}
 	var autoTitleSession *state.PlanningSession
-	autoTitleSession, err = maybeAutoGenerateTitleForReplyFinalize(ctx, r.deps, r, session, messages, request, titleTriggerSourceAutoSecondUserMessageFinalize)
+	autoTitleSession, err = maybeAutoGenerateTitleForReplyFinalize(ctx, r.deps, r, session, messages, request, operation.OperationID, titleTriggerSourceAutoSecondUserMessageFinalize)
 	if err != nil {
 		log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceAutoSecondUserMessageFinalize, session.PlanningSessionID, err)
 		autoTitleSession = nil
