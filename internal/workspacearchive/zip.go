@@ -102,6 +102,9 @@ func ImportZIP(ctx context.Context, parent string, source io.ReaderAt, size int6
 	if n != size {
 		return nil, io.ErrUnexpectedEOF
 	}
+	if err := boundDirectory(ctx, archive, size, limits); err != nil {
+		return nil, err
+	}
 	zr, err := zip.NewReader(archive, size)
 	if err != nil {
 		return nil, fmt.Errorf("read project archive: %w", err)
