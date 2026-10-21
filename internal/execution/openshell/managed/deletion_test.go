@@ -2,10 +2,13 @@ package managed
 
 import (
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 	pb "kingdom/internal/execution/openshell/managedpb"
+	"os"
 	"testing"
 )
 
@@ -67,5 +70,37 @@ func TestTypedDeletionRequiresExactDurableAbsence(t *testing.T) {
 	wire.response = &pb.DeleteFinalizedRuntimeResponse{}
 	if _, e = client.DeleteFinalized(context.Background()); e == nil {
 		t.Fatal("unknown state accepted")
+	}
+}
+
+func TestDeletionCanonicalVector(t *testing.T) {
+	var v struct {
+		Canonical string `json:"canonical_hex"`
+		SHA       string `json:"sha256"`
+		Wire      string `json:"receipt_wire_hex"`
+	}
+	raw, e := os.ReadFile("../../../../contracts/openshell-managed/deletion-vector.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = json.Unmarshal(raw, &v); e != nil {
+		t.Fatal(e)
+	}
+	wire, e := hex.DecodeString(v.Wire)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var receipt pb.RuntimeDeletionReceipt
+	if e = proto.Unmarshal(wire, &receipt); e != nil {
+		t.Fatal(e)
+	}
+	digest, e := DeletionDigest(&receipt)
+	if e != nil || hex.EncodeToString(digest) != v.SHA {
+		t.Fatal("canonical digest mismatch", e)
+	}
+	receipt.ReceiptSha256 = nil
+	canonical, e := Canonical(&receipt)
+	if e != nil || hex.EncodeToString(canonical) != v.Canonical {
+		t.Fatal("canonical bytes mismatch", e)
 	}
 }

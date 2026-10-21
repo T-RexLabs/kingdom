@@ -70,7 +70,9 @@ func TestArchiveCannotSubstituteReceiptOrPermitNewExport(t *testing.T) {
 	stale := r.Owner
 	stale.LeaseVersion++
 	reject(t, db, ErrConflict, func(tx *sql.Tx) error { return PrepareRuntimeDisposalTx(ctx, tx, stale, r.Reference) })
-	reject(t, db, ErrConflict, func(tx *sql.Tx) error { return RecordNativeAbsenceTx(ctx, tx, r.Owner, r.Reference, NativeAbsence{}) })
+	reject(t, db, ErrConflict, func(tx *sql.Tx) error {
+		return RecordRuntimeDeletionTx(ctx, tx, r.Owner, r.Reference, managed.DeletionProof{})
+	})
 	if e := RequireRuntimeDisposed(ctx, db, r.Owner, r.Reference); e == nil {
 		t.Fatal("archive intent became disposal")
 	}

@@ -7,11 +7,9 @@ import (
 	"errors"
 	"testing"
 
-	native "github.com/NVIDIA/OpenShell/sdk/go/proto/openshellv1"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"kingdom/internal/execution/openshell/managed"
 	pb "kingdom/internal/execution/openshell/managedpb"
 	"kingdom/internal/execution/remote"
@@ -27,41 +25,36 @@ func (g *disposalGate) RequireClosed(context.Context, remote.Owner, remote.Refer
 	return nil
 }
 
-type disposalNativeFixture struct {
-	*nativeFixture
-	absent, replacement bool
-	deletes             int
-}
-
-func (n *disposalNativeFixture) GetSandbox(ctx context.Context, r *native.GetSandboxRequest, o ...grpc.CallOption) (*native.SandboxResponse, error) {
-	if n.absent {
-		return nil, status.Error(codes.NotFound, "absent")
-	}
-	v, e := n.nativeFixture.GetSandbox(ctx, r, o...)
-	if e == nil && n.replacement {
-		v.Sandbox.Metadata.Id = "replacement"
-	}
-	return v, e
-}
-func (n *disposalNativeFixture) DeleteSandbox(context.Context, *native.DeleteSandboxRequest, ...grpc.CallOption) (*native.DeleteSandboxResponse, error) {
-	n.deletes++
-	n.absent = true
-	return &native.DeleteSandboxResponse{}, nil
-}
-
 type disposalWire struct {
 	pb.ManagedExecutionsClient
-	archive *pb.RuntimeArchive
-	calls   int
+	archive          *pb.RuntimeArchive
+	calls, deletes   int
+	pending, foreign bool
 }
 
 func (w *disposalWire) FinalizeRuntime(context.Context, *pb.FinalizeRuntimeRequest, ...grpc.CallOption) (*pb.RuntimeArchive, error) {
 	w.calls++
 	return w.archive, nil
 }
-func disposalFixture(t *testing.T) (*Disposer, remote.Reservation, *disposalNativeFixture, *disposalGate) {
+func (w *disposalWire) DeleteFinalizedRuntime(_ context.Context, req *pb.DeleteFinalizedRuntimeRequest, _ ...grpc.CallOption) (*pb.DeleteFinalizedRuntimeResponse, error) {
+	w.deletes++
+	if req.ArchiveId != w.archive.ArchiveId || !proto.Equal(req.Runtime, w.archive.Manifest.Runtime) {
+		return nil, errors.New("wrong runtime")
+	}
+	if w.pending {
+		return &pb.DeleteFinalizedRuntimeResponse{State: pb.RuntimeDeletionState_RUNTIME_DELETION_STATE_PENDING}, nil
+	}
+	identity := w.archive.Manifest.Commands[0].Identity
+	receipt := &pb.RuntimeDeletionReceipt{SchemaVersion: 1, GatewayId: identity.GatewayId, WorkspaceId: identity.WorkspaceId, SubjectId: identity.SubjectId, Runtime: proto.Clone(identity.Runtime).(*pb.RuntimeBinding), ArchiveId: w.archive.ArchiveId}
+	if w.foreign {
+		receipt.Runtime.SandboxId = "replacement"
+	}
+	receipt.ReceiptSha256, _ = managed.DeletionDigest(receipt)
+	return &pb.DeleteFinalizedRuntimeResponse{State: pb.RuntimeDeletionState_RUNTIME_DELETION_STATE_ABSENT, Receipt: receipt}, nil
+}
+func disposalFixture(t *testing.T) (*Disposer, remote.Reservation, *disposalWire, *disposalGate) {
 	t.Helper()
-	w, p, n := fixture(t)
+	w, p, _ := fixture(t)
 	ctx := context.Background()
 	r, e := w.Reserve(ctx, p, "binding", uuid.NewString())
 	if e != nil {
@@ -89,42 +82,38 @@ func disposalFixture(t *testing.T) (*Disposer, remote.Reservation, *disposalNati
 	}
 	digest, _ := managed.ArchiveDigest(m)
 	w.wire = &disposalWire{archive: &pb.RuntimeArchive{ArchiveId: hex.EncodeToString(digest), ManifestSha256: digest, Manifest: m}}
-	native := &disposalNativeFixture{nativeFixture: n}
-	w.native = native
+	wire := w.wire.(*disposalWire)
 	gate := &disposalGate{}
 	d, e := NewDisposer(w, gate)
 	if e != nil {
 		t.Fatal(e)
 	}
-	return d, r, native, gate
+	return d, r, wire, gate
 }
-func TestDisposalRejectsObservedReplacementBeforeNativeDelete(t *testing.T) {
-	d, r, n, _ := disposalFixture(t)
-	n.replacement = true
-	if e := d.Dispose(context.Background(), r); !errors.Is(e, remote.ErrConflict) {
-		t.Fatal(e)
-	}
-	if n.deletes != 0 {
-		t.Fatal("foreign runtime deleted")
+func TestDisposalRejectsForeignTypedDeletion(t *testing.T) {
+	d, r, w, _ := disposalFixture(t)
+	w.foreign = true
+	if e := d.Dispose(context.Background(), r); e == nil {
+		t.Fatal("foreign runtime proof accepted")
 	}
 	if e := remote.RequireRuntimeDisposed(context.Background(), d.worker.db, r.Owner, r.Reference); e == nil {
 		t.Fatal("replacement certified absent")
 	}
 }
-func TestDisposalRequiresStableObservationAndPrerequisites(t *testing.T) {
-	for _, mode := range []string{"absent", "capability"} {
+func TestDisposalRequiresCompletedDeletionAndPrerequisites(t *testing.T) {
+	for _, mode := range []string{"pending", "capability"} {
 		t.Run(mode, func(t *testing.T) {
-			d, r, n, g := disposalFixture(t)
-			n.absent = mode == "absent"
+			d, r, w, g := disposalFixture(t)
+			w.pending = mode == "pending"
 			g.deny = mode == "capability"
 			if e := d.Dispose(context.Background(), r); e == nil {
 				t.Fatal("missing evidence disposed runtime")
 			}
-			if n.deletes != 0 {
+			if mode == "capability" && w.deletes != 0 {
 				t.Fatal("deleted without prerequisites")
 			}
 			if e := remote.RequireRuntimeDisposed(context.Background(), d.worker.db, r.Owner, r.Reference); e == nil {
-				t.Fatal("absence without stable identity")
+				t.Fatal("pending deletion became absence")
 			}
 		})
 	}
@@ -153,8 +142,8 @@ func TestDisposalRetainsArchiveAndAbsenceAcrossReplay(t *testing.T) {
 	if e = remote.RequireRuntimeDisposed(ctx, reopened, r.Owner, r.Reference); e != nil {
 		t.Fatal("restart lost evidence", e)
 	}
-	if n.deletes != 1 || d.worker.wire.(*disposalWire).calls != 1 {
-		t.Fatal("replay mutated deleted runtime")
+	if n.deletes != 2 || d.worker.wire.(*disposalWire).calls != 1 {
+		t.Fatal("replay did not use exact archived deletion")
 	}
 	if _, e := d.worker.db.Exec(`DROP TRIGGER remote_archive_immutable`); e != nil {
 		t.Fatal(e)

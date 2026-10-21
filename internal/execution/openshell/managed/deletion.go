@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 
 	"google.golang.org/protobuf/proto"
@@ -31,6 +32,10 @@ func DeletionDigest(receipt *pb.RuntimeDeletionReceipt) ([]byte, error) {
 }
 func ValidateDeletionReceipt(receipt *pb.RuntimeDeletionReceipt, owner Owner, archive *pb.RuntimeArchive) error {
 	if receipt == nil || owner.Validate() != nil || archive == nil || archive.Manifest == nil || receipt.SchemaVersion != 1 || receipt.GatewayId != owner.GatewayID || receipt.WorkspaceId != owner.WorkspaceID || receipt.SubjectId != owner.SubjectID || !proto.Equal(receipt.Runtime, owner.Runtime) || receipt.ArchiveId != archive.ArchiveId || !proto.Equal(archive.Manifest.Runtime, owner.Runtime) {
+		return ErrProtocol
+	}
+	archiveDigest, err := ArchiveDigest(archive.Manifest)
+	if err != nil || !bytes.Equal(archiveDigest, archive.ManifestSha256) || archive.ArchiveId != hex.EncodeToString(archiveDigest) {
 		return ErrProtocol
 	}
 	digest, e := DeletionDigest(receipt)
