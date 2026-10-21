@@ -310,6 +310,15 @@ func (s *Store) Authorize(ctx context.Context, actor, project string, permission
 	return authorize(ctx, s.db, actor, project, permission)
 }
 
+// AuthorizeTx checks current project authority in the caller's catalog
+// transaction, so credential access and membership use one consistent view.
+func AuthorizeTx(ctx context.Context, tx *sql.Tx, actor, project string, permission Permission) error {
+	if tx == nil {
+		return ErrDenied
+	}
+	return authorize(ctx, tx, actor, project, permission)
+}
+
 // SetMembership changes only project authority. No project role can grant
 // team ownership, and authorization is checked in the mutation transaction.
 func (s *Store) SetMembership(ctx context.Context, actor, project, user string, role Role) error {

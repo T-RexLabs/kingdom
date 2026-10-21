@@ -427,6 +427,10 @@ func (s *Store) disable(ctx context.Context, actor, id, key string) error {
 // Resolve requires an exact positive revision and the real invocation actor.
 // Team ownership never authorizes access to another user's personal credentials.
 func (s *Store) Resolve(ctx context.Context, actor, id string, revision int64) (Metadata, Secret, error) {
+	return s.resolve(ctx, actor, "", id, revision)
+}
+
+func (s *Store) resolve(ctx context.Context, actor, project, id string, revision int64) (Metadata, Secret, error) {
 	if revision <= 0 {
 		return Metadata{}, Secret{}, ErrInvalid
 	}
@@ -435,6 +439,11 @@ func (s *Store) Resolve(ctx context.Context, actor, id string, revision int64) (
 		return Metadata{}, Secret{}, err
 	}
 	defer tx.Rollback()
+	if project != "" {
+		if err := catalog.AuthorizeTx(ctx, tx, actor, project, catalog.UseProject); err != nil {
+			return Metadata{}, Secret{}, ErrDenied
+		}
+	}
 	u, err := user(ctx, tx, actor)
 	if err != nil {
 		return Metadata{}, Secret{}, err
