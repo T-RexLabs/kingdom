@@ -38,6 +38,10 @@ type ServiceConfig struct {
 	// Requests is the canonical authority every managed request and server
 	// instance is recorded through.
 	Requests *providerrequest.Authority
+	// LocalExecutor selects the host-local executor for both the server and its
+	// managed commands. Nil uses the local process guardian. Remote executors
+	// are unsupported; their ownership requires a different recovery contract.
+	LocalExecutor LocalExecutor
 }
 
 // Service owns one lazily started server. Consumers borrow its client; only
@@ -47,7 +51,7 @@ type Service struct {
 	binaryPath string
 	workDir    string
 	env        []string
-	runner     GuardianRunner
+	local      LocalExecutor
 	// guardianRoot holds the durable stop evidence of the guardians this
 	// service starts.
 	guardianRoot string
@@ -98,7 +102,15 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("OpenCode service working directory must be a directory")
 	}
-	workDir, err = filepath.EvalSymlinks(workDir)
+	local := cfg.LocalExecutor
+	if local == nil {
+		runner, err := processguardian.NewRunner(processguardian.Config{RuntimeRoot: cfg.RuntimeRoot, CancelGrace: time.Second, CancelForce: time.Second})
+		if err != nil {
+			return nil, fmt.Errorf("initialize OpenCode service guardian: %w", err)
+		}
+		local = localExecutor{runner: runner}
+	}
+	workDir, err = local.ResolveWorkspace(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve OpenCode service working directory symlinks: %w", err)
 	}
@@ -114,13 +126,9 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	runner, err := processguardian.NewRunner(processguardian.Config{RuntimeRoot: cfg.RuntimeRoot, CancelGrace: time.Second, CancelForce: time.Second})
-	if err != nil {
-		return nil, fmt.Errorf("initialize OpenCode service guardian: %w", err)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Service{binaryPath: binaryPath, workDir: workDir, env: env, runner: runner, guardianRoot: cfg.RuntimeRoot, startLimit: 20 * time.Second, stopLimit: 5 * time.Second, ctx: ctx, cancel: cancel}
-	if s.requests, err = newRequestRuntime(cfg.Requests, runner, env, cfg.RuntimeRoot); err != nil {
+	s := &Service{binaryPath: binaryPath, workDir: workDir, env: env, local: local, guardianRoot: cfg.RuntimeRoot, startLimit: 20 * time.Second, stopLimit: 5 * time.Second, ctx: ctx, cancel: cancel}
+	if s.requests, err = newRequestRuntime(cfg.Requests, local, env, cfg.RuntimeRoot); err != nil {
 		cancel()
 		return nil, err
 	}
@@ -277,7 +285,7 @@ func (s *Service) launch(ctx context.Context, attempt *serviceStart) (*Client, *
 	env = replaceServiceEnv(env, "OPENCODE_PASSWORD", password)
 	attempt.instanceID = "svc_" + hex.EncodeToString(secret[:8])
 	env = s.requests.environment(env, attempt.instanceID)
-	handle, err := s.runner.Start(ctx, processguardian.Command{Path: s.binaryPath, Args: []string{"serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"}, Dir: s.workDir, Env: env}, s.registerInstance(attempt.instanceID))
+	handle, err := s.local.Start(ctx, processguardian.Command{Path: s.binaryPath, Args: []string{"serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"}, Dir: s.workDir, Env: env}, s.registerInstance(attempt.instanceID))
 	if err != nil {
 		var launchErr *processguardian.LaunchError
 		if errors.As(err, &launchErr) && !launchErr.Result.Quiescent {

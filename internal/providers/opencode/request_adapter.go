@@ -113,7 +113,7 @@ func (s *Service) Prepare(ctx context.Context, req ExecuteRequest) (Prepared, er
 	if err := started.capture.healthy(); err != nil {
 		return Prepared{}, err
 	}
-	directory, err := filepath.EvalSymlinks(filepath.Clean(req.WorkspacePath))
+	directory, err := s.local.ResolveWorkspace(req.WorkspacePath)
 	if err != nil {
 		return Prepared{}, fmt.Errorf("resolve OpenCode workspace: %w", err)
 	}

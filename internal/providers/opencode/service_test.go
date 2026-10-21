@@ -27,6 +27,19 @@ func (f serviceRunnerFunc) Start(ctx context.Context, command processguardian.Co
 	return f(ctx, command, persist)
 }
 
+func (serviceRunnerFunc) ResolveWorkspace(path string) (string, error) {
+	return (localExecutor{}).ResolveWorkspace(path)
+}
+
+func (serviceRunnerFunc) ResolveCommandDirectory(workspace, directory string) (string, error) {
+	return (localExecutor{}).ResolveCommandDirectory(workspace, directory)
+}
+
+func setServiceLocalExecutor(service *Service, local LocalExecutor) {
+	service.local = local
+	service.requests.commands.local = local
+}
+
 type serviceTestHandle struct {
 	stdout *io.PipeReader
 	writer *io.PipeWriter
@@ -134,7 +147,7 @@ func TestServiceStartsLazilyAndCollapsesConcurrentClients(t *testing.T) {
 	service, endpoint := serviceFixture(t, nil)
 	var starts atomic.Int32
 	var handle *serviceTestHandle
-	service.runner = serviceRunnerFunc(func(_ context.Context, command processguardian.Command, persist processguardian.PersistOwnership) (processguardian.Handle, error) {
+	setServiceLocalExecutor(service, serviceRunnerFunc(func(_ context.Context, command processguardian.Command, persist processguardian.PersistOwnership) (processguardian.Handle, error) {
 		starts.Add(1)
 		if persist == nil {
 			t.Error("service launch must be recorded before the server runs")
@@ -144,7 +157,7 @@ func TestServiceStartsLazilyAndCollapsesConcurrentClients(t *testing.T) {
 		}
 		handle = newServiceTestHandle(endpoint)
 		return handle, nil
-	})
+	}))
 	if starts.Load() != 0 {
 		t.Fatal("construction launched a server")
 	}
@@ -201,7 +214,7 @@ func TestServiceStartsLazilyAndCollapsesConcurrentClients(t *testing.T) {
 func TestServiceCallerCancellationDoesNotCancelSharedStartup(t *testing.T) {
 	service, endpoint := serviceFixture(t, nil)
 	started, release := make(chan struct{}), make(chan struct{})
-	service.runner = serviceRunnerFunc(func(ctx context.Context, _ processguardian.Command, _ processguardian.PersistOwnership) (processguardian.Handle, error) {
+	setServiceLocalExecutor(service, serviceRunnerFunc(func(ctx context.Context, _ processguardian.Command, _ processguardian.PersistOwnership) (processguardian.Handle, error) {
 		close(started)
 		select {
 		case <-ctx.Done():
@@ -209,7 +222,7 @@ func TestServiceCallerCancellationDoesNotCancelSharedStartup(t *testing.T) {
 		case <-release:
 			return newServiceTestHandle(endpoint), nil
 		}
-	})
+	}))
 	ctx, cancel := context.WithCancel(context.Background())
 	first := make(chan error, 1)
 	go func() { _, err := service.Client(ctx); first <- err }()
@@ -228,12 +241,12 @@ func TestServiceCloseDuringStartupPreventsResurrection(t *testing.T) {
 	service, _ := serviceFixture(t, nil)
 	started := make(chan struct{})
 	var starts atomic.Int32
-	service.runner = serviceRunnerFunc(func(ctx context.Context, _ processguardian.Command, _ processguardian.PersistOwnership) (processguardian.Handle, error) {
+	setServiceLocalExecutor(service, serviceRunnerFunc(func(ctx context.Context, _ processguardian.Command, _ processguardian.PersistOwnership) (processguardian.Handle, error) {
 		starts.Add(1)
 		close(started)
 		<-ctx.Done()
 		return nil, ctx.Err()
-	})
+	}))
 	done := make(chan error, 1)
 	go func() { _, err := service.Client(context.Background()); done <- err }()
 	<-started
@@ -254,12 +267,12 @@ func TestServiceCloseDuringStartupPreventsResurrection(t *testing.T) {
 func TestServiceFailedStartCanRetryAfterQuiescence(t *testing.T) {
 	service, endpoint := serviceFixture(t, nil)
 	var starts atomic.Int32
-	service.runner = serviceRunnerFunc(func(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {
+	setServiceLocalExecutor(service, serviceRunnerFunc(func(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {
 		if starts.Add(1) == 1 {
 			return nil, errors.New("fixture launch failure")
 		}
 		return newServiceTestHandle(endpoint), nil
-	})
+	}))
 	if _, err := service.Client(context.Background()); err == nil {
 		t.Fatal("failed launch succeeded")
 	}
@@ -286,10 +299,10 @@ func TestServiceRejectsUnhealthyAndConflictingConfiguration(t *testing.T) {
 				_, _ = io.WriteString(w, `[{"type":"document","info":{"formatter":false}},{"type":"document","info":{"formatter":{"prettier":{}}}}]`)
 			})
 			var handle *serviceTestHandle
-			service.runner = serviceRunnerFunc(func(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {
+			setServiceLocalExecutor(service, serviceRunnerFunc(func(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {
 				handle = newServiceTestHandle(endpoint)
 				return handle, nil
-			})
+			}))
 			if _, err := service.Client(context.Background()); err == nil {
 				t.Fatal("invalid readiness succeeded")
 			}
@@ -306,10 +319,10 @@ func TestServiceStartupTimeoutStopsGuardedProcess(t *testing.T) {
 	service, _ := serviceFixture(t, nil)
 	service.startLimit = 20 * time.Millisecond
 	var handle *serviceTestHandle
-	service.runner = serviceRunnerFunc(func(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {
+	setServiceLocalExecutor(service, serviceRunnerFunc(func(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {
 		handle = newServiceTestHandle(`{"url":"http://0.0.0.0:8080"}`)
 		return handle, nil
-	})
+	}))
 	if _, err := service.Client(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
 	}
@@ -389,10 +402,10 @@ func TestServiceUnprovenLaunchBlocksReplacementAndReportsShutdownFailure(t *test
 	}
 	defer service.cancel()
 	var starts atomic.Int32
-	service.runner = serviceRunnerFunc(func(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {
+	setServiceLocalExecutor(service, serviceRunnerFunc(func(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {
 		starts.Add(1)
 		return nil, &processguardian.LaunchError{Cause: errors.New("fixture launch uncertainty"), Result: processguardian.Result{Quiescent: false}}
-	})
+	}))
 	for range 2 {
 		if _, err := service.Client(context.Background()); err == nil {
 			t.Fatal("unproven launch became ready")
@@ -409,7 +422,7 @@ func TestServiceUnprovenLaunchBlocksReplacementAndReportsShutdownFailure(t *test
 func TestServiceEnvironmentOverridesBothPasswordAliasesWithoutArguments(t *testing.T) {
 	service, endpoint := serviceFixture(t, nil)
 	service.env = append(service.env, "OPENCODE_PASSWORD=old-password", "OPENCODE_SERVER_PASSWORD=old-server-password")
-	service.runner = serviceRunnerFunc(func(_ context.Context, command processguardian.Command, _ processguardian.PersistOwnership) (processguardian.Handle, error) {
+	setServiceLocalExecutor(service, serviceRunnerFunc(func(_ context.Context, command processguardian.Command, _ processguardian.PersistOwnership) (processguardian.Handle, error) {
 		values := make(map[string]string)
 		for _, entry := range command.Env {
 			name, value, _ := strings.Cut(entry, "=")
@@ -423,7 +436,7 @@ func TestServiceEnvironmentOverridesBothPasswordAliasesWithoutArguments(t *testi
 			t.Fatal("server credential leaked in arguments")
 		}
 		return newServiceTestHandle(endpoint), nil
-	})
+	}))
 	if _, err := service.Client(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -473,10 +486,10 @@ func TestServiceModelsRechecksChangedFormattingConfiguration(t *testing.T) {
 		}
 	})
 	var starts atomic.Int32
-	service.runner = serviceRunnerFunc(func(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {
+	setServiceLocalExecutor(service, serviceRunnerFunc(func(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {
 		starts.Add(1)
 		return newServiceTestHandle(endpoint), nil
-	})
+	}))
 	if _, err := service.Models(context.Background()); err != nil {
 		t.Fatal(err)
 	}

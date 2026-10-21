@@ -93,12 +93,6 @@ type ExecuteRequest struct {
 	OnActivity func(observation ExecuteActivityObservation)
 }
 
-// GuardianRunner starts provider command trees behind a durable launch gate.
-// It is intentionally narrow so adapter tests can supply deterministic handles.
-type GuardianRunner interface {
-	Start(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error)
-}
-
 type CommandGuardianOwnership struct {
 	CommandOrdinal int
 	StartedAt      string

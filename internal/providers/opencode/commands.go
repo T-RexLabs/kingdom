@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -67,15 +65,15 @@ type commandCall struct {
 // is unknown after a restart is never run again.
 type commandBridge struct {
 	authority *providerrequest.Authority
-	runner    GuardianRunner
+	local     LocalExecutor
 	env       []string
 
 	mu            sync.Mutex
 	registrations map[providerexecution.RequestIdentity]*commandRegistration
 }
 
-func newCommandBridge(authority *providerrequest.Authority, runner GuardianRunner, env []string) *commandBridge {
-	return &commandBridge{authority: authority, runner: runner, env: commandEnvironment(env), registrations: map[providerexecution.RequestIdentity]*commandRegistration{}}
+func newCommandBridge(authority *providerrequest.Authority, local LocalExecutor, env []string) *commandBridge {
+	return &commandBridge{authority: authority, local: local, env: commandEnvironment(env), registrations: map[providerexecution.RequestIdentity]*commandRegistration{}}
 }
 
 // commandEnvironment keeps provider and build configuration but drops the
@@ -119,12 +117,12 @@ func (b *commandBridge) invoke(ctx context.Context, in commandInput) (commandRes
 		b.mu.Unlock()
 		return commandResult{}, fmt.Errorf("command request is not registered")
 	}
-	directory, err := resolveCommandDirectory(registration.workspace, in.Cwd)
+	directory, err := b.local.ResolveCommandDirectory(registration.workspace, in.Cwd)
 	if err != nil {
 		b.mu.Unlock()
 		return commandResult{}, err
 	}
-	if err := requireShellInput(in, registration.workspace, directory); err != nil {
+	if err := b.requireShellInput(in, registration.workspace, directory); err != nil {
 		b.mu.Unlock()
 		return commandResult{}, err
 	}
@@ -155,7 +153,7 @@ func (b *commandBridge) invoke(ctx context.Context, in commandInput) (commandRes
 
 // requireShellInput ensures the guarded command is exactly what the stock tool
 // call asked for, so the projected tool and the durable claim stay comparable.
-func requireShellInput(in commandInput, workspace, directory string) error {
+func (b *commandBridge) requireShellInput(in commandInput, workspace, directory string) error {
 	var input struct {
 		Command    string `json:"command"`
 		Workdir    string `json:"workdir"`
@@ -169,7 +167,7 @@ func requireShellInput(in commandInput, workspace, directory string) error {
 	if input.Timeout != nil {
 		timeout = *input.Timeout
 	}
-	workdir, err := resolveCommandDirectory(workspace, input.Workdir)
+	workdir, err := b.local.ResolveCommandDirectory(workspace, input.Workdir)
 	if err != nil {
 		return err
 	}
@@ -177,34 +175,6 @@ func requireShellInput(in commandInput, workspace, directory string) error {
 		return fmt.Errorf("managed command differs from its tool input")
 	}
 	return nil
-}
-
-// resolveCommandDirectory permits existing directories inside the workspace,
-// including aliases that resolve there, without allowing symlinks to escape.
-func resolveCommandDirectory(workspace, directory string) (string, error) {
-	root, err := filepath.EvalSymlinks(workspace)
-	if err != nil {
-		return "", fmt.Errorf("resolve managed command workspace: %w", err)
-	}
-	if !filepath.IsAbs(directory) {
-		directory = filepath.Join(root, directory)
-	}
-	resolved, err := filepath.EvalSymlinks(directory)
-	if err != nil {
-		return "", fmt.Errorf("resolve managed command directory: %w", err)
-	}
-	relative, err := filepath.Rel(root, resolved)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("a managed command must run within its workspace %s", workspace)
-	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return "", fmt.Errorf("inspect managed command directory: %w", err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("managed command directory is not a directory: %s", directory)
-	}
-	return resolved, nil
 }
 
 func awaitCommand(ctx context.Context, call *commandCall) (commandResult, error) {
@@ -226,7 +196,7 @@ func (b *commandBridge) execute(ctx context.Context, in commandInput, claim prov
 	}
 	ordinal := int(claim.Ordinal)
 	started := time.Now().UTC().Format(time.RFC3339Nano)
-	handle, err := b.runner.Start(ctx, shellCommand(in.Command, in.Cwd, b.env), func(ctx context.Context, ownership processguardian.Ownership) error {
+	handle, err := b.local.Start(ctx, shellCommand(in.Command, in.Cwd, b.env), func(ctx context.Context, ownership processguardian.Ownership) error {
 		return registration.ownership(ctx, CommandGuardianOwnership{CommandOrdinal: ordinal, StartedAt: started, AcknowledgedAt: time.Now().UTC().Format(time.RFC3339Nano), Ownership: ownership})
 	})
 	var result processguardian.Result
