@@ -53,12 +53,30 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (ExecuteRespo
 		close(prepared.done)
 	}()
 
-	run := &execution{service: s, request: prepared, req: req}
+	run := &execution{runtime: s.requests.executionRuntime(), request: prepared, req: req}
 	return run.execute(ctx)
 }
 
+// executionRuntime supplies effects for one backend. Protocol verification and
+// terminal evidence stay shared; no remote path constructs a local guardian.
+type executionRuntime struct {
+	authority   *providerrequest.Authority
+	settleLimit time.Duration
+	commands    executionCommands
+	recoverFor  func(context.Context, providerexecution.RequestIdentity) error
+}
+type executionCommands interface {
+	register(providerexecution.RequestIdentity, *commandRegistration) error
+	unregister(providerexecution.RequestIdentity)
+	cancel(context.Context, providerexecution.RequestIdentity) error
+}
+
+func (r *requestRuntime) executionRuntime() *executionRuntime {
+	return &executionRuntime{authority: r.authority, settleLimit: r.settleLimit, commands: r.commands, recoverFor: r.recoverFor}
+}
+
 type execution struct {
-	service *Service
+	runtime *executionRuntime
 	request *request
 	req     ExecuteRequest
 	cause   stopCause
@@ -74,11 +92,11 @@ func (e *execution) identity() providerexecution.RequestIdentity { return e.requ
 // gives up, and that is bounded by its own limit rather than by the request's
 // total duration.
 func (e *execution) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), e.service.requests.settleLimit)
+	return context.WithTimeout(context.WithoutCancel(ctx), e.runtime.settleLimit)
 }
 
 func (e *execution) execute(ctx context.Context) (response ExecuteResponse, err error) {
-	runtime := e.service.requests
+	runtime := e.runtime
 	authority := runtime.authority
 	defer func() {
 		retire, cancel := e.bounded(ctx)
@@ -150,7 +168,7 @@ func (e *execution) execute(ctx context.Context) (response ExecuteResponse, err 
 func (e *execution) abandon(ctx context.Context, cause error) (ExecuteResponse, error) {
 	fence, cancel := e.bounded(ctx)
 	defer cancel()
-	if err := e.service.requests.authority.Abandon(fence, e.identity()); err != nil {
+	if err := e.runtime.authority.Abandon(fence, e.identity()); err != nil {
 		return ExecuteResponse{}, errors.Join(cause, err)
 	}
 	observation, err := providerexecution.AbandonedObservation(e.identity(), e.req.InvocationID)
@@ -292,7 +310,7 @@ func (e *execution) stopBounded(ctx context.Context) error {
 // new can start. Every step is attempted even if an earlier one failed, because
 // a failed fence must not leave the request running.
 func (e *execution) stop(ctx context.Context) error {
-	runtime := e.service.requests
+	runtime := e.runtime
 	fenceErr := runtime.authority.CloseAdmission(ctx, e.identity())
 	interruptErr := retryTransient(ctx, func() error {
 		return e.client().Interrupt(ctx, e.request.directory, e.identity().SessionID)
@@ -303,7 +321,7 @@ func (e *execution) stop(ctx context.Context) error {
 // finalize proves the terminal state from captured events and the projected
 // session, records it, and returns it as the response.
 func (e *execution) finalize(ctx context.Context, invokedAt string) (ExecuteResponse, error) {
-	runtime := e.service.requests
+	runtime := e.runtime
 	identity := e.identity()
 	invocationID := e.req.InvocationID
 	if err := runtime.authority.CloseAdmission(ctx, identity); err != nil {

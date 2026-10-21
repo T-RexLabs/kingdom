@@ -171,7 +171,7 @@ func stockRestartContinuation(t *testing.T, parked bool) {
 	events := stage(func(out io.Writer) error {
 		return started.capture.writeInterval(next.ProviderSessionID, next.Identity.RequestID, watermark, out)
 	})
-	execution := &execution{service: h.service, request: h.service.requests.registry.invocation(second.InvocationID), req: second}
+	execution := &execution{runtime: h.service.requests.executionRuntime(), request: h.service.requests.registry.invocation(second.InvocationID), req: second}
 	messages := stage(func(out io.Writer) error { return execution.writeMessages(ctx, out) })
 	var text bytes.Buffer
 	verified, err := protocol.Verify(ctx, next.Identity, protocol.Evidence{

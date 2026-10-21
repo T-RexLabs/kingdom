@@ -75,7 +75,7 @@ func TestRejectedRequestRetainsUnverifiedDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := &execution{
-		service: &Service{requests: &requestRuntime{authority: authority, commands: newCommandBridge(authority, nil, nil), outboxDir: t.TempDir(), settleLimit: time.Second}},
+		runtime: (&requestRuntime{authority: authority, commands: newCommandBridge(authority, nil, nil), outboxDir: t.TempDir(), settleLimit: time.Second}).executionRuntime(),
 		request: &request{identity: fixture.Identity, directory: h.workspace, started: &requestSession{client: client, capture: c}},
 		req:     ExecuteRequest{InvocationID: "invocation"},
 	}
