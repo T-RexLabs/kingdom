@@ -242,3 +242,15 @@ func (l *Login) recordTransaction(ctx context.Context, p *loginProvider, stateHa
 	}
 	return tx.Commit()
 }
+
+// Providers returns configured sign-in options in a stable order. It exposes
+// neither client credentials nor issuer endpoint configuration.
+func (l *Login) Providers() []string {
+	result := []string{}
+	for _, name := range []string{"oidc", "github"} {
+		if _, ok := l.providers[name]; ok {
+			result = append(result, name)
+		}
+	}
+	return result
+}

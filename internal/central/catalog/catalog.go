@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"kingdom/internal/central/mutation"
 )
 
 var (
@@ -66,6 +67,9 @@ func New(ctx context.Context, db *sql.DB, cfg Config) (*Store, error) {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return nil, fmt.Errorf("initialize central catalog: %w", err)
 		}
+	}
+	if err := mutation.Initialize(ctx, tx); err != nil {
+		return nil, err
 	}
 	var version int
 	if err := tx.QueryRowContext(ctx, `SELECT version FROM central_schema WHERE slot=1`).Scan(&version); err != nil {
@@ -195,6 +199,15 @@ func requireTeamOwner(ctx context.Context, tx *sql.Tx, actor string) error {
 // CreateUser preauthorizes an immutable identity. It never promotes an existing
 // user or links identities based on display names or email addresses.
 func (s *Store) CreateUser(ctx context.Context, actor string, identity Identity, displayName string) (User, error) {
+	return s.createUser(ctx, actor, identity, displayName, "")
+}
+func (s *Store) CreateUserRequest(ctx context.Context, actor string, identity Identity, displayName, key string) (User, error) {
+	if !mutation.ValidKey(key) {
+		return User{}, mutation.ErrInvalid
+	}
+	return s.createUser(ctx, actor, identity, displayName, key)
+}
+func (s *Store) createUser(ctx context.Context, actor string, identity Identity, displayName, key string) (User, error) {
 	if !validIdentity(identity) || !validText(displayName) {
 		return User{}, ErrInvalid
 	}
@@ -206,11 +219,21 @@ func (s *Store) CreateUser(ctx context.Context, actor string, identity Identity,
 	if err := requireTeamOwner(ctx, tx, actor); err != nil {
 		return User{}, err
 	}
+	fingerprint, _ := mutation.Fingerprint(struct {
+		Identity Identity
+		Name     string
+	}{identity, displayName})
+	if result, found, err := mutation.Replay[User](ctx, tx, actor, key, "user.create", "", fingerprint); err != nil || found {
+		return result, err
+	}
 	var existing string
 	err = tx.QueryRowContext(ctx, `SELECT user_id FROM central_identities WHERE issuer=? AND subject=?`, identity.Issuer, identity.Subject).Scan(&existing)
 	if err == nil {
 		u, err := resolve(ctx, tx, identity)
 		if err != nil {
+			return User{}, err
+		}
+		if err := mutation.Record(ctx, tx, actor, key, "user.create", "", fingerprint, u); err != nil {
 			return User{}, err
 		}
 		return u, tx.Commit()
@@ -222,10 +245,22 @@ func (s *Store) CreateUser(ctx context.Context, actor string, identity Identity,
 	if err != nil {
 		return User{}, err
 	}
+	if err := mutation.Record(ctx, tx, actor, key, "user.create", "", fingerprint, u); err != nil {
+		return User{}, err
+	}
 	return u, tx.Commit()
 }
 
 func (s *Store) CreateProject(ctx context.Context, actor, displayName string) (Project, error) {
+	return s.createProject(ctx, actor, displayName, "")
+}
+func (s *Store) CreateProjectRequest(ctx context.Context, actor, displayName, key string) (Project, error) {
+	if !mutation.ValidKey(key) {
+		return Project{}, mutation.ErrInvalid
+	}
+	return s.createProject(ctx, actor, displayName, key)
+}
+func (s *Store) createProject(ctx context.Context, actor, displayName, key string) (Project, error) {
 	if !validText(displayName) {
 		return Project{}, ErrInvalid
 	}
@@ -237,11 +272,18 @@ func (s *Store) CreateProject(ctx context.Context, actor, displayName string) (P
 	if err := requireTeamOwner(ctx, tx, actor); err != nil {
 		return Project{}, err
 	}
+	fingerprint, _ := mutation.Fingerprint(displayName)
+	if result, found, err := mutation.Replay[Project](ctx, tx, actor, key, "project.create", "", fingerprint); err != nil || found {
+		return result, err
+	}
 	p := Project{ID: uuid.NewString(), DisplayName: displayName}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO central_projects(id,display_name) VALUES(?,?)`, p.ID, p.DisplayName); err != nil {
 		return Project{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO central_memberships(project_id,user_id,role) VALUES(?,?,'owner')`, p.ID, actor); err != nil {
+		return Project{}, err
+	}
+	if err := mutation.Record(ctx, tx, actor, key, "project.create", "", fingerprint, p); err != nil {
 		return Project{}, err
 	}
 	return p, tx.Commit()
@@ -271,6 +313,15 @@ func (s *Store) Authorize(ctx context.Context, actor, project string, permission
 // SetMembership changes only project authority. No project role can grant
 // team ownership, and authorization is checked in the mutation transaction.
 func (s *Store) SetMembership(ctx context.Context, actor, project, user string, role Role) error {
+	return s.setMembership(ctx, actor, project, user, role, "")
+}
+func (s *Store) SetMembershipRequest(ctx context.Context, actor, project, user string, role Role, key string) error {
+	if !mutation.ValidKey(key) {
+		return mutation.ErrInvalid
+	}
+	return s.setMembership(ctx, actor, project, user, role, key)
+}
+func (s *Store) setMembership(ctx context.Context, actor, project, user string, role Role, key string) error {
 	if role != Member && role != Owner {
 		return ErrInvalid
 	}
@@ -280,6 +331,13 @@ func (s *Store) SetMembership(ctx context.Context, actor, project, user string, 
 	}
 	defer tx.Rollback()
 	if err := authorize(ctx, tx, actor, project, ManageProject); err != nil {
+		return err
+	}
+	fingerprint, _ := mutation.Fingerprint(struct {
+		User string
+		Role Role
+	}{user, role})
+	if _, found, err := mutation.Replay[struct{}](ctx, tx, actor, key, "membership.set", project, fingerprint); err != nil || found {
 		return err
 	}
 	if role != Owner {
@@ -297,9 +355,21 @@ func (s *Store) SetMembership(ctx context.Context, actor, project, user string, 
 	if err != nil {
 		return err
 	}
+	if err := mutation.Record(ctx, tx, actor, key, "membership.set", project, fingerprint, struct{}{}); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 func (s *Store) RevokeMembership(ctx context.Context, actor, project, user string) error {
+	return s.revokeMembership(ctx, actor, project, user, "")
+}
+func (s *Store) RevokeMembershipRequest(ctx context.Context, actor, project, user string, key string) error {
+	if !mutation.ValidKey(key) {
+		return mutation.ErrInvalid
+	}
+	return s.revokeMembership(ctx, actor, project, user, key)
+}
+func (s *Store) revokeMembership(ctx context.Context, actor, project, user string, key string) error {
 	tx, err := s.beginWrite(ctx)
 	if err != nil {
 		return err
@@ -308,10 +378,17 @@ func (s *Store) RevokeMembership(ctx context.Context, actor, project, user strin
 	if err := authorize(ctx, tx, actor, project, ManageProject); err != nil {
 		return err
 	}
+	fingerprint, _ := mutation.Fingerprint(user)
+	if _, found, err := mutation.Replay[struct{}](ctx, tx, actor, key, "membership.revoke", project, fingerprint); err != nil || found {
+		return err
+	}
 	if err := retainProjectOwner(ctx, tx, project, user); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE central_memberships SET revoked=1 WHERE project_id=? AND user_id=?`, project, user); err != nil {
+		return err
+	}
+	if err := mutation.Record(ctx, tx, actor, key, "membership.revoke", project, fingerprint, struct{}{}); err != nil {
 		return err
 	}
 	return tx.Commit()

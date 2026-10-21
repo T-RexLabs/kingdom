@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 	"kingdom/internal/central/catalog"
+	"kingdom/internal/central/mutation"
 )
 
 var (
@@ -66,8 +69,9 @@ func (Secret) MarshalJSON() ([]byte, error) {
 }
 
 type Store struct {
-	db   *sql.DB
-	aead cipher.AEAD
+	db             *sql.DB
+	aead           cipher.AEAD
+	fingerprintKey []byte
 }
 
 // New requires an operator-managed 256-bit key. Losing the key makes stored
@@ -110,6 +114,9 @@ CREATE TRIGGER IF NOT EXISTS central_connection_owner_immutable BEFORE UPDATE OF
 	if err != nil {
 		return nil, fmt.Errorf("initialize connection storage: %w", err)
 	}
+	if err := mutation.Initialize(ctx, tx); err != nil {
+		return nil, err
+	}
 	// Check the key before accepting writes, including when opening an existing
 	// catalog with a missing or incorrectly mounted operator key.
 	if _, err := tx.ExecContext(ctx, `UPDATE central_connection_key SET proof=proof WHERE 0`); err != nil {
@@ -148,7 +155,9 @@ CREATE TRIGGER IF NOT EXISTS central_connection_owner_immutable BEFORE UPDATE OF
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &Store{db: db, aead: aead}, nil
+	derive := hmac.New(sha256.New, key)
+	derive.Write([]byte("kingdom-central-mutation-fingerprint/v1"))
+	return &Store{db: db, aead: aead, fingerprintKey: derive.Sum(nil)}, nil
 }
 
 func validDefinition(d Definition) bool {
@@ -239,6 +248,15 @@ func binding(m Metadata) ([]byte, error) {
 }
 
 func (s *Store) Create(ctx context.Context, actor string, scope Scope, d Definition, credential []byte) (Metadata, error) {
+	return s.create(ctx, actor, scope, d, credential, "")
+}
+func (s *Store) CreateRequest(ctx context.Context, actor string, scope Scope, d Definition, credential []byte, key string) (Metadata, error) {
+	if !mutation.ValidKey(key) {
+		return Metadata{}, mutation.ErrInvalid
+	}
+	return s.create(ctx, actor, scope, d, credential, key)
+}
+func (s *Store) create(ctx context.Context, actor string, scope Scope, d Definition, credential []byte, key string) (Metadata, error) {
 	if (scope != Personal && scope != Team) || !validDefinition(d) {
 		return Metadata{}, ErrInvalid
 	}
@@ -254,6 +272,14 @@ func (s *Store) Create(ctx context.Context, actor string, scope Scope, d Definit
 	if scope == Team && !u.TeamOwner {
 		return Metadata{}, ErrDenied
 	}
+	fingerprint := s.requestFingerprint(struct {
+		Scope      Scope
+		Definition Definition
+		Credential []byte
+	}{scope, d, credential})
+	if result, found, err := mutation.Replay[Metadata](ctx, tx, actor, key, "connection.create", "", fingerprint); err != nil || found {
+		return result, err
+	}
 	m := Metadata{ID: uuid.NewString(), OwnerID: u.ID, Scope: scope, Revision: 1, Definition: d}
 	encrypted, err := s.seal(m, credential)
 	if err != nil {
@@ -263,6 +289,9 @@ func (s *Store) Create(ctx context.Context, actor string, scope Scope, d Definit
 		return Metadata{}, err
 	}
 	if err := insertRevision(ctx, tx, m, encrypted); err != nil {
+		return Metadata{}, err
+	}
+	if err := mutation.Record(ctx, tx, actor, key, "connection.create", "", fingerprint, m); err != nil {
 		return Metadata{}, err
 	}
 	return m, tx.Commit()
@@ -297,6 +326,15 @@ func read(ctx context.Context, tx *sql.Tx, id string, revision int64) (Metadata,
 // Revise creates an immutable successor and checks the caller's observed current
 // revision. An in-flight invocation can continue to refer to its pinned revision.
 func (s *Store) Revise(ctx context.Context, actor, id string, expected int64, d Definition, credential []byte) (Metadata, error) {
+	return s.revise(ctx, actor, id, expected, d, credential, "")
+}
+func (s *Store) ReviseRequest(ctx context.Context, actor, id string, expected int64, d Definition, credential []byte, key string) (Metadata, error) {
+	if !mutation.ValidKey(key) {
+		return Metadata{}, mutation.ErrInvalid
+	}
+	return s.revise(ctx, actor, id, expected, d, credential, key)
+}
+func (s *Store) revise(ctx context.Context, actor, id string, expected int64, d Definition, credential []byte, key string) (Metadata, error) {
 	if !validDefinition(d) || expected <= 0 || expected == 1<<63-1 {
 		return Metadata{}, ErrInvalid
 	}
@@ -316,6 +354,14 @@ func (s *Store) Revise(ctx context.Context, actor, id string, expected int64, d 
 	if !allowed(u, m, true) {
 		return Metadata{}, ErrDenied
 	}
+	fingerprint := s.requestFingerprint(struct {
+		Expected   int64
+		Definition Definition
+		Credential []byte
+	}{expected, d, credential})
+	if result, found, err := mutation.Replay[Metadata](ctx, tx, actor, key, "connection.revise", id, fingerprint); err != nil || found {
+		return result, err
+	}
 	if m.Revision != expected || m.Disabled {
 		return Metadata{}, ErrConflict
 	}
@@ -331,12 +377,24 @@ func (s *Store) Revise(ctx context.Context, actor, id string, expected int64, d 
 	if _, err := tx.ExecContext(ctx, `UPDATE central_connections SET current_revision=? WHERE id=?`, m.Revision, m.ID); err != nil {
 		return Metadata{}, err
 	}
+	if err := mutation.Record(ctx, tx, actor, key, "connection.revise", id, fingerprint, m); err != nil {
+		return Metadata{}, err
+	}
 	return m, tx.Commit()
 }
 
 // Disable prevents future credential resolution for every revision. Revocation
 // of an already-running provider is the invocation owner's separate obligation.
 func (s *Store) Disable(ctx context.Context, actor, id string) error {
+	return s.disable(ctx, actor, id, "")
+}
+func (s *Store) DisableRequest(ctx context.Context, actor, id, key string) error {
+	if !mutation.ValidKey(key) {
+		return mutation.ErrInvalid
+	}
+	return s.disable(ctx, actor, id, key)
+}
+func (s *Store) disable(ctx context.Context, actor, id, key string) error {
 	tx, err := s.beginWrite(ctx)
 	if err != nil {
 		return err
@@ -353,7 +411,14 @@ func (s *Store) Disable(ctx context.Context, actor, id string) error {
 	if !allowed(u, m, true) {
 		return ErrDenied
 	}
+	fingerprint := s.requestFingerprint(id)
+	if _, found, err := mutation.Replay[struct{}](ctx, tx, actor, key, "connection.disable", id, fingerprint); err != nil || found {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE central_connections SET disabled=1 WHERE id=?`, id); err != nil {
+		return err
+	}
+	if err := mutation.Record(ctx, tx, actor, key, "connection.disable", id, fingerprint, struct{}{}); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -430,4 +495,17 @@ func (s *Store) List(ctx context.Context, actor string) ([]Metadata, error) {
 		return nil, err
 	}
 	return result, tx.Commit()
+}
+
+// requestFingerprint never stores an offline-checkable hash of a credential.
+func (s *Store) requestFingerprint(payload any) [32]byte {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		panic("unsupported internal mutation payload")
+	}
+	mac := hmac.New(sha256.New, s.fingerprintKey)
+	mac.Write(encoded)
+	var result [32]byte
+	copy(result[:], mac.Sum(nil))
+	return result
 }

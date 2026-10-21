@@ -22,6 +22,7 @@ import (
 
 	"kingdom/internal/api"
 	"kingdom/internal/central/catalog"
+	"kingdom/internal/central/mutation"
 )
 
 var (
@@ -438,12 +439,27 @@ func (a projectAuthenticator) Authenticate(r *http.Request) (api.Principal, erro
 // concurrently with this change. Direct catalog changes are also detected by
 // the monitor, within RecheckInterval plus database query latency.
 func (m *Manager) RevokeMembership(ctx context.Context, actor, project, user string) error {
+	return m.revokeMembership(ctx, actor, project, user, "")
+}
+func (m *Manager) RevokeMembershipRequest(ctx context.Context, actor, project, user, key string) error {
+	if !mutation.ValidKey(key) {
+		return mutation.ErrInvalid
+	}
+	return m.revokeMembership(ctx, actor, project, user, key)
+}
+func (m *Manager) revokeMembership(ctx context.Context, actor, project, user, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return ErrClosed
 	}
-	if err := m.catalog.RevokeMembership(ctx, actor, project, user); err != nil {
+	var err error
+	if key == "" {
+		err = m.catalog.RevokeMembership(ctx, actor, project, user)
+	} else {
+		err = m.catalog.RevokeMembershipRequest(ctx, actor, project, user, key)
+	}
+	if err != nil {
 		return err
 	}
 	for binding := range m.active {
