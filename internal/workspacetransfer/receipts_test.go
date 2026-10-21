@@ -5,13 +5,25 @@ package workspacetransfer
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 )
+
+func TestReceiptNameMatchesCanonicalNativeGrant(t *testing.T) {
+	if !ReceiptName("native_" + strings.Repeat("a", 64) + ".json") {
+		t.Fatal("canonical native grant filename rejected")
+	}
+	if ReceiptName(uuid.NewString() + ".json") {
+		t.Fatal("noncanonical grant filename accepted")
+	}
+}
 
 func TestReceiptTransferExportsOnlyFixedOutbox(t *testing.T) {
 	root := t.TempDir()
@@ -19,7 +31,7 @@ func TestReceiptTransferExportsOnlyFixedOutbox(t *testing.T) {
 	if err := os.MkdirAll(outbox, 0700); err != nil {
 		t.Fatal(err)
 	}
-	name := uuid.NewString() + ".json"
+	name := receiptFixtureName()
 	for path, content := range map[string]string{
 		filepath.Join(outbox, name):                             `{"receipt":"retained"}`,
 		filepath.Join(outbox, name+"."+uuid.NewString()+".tmp"): "incomplete",
@@ -70,7 +82,7 @@ func TestReceiptSnapshotRejectsUnsafeEntriesAndLimits(t *testing.T) {
 				t.Fatal(err)
 			}
 			limits := ReceiptLimits()
-			name := uuid.NewString() + ".json"
+			name := receiptFixtureName()
 			var err error
 			switch scenario {
 			case "parent symlink":
@@ -90,7 +102,7 @@ func TestReceiptSnapshotRejectsUnsafeEntriesAndLimits(t *testing.T) {
 				limits.Entries = 1
 				err = os.WriteFile(filepath.Join(outbox, name), []byte("{}"), 0600)
 				if err == nil {
-					err = os.WriteFile(filepath.Join(outbox, uuid.NewString()+".json"), []byte("{}"), 0600)
+					err = os.WriteFile(filepath.Join(outbox, receiptFixtureName()), []byte("{}"), 0600)
 				}
 			}
 			if err != nil {
@@ -101,4 +113,9 @@ func TestReceiptSnapshotRejectsUnsafeEntriesAndLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+func receiptFixtureName() string {
+	hash := sha256.Sum256([]byte(uuid.NewString()))
+	return "native_" + hex.EncodeToString(hash[:]) + ".json"
 }

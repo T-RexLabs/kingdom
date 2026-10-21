@@ -19,8 +19,7 @@ func ReceiptName(name string) bool {
 		return false
 	}
 	raw := strings.TrimSuffix(name, ".json")
-	id, err := uuid.Parse(raw)
-	return err == nil && id != uuid.Nil && id.String() == raw
+	return strings.HasPrefix(raw, "native_") && digest(strings.TrimPrefix(raw, "native_"))
 }
 func receiptTemporary(name string) bool {
 	parts := strings.Split(name, ".")

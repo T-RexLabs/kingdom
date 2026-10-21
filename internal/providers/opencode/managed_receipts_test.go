@@ -19,7 +19,8 @@ func TestManagedReceiptRecoveryRejectsForeignArchiveBeforeMutation(t *testing.T)
 			f := callbackOwner()
 			staged := &workspacearchive.Staged{Path: t.TempDir()}
 			for i := 0; i < 2; i++ {
-				grant := uuid.NewString()
+				grantHash := sha256.Sum256([]byte(uuid.NewString()))
+				grant := "native_" + hex.EncodeToString(grantHash[:])
 				started := true
 				receipt := nativeReceipt{Identity: f.identity, GrantID: grant, IdentityDigest: "digest", Outcome: "completed", NativeStarted: &started}
 				if i == 1 && scenario == "foreign request" {
