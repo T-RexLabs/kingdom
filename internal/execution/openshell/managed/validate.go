@@ -248,7 +248,10 @@ func ValidateReceipt(r *pb.TerminalReceipt, i *pb.CommandIdentity) error {
 	if e != nil || !bytes.Equal(d, r.ReceiptSha256) {
 		return ErrProtocol
 	}
-	o := r.Output
+	return ValidateOutputManifest(r.Output)
+}
+
+func ValidateOutputManifest(o *pb.OutputManifest) error {
 	empty := sha256.Sum256(nil)
 	if o == nil || len(o.Sha256) != 32 || o.TotalBytes > MaxOutputBytes || o.TotalBytes == 0 && !bytes.Equal(o.Sha256, empty[:]) || (o.TotalBytes == 0) != (o.LastSequence == 0) || o.LastSequence > o.TotalBytes || o.LastSequence > MaxOutputChunks || o.Complete && (o.Gap || o.Truncated) {
 		return ErrProtocol

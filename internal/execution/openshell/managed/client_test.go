@@ -44,7 +44,7 @@ func (p *peer) ReadOutput(_ *pb.ReadOutputRequest, stream grpc.ServerStreamingSe
 	}
 	return nil
 }
-func connect(t *testing.T, p *peer) pb.ManagedExecutionsClient {
+func connect(t *testing.T, p pb.ManagedExecutionsServer) pb.ManagedExecutionsClient {
 	t.Helper()
 	listener := bufconn.Listen(2 * MaxControlBytes)
 	server := grpc.NewServer()

@@ -15,6 +15,16 @@ import "options.proto";
 // Every method, including DescribeRuntime, requires gateway authentication and
 // workspace authorization. Unsupported peers must reject before admission.
 service ManagedExecutions {
+  rpc FinalizeRuntime(FinalizeRuntimeRequest) returns (RuntimeArchive) {
+    option (.openshell.options.v1.authorization) = { auth_mode: "bearer" scope: "sandbox:write" workspace_role: "admin" };
+  }
+  rpc GetArchivedExecution(ArchivedExecutionRequest) returns (ExecutionStatus) {
+    option (.openshell.options.v1.authorization) = { auth_mode: "bearer" scope: "sandbox:read" workspace_role: "user" };
+  }
+  rpc ReadArchivedOutput(ReadArchivedOutputRequest) returns (stream OutputChunk) {
+    option (.openshell.options.v1.authorization) = { auth_mode: "bearer" scope: "sandbox:read" workspace_role: "user" };
+  }
+
   rpc DescribeRuntime(DescribeRuntimeRequest) returns (DescribeRuntimeResponse) {
     option (.openshell.options.v1.authorization) = { auth_mode: "bearer" scope: "sandbox:read" workspace_role: "user" };
   }
@@ -156,4 +166,41 @@ message OutputChunk {
   uint64 sequence = 1;
   OutputStream stream = 2;
   bytes data = 3;
+}
+
+// Finalization seals admission, independently archives closure/output evidence,
+// then releases lifecycle retention. It does not assert workspace export.
+message FinalizeRuntimeRequest {
+  string workspace = 1;
+  string sandbox = 2;
+  RuntimeBinding runtime = 3;
+}
+message ArchivedCommand {
+  CommandIdentity identity = 1;
+  bytes receipt_sha256 = 2;
+  OutputManifest output = 3;
+}
+message RuntimeArchiveManifest {
+  uint32 schema_version = 1;
+  string gateway_id = 2;
+  string workspace_id = 3;
+  RuntimeBinding runtime = 4;
+  // Strict ascending boundary_request_id byte order; no duplicate identities.
+  repeated ArchivedCommand commands = 5;
+}
+message RuntimeArchive {
+  // Lowercase hex manifest_sha256, immutable and content addressed.
+  string archive_id = 1;
+  RuntimeArchiveManifest manifest = 2;
+  // SHA256("kingdom.openshell.runtime-archive.v1\0" || canonical manifest).
+  bytes manifest_sha256 = 3;
+}
+message ArchivedExecutionRequest {
+  string archive_id = 1;
+  string request_id = 2;
+}
+message ReadArchivedOutputRequest {
+  ArchivedExecutionRequest execution = 1;
+  uint64 after_sequence = 2;
+  uint32 limit = 3;
 }

@@ -38,3 +38,19 @@ The effective specification binds explicit arguments, working directory,
 environment overrides, fixed input, and limits. It does not hash inherited
 runtime credentials. The runtime owner must bind those separately to the
 invocation's immutable credential revision.
+
+## Runtime Archives
+
+Finalization closes admission and archives every retained command before native
+lifecycle operations may remove the runtime. An unknown command or unverified
+receipt keeps deletion blocked. The manifest orders commands by their boundary
+request ID. Its digest is SHA-256 over the UTF-8 domain
+`kingdom.openshell.runtime-archive.v1`, one zero byte, and the canonical manifest.
+The archive ID is the lowercase hexadecimal digest. `archive-vector.json`
+checks the Rust and Go encoders against the same receipt and manifest.
+
+Kingdom must compare the archive with its complete durable command registry and
+retain the verified workspace export before requesting finalization. Archive
+reads use the immutable archive ID and do not require a live sandbox. They still
+require gateway authentication and current archive access. Archival preserves
+failed and incomplete execution facts; it never turns them into success.

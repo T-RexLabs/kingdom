@@ -1192,6 +1192,379 @@ func (x *OutputChunk) GetData() []byte {
 	return nil
 }
 
+// Finalization seals admission, independently archives closure/output evidence,
+// then releases lifecycle retention. It does not assert workspace export.
+type FinalizeRuntimeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Workspace     string                 `protobuf:"bytes,1,opt,name=workspace,proto3" json:"workspace,omitempty"`
+	Sandbox       string                 `protobuf:"bytes,2,opt,name=sandbox,proto3" json:"sandbox,omitempty"`
+	Runtime       *RuntimeBinding        `protobuf:"bytes,3,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FinalizeRuntimeRequest) Reset() {
+	*x = FinalizeRuntimeRequest{}
+	mi := &file_kingdom_managed_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FinalizeRuntimeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FinalizeRuntimeRequest) ProtoMessage() {}
+
+func (x *FinalizeRuntimeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_kingdom_managed_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FinalizeRuntimeRequest.ProtoReflect.Descriptor instead.
+func (*FinalizeRuntimeRequest) Descriptor() ([]byte, []int) {
+	return file_kingdom_managed_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *FinalizeRuntimeRequest) GetWorkspace() string {
+	if x != nil {
+		return x.Workspace
+	}
+	return ""
+}
+
+func (x *FinalizeRuntimeRequest) GetSandbox() string {
+	if x != nil {
+		return x.Sandbox
+	}
+	return ""
+}
+
+func (x *FinalizeRuntimeRequest) GetRuntime() *RuntimeBinding {
+	if x != nil {
+		return x.Runtime
+	}
+	return nil
+}
+
+type ArchivedCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Identity      *CommandIdentity       `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
+	ReceiptSha256 []byte                 `protobuf:"bytes,2,opt,name=receipt_sha256,json=receiptSha256,proto3" json:"receipt_sha256,omitempty"`
+	Output        *OutputManifest        `protobuf:"bytes,3,opt,name=output,proto3" json:"output,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ArchivedCommand) Reset() {
+	*x = ArchivedCommand{}
+	mi := &file_kingdom_managed_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ArchivedCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ArchivedCommand) ProtoMessage() {}
+
+func (x *ArchivedCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_kingdom_managed_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ArchivedCommand.ProtoReflect.Descriptor instead.
+func (*ArchivedCommand) Descriptor() ([]byte, []int) {
+	return file_kingdom_managed_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ArchivedCommand) GetIdentity() *CommandIdentity {
+	if x != nil {
+		return x.Identity
+	}
+	return nil
+}
+
+func (x *ArchivedCommand) GetReceiptSha256() []byte {
+	if x != nil {
+		return x.ReceiptSha256
+	}
+	return nil
+}
+
+func (x *ArchivedCommand) GetOutput() *OutputManifest {
+	if x != nil {
+		return x.Output
+	}
+	return nil
+}
+
+type RuntimeArchiveManifest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SchemaVersion uint32                 `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	GatewayId     string                 `protobuf:"bytes,2,opt,name=gateway_id,json=gatewayId,proto3" json:"gateway_id,omitempty"`
+	WorkspaceId   string                 `protobuf:"bytes,3,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
+	Runtime       *RuntimeBinding        `protobuf:"bytes,4,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	// Strict ascending boundary_request_id byte order; no duplicate identities.
+	Commands      []*ArchivedCommand `protobuf:"bytes,5,rep,name=commands,proto3" json:"commands,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RuntimeArchiveManifest) Reset() {
+	*x = RuntimeArchiveManifest{}
+	mi := &file_kingdom_managed_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuntimeArchiveManifest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuntimeArchiveManifest) ProtoMessage() {}
+
+func (x *RuntimeArchiveManifest) ProtoReflect() protoreflect.Message {
+	mi := &file_kingdom_managed_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuntimeArchiveManifest.ProtoReflect.Descriptor instead.
+func (*RuntimeArchiveManifest) Descriptor() ([]byte, []int) {
+	return file_kingdom_managed_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *RuntimeArchiveManifest) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+func (x *RuntimeArchiveManifest) GetGatewayId() string {
+	if x != nil {
+		return x.GatewayId
+	}
+	return ""
+}
+
+func (x *RuntimeArchiveManifest) GetWorkspaceId() string {
+	if x != nil {
+		return x.WorkspaceId
+	}
+	return ""
+}
+
+func (x *RuntimeArchiveManifest) GetRuntime() *RuntimeBinding {
+	if x != nil {
+		return x.Runtime
+	}
+	return nil
+}
+
+func (x *RuntimeArchiveManifest) GetCommands() []*ArchivedCommand {
+	if x != nil {
+		return x.Commands
+	}
+	return nil
+}
+
+type RuntimeArchive struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Lowercase hex manifest_sha256, immutable and content addressed.
+	ArchiveId string                  `protobuf:"bytes,1,opt,name=archive_id,json=archiveId,proto3" json:"archive_id,omitempty"`
+	Manifest  *RuntimeArchiveManifest `protobuf:"bytes,2,opt,name=manifest,proto3" json:"manifest,omitempty"`
+	// SHA256("kingdom.openshell.runtime-archive.v1\0" || canonical manifest).
+	ManifestSha256 []byte `protobuf:"bytes,3,opt,name=manifest_sha256,json=manifestSha256,proto3" json:"manifest_sha256,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *RuntimeArchive) Reset() {
+	*x = RuntimeArchive{}
+	mi := &file_kingdom_managed_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuntimeArchive) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuntimeArchive) ProtoMessage() {}
+
+func (x *RuntimeArchive) ProtoReflect() protoreflect.Message {
+	mi := &file_kingdom_managed_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuntimeArchive.ProtoReflect.Descriptor instead.
+func (*RuntimeArchive) Descriptor() ([]byte, []int) {
+	return file_kingdom_managed_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *RuntimeArchive) GetArchiveId() string {
+	if x != nil {
+		return x.ArchiveId
+	}
+	return ""
+}
+
+func (x *RuntimeArchive) GetManifest() *RuntimeArchiveManifest {
+	if x != nil {
+		return x.Manifest
+	}
+	return nil
+}
+
+func (x *RuntimeArchive) GetManifestSha256() []byte {
+	if x != nil {
+		return x.ManifestSha256
+	}
+	return nil
+}
+
+type ArchivedExecutionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ArchiveId     string                 `protobuf:"bytes,1,opt,name=archive_id,json=archiveId,proto3" json:"archive_id,omitempty"`
+	RequestId     string                 `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ArchivedExecutionRequest) Reset() {
+	*x = ArchivedExecutionRequest{}
+	mi := &file_kingdom_managed_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ArchivedExecutionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ArchivedExecutionRequest) ProtoMessage() {}
+
+func (x *ArchivedExecutionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_kingdom_managed_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ArchivedExecutionRequest.ProtoReflect.Descriptor instead.
+func (*ArchivedExecutionRequest) Descriptor() ([]byte, []int) {
+	return file_kingdom_managed_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ArchivedExecutionRequest) GetArchiveId() string {
+	if x != nil {
+		return x.ArchiveId
+	}
+	return ""
+}
+
+func (x *ArchivedExecutionRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+type ReadArchivedOutputRequest struct {
+	state         protoimpl.MessageState    `protogen:"open.v1"`
+	Execution     *ArchivedExecutionRequest `protobuf:"bytes,1,opt,name=execution,proto3" json:"execution,omitempty"`
+	AfterSequence uint64                    `protobuf:"varint,2,opt,name=after_sequence,json=afterSequence,proto3" json:"after_sequence,omitempty"`
+	Limit         uint32                    `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadArchivedOutputRequest) Reset() {
+	*x = ReadArchivedOutputRequest{}
+	mi := &file_kingdom_managed_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadArchivedOutputRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadArchivedOutputRequest) ProtoMessage() {}
+
+func (x *ReadArchivedOutputRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_kingdom_managed_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadArchivedOutputRequest.ProtoReflect.Descriptor instead.
+func (*ReadArchivedOutputRequest) Descriptor() ([]byte, []int) {
+	return file_kingdom_managed_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *ReadArchivedOutputRequest) GetExecution() *ArchivedExecutionRequest {
+	if x != nil {
+		return x.Execution
+	}
+	return nil
+}
+
+func (x *ReadArchivedOutputRequest) GetAfterSequence() uint64 {
+	if x != nil {
+		return x.AfterSequence
+	}
+	return 0
+}
+
+func (x *ReadArchivedOutputRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
 var File_kingdom_managed_proto protoreflect.FileDescriptor
 
 const file_kingdom_managed_proto_rawDesc = "" +
@@ -1291,7 +1664,36 @@ const file_kingdom_managed_proto_rawDesc = "" +
 	"\vOutputChunk\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12B\n" +
 	"\x06stream\x18\x02 \x01(\x0e2*.kingdom.openshell.managed.v1.OutputStreamR\x06stream\x12\x12\n" +
-	"\x04data\x18\x03 \x01(\fR\x04data*\xa8\x01\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\"\x98\x01\n" +
+	"\x16FinalizeRuntimeRequest\x12\x1c\n" +
+	"\tworkspace\x18\x01 \x01(\tR\tworkspace\x12\x18\n" +
+	"\asandbox\x18\x02 \x01(\tR\asandbox\x12F\n" +
+	"\aruntime\x18\x03 \x01(\v2,.kingdom.openshell.managed.v1.RuntimeBindingR\aruntime\"\xc9\x01\n" +
+	"\x0fArchivedCommand\x12I\n" +
+	"\bidentity\x18\x01 \x01(\v2-.kingdom.openshell.managed.v1.CommandIdentityR\bidentity\x12%\n" +
+	"\x0ereceipt_sha256\x18\x02 \x01(\fR\rreceiptSha256\x12D\n" +
+	"\x06output\x18\x03 \x01(\v2,.kingdom.openshell.managed.v1.OutputManifestR\x06output\"\x94\x02\n" +
+	"\x16RuntimeArchiveManifest\x12%\n" +
+	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12\x1d\n" +
+	"\n" +
+	"gateway_id\x18\x02 \x01(\tR\tgatewayId\x12!\n" +
+	"\fworkspace_id\x18\x03 \x01(\tR\vworkspaceId\x12F\n" +
+	"\aruntime\x18\x04 \x01(\v2,.kingdom.openshell.managed.v1.RuntimeBindingR\aruntime\x12I\n" +
+	"\bcommands\x18\x05 \x03(\v2-.kingdom.openshell.managed.v1.ArchivedCommandR\bcommands\"\xaa\x01\n" +
+	"\x0eRuntimeArchive\x12\x1d\n" +
+	"\n" +
+	"archive_id\x18\x01 \x01(\tR\tarchiveId\x12P\n" +
+	"\bmanifest\x18\x02 \x01(\v24.kingdom.openshell.managed.v1.RuntimeArchiveManifestR\bmanifest\x12'\n" +
+	"\x0fmanifest_sha256\x18\x03 \x01(\fR\x0emanifestSha256\"X\n" +
+	"\x18ArchivedExecutionRequest\x12\x1d\n" +
+	"\n" +
+	"archive_id\x18\x01 \x01(\tR\tarchiveId\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x02 \x01(\tR\trequestId\"\xae\x01\n" +
+	"\x19ReadArchivedOutputRequest\x12T\n" +
+	"\texecution\x18\x01 \x01(\v26.kingdom.openshell.managed.v1.ArchivedExecutionRequestR\texecution\x12%\n" +
+	"\x0eafter_sequence\x18\x02 \x01(\x04R\rafterSequence\x12\x14\n" +
+	"\x05limit\x18\x03 \x01(\rR\x05limit*\xa8\x01\n" +
 	"\x0eExecutionState\x12\x1f\n" +
 	"\x1bEXECUTION_STATE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18EXECUTION_STATE_ADMITTED\x10\x01\x12\x1b\n" +
@@ -1301,8 +1703,14 @@ const file_kingdom_managed_proto_rawDesc = "" +
 	"\fOutputStream\x12\x1d\n" +
 	"\x19OUTPUT_STREAM_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14OUTPUT_STREAM_STDOUT\x10\x01\x12\x18\n" +
-	"\x14OUTPUT_STREAM_STDERR\x10\x022\x90\x06\n" +
-	"\x11ManagedExecutions\x12\xa0\x01\n" +
+	"\x14OUTPUT_STREAM_STDERR\x10\x022\xed\t\n" +
+	"\x11ManagedExecutions\x12\x99\x01\n" +
+	"\x0fFinalizeRuntime\x124.kingdom.openshell.managed.v1.FinalizeRuntimeRequest\x1a,.kingdom.openshell.managed.v1.RuntimeArchive\"\"\x82\xb5\x18\x1e\n" +
+	"\x06bearer\x12\x05admin\"\rsandbox:write\x12\x9f\x01\n" +
+	"\x14GetArchivedExecution\x126.kingdom.openshell.managed.v1.ArchivedExecutionRequest\x1a-.kingdom.openshell.managed.v1.ExecutionStatus\" \x82\xb5\x18\x1c\n" +
+	"\x06bearer\x12\x04user\"\fsandbox:read\x12\x9c\x01\n" +
+	"\x12ReadArchivedOutput\x127.kingdom.openshell.managed.v1.ReadArchivedOutputRequest\x1a).kingdom.openshell.managed.v1.OutputChunk\" \x82\xb5\x18\x1c\n" +
+	"\x06bearer\x12\x04user\"\fsandbox:read0\x01\x12\xa0\x01\n" +
 	"\x0fDescribeRuntime\x124.kingdom.openshell.managed.v1.DescribeRuntimeRequest\x1a5.kingdom.openshell.managed.v1.DescribeRuntimeResponse\" \x82\xb5\x18\x1c\n" +
 	"\x06bearer\x12\x04user\"\fsandbox:read\x12\x97\x01\n" +
 	"\x0eStartExecution\x123.kingdom.openshell.managed.v1.StartExecutionRequest\x1a-.kingdom.openshell.managed.v1.ExecutionStatus\"!\x82\xb5\x18\x1d\n" +
@@ -1328,31 +1736,37 @@ func file_kingdom_managed_proto_rawDescGZIP() []byte {
 }
 
 var file_kingdom_managed_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_kingdom_managed_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_kingdom_managed_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_kingdom_managed_proto_goTypes = []any{
-	(ExecutionState)(0),             // 0: kingdom.openshell.managed.v1.ExecutionState
-	(OutputStream)(0),               // 1: kingdom.openshell.managed.v1.OutputStream
-	(*RuntimeBinding)(nil),          // 2: kingdom.openshell.managed.v1.RuntimeBinding
-	(*DescribeRuntimeRequest)(nil),  // 3: kingdom.openshell.managed.v1.DescribeRuntimeRequest
-	(*DescribeRuntimeResponse)(nil), // 4: kingdom.openshell.managed.v1.DescribeRuntimeResponse
-	(*CommandSpec)(nil),             // 5: kingdom.openshell.managed.v1.CommandSpec
-	(*ExecutionSelector)(nil),       // 6: kingdom.openshell.managed.v1.ExecutionSelector
-	(*StartExecutionRequest)(nil),   // 7: kingdom.openshell.managed.v1.StartExecutionRequest
-	(*GetExecutionRequest)(nil),     // 8: kingdom.openshell.managed.v1.GetExecutionRequest
-	(*CancelExecutionRequest)(nil),  // 9: kingdom.openshell.managed.v1.CancelExecutionRequest
-	(*ReadOutputRequest)(nil),       // 10: kingdom.openshell.managed.v1.ReadOutputRequest
-	(*CommandIdentity)(nil),         // 11: kingdom.openshell.managed.v1.CommandIdentity
-	(*ExecutionStatus)(nil),         // 12: kingdom.openshell.managed.v1.ExecutionStatus
-	(*TerminalReceipt)(nil),         // 13: kingdom.openshell.managed.v1.TerminalReceipt
-	(*OutputManifest)(nil),          // 14: kingdom.openshell.managed.v1.OutputManifest
-	(*OutputChunk)(nil),             // 15: kingdom.openshell.managed.v1.OutputChunk
-	nil,                             // 16: kingdom.openshell.managed.v1.CommandSpec.EnvironmentEntry
-	(*durationpb.Duration)(nil),     // 17: google.protobuf.Duration
+	(ExecutionState)(0),               // 0: kingdom.openshell.managed.v1.ExecutionState
+	(OutputStream)(0),                 // 1: kingdom.openshell.managed.v1.OutputStream
+	(*RuntimeBinding)(nil),            // 2: kingdom.openshell.managed.v1.RuntimeBinding
+	(*DescribeRuntimeRequest)(nil),    // 3: kingdom.openshell.managed.v1.DescribeRuntimeRequest
+	(*DescribeRuntimeResponse)(nil),   // 4: kingdom.openshell.managed.v1.DescribeRuntimeResponse
+	(*CommandSpec)(nil),               // 5: kingdom.openshell.managed.v1.CommandSpec
+	(*ExecutionSelector)(nil),         // 6: kingdom.openshell.managed.v1.ExecutionSelector
+	(*StartExecutionRequest)(nil),     // 7: kingdom.openshell.managed.v1.StartExecutionRequest
+	(*GetExecutionRequest)(nil),       // 8: kingdom.openshell.managed.v1.GetExecutionRequest
+	(*CancelExecutionRequest)(nil),    // 9: kingdom.openshell.managed.v1.CancelExecutionRequest
+	(*ReadOutputRequest)(nil),         // 10: kingdom.openshell.managed.v1.ReadOutputRequest
+	(*CommandIdentity)(nil),           // 11: kingdom.openshell.managed.v1.CommandIdentity
+	(*ExecutionStatus)(nil),           // 12: kingdom.openshell.managed.v1.ExecutionStatus
+	(*TerminalReceipt)(nil),           // 13: kingdom.openshell.managed.v1.TerminalReceipt
+	(*OutputManifest)(nil),            // 14: kingdom.openshell.managed.v1.OutputManifest
+	(*OutputChunk)(nil),               // 15: kingdom.openshell.managed.v1.OutputChunk
+	(*FinalizeRuntimeRequest)(nil),    // 16: kingdom.openshell.managed.v1.FinalizeRuntimeRequest
+	(*ArchivedCommand)(nil),           // 17: kingdom.openshell.managed.v1.ArchivedCommand
+	(*RuntimeArchiveManifest)(nil),    // 18: kingdom.openshell.managed.v1.RuntimeArchiveManifest
+	(*RuntimeArchive)(nil),            // 19: kingdom.openshell.managed.v1.RuntimeArchive
+	(*ArchivedExecutionRequest)(nil),  // 20: kingdom.openshell.managed.v1.ArchivedExecutionRequest
+	(*ReadArchivedOutputRequest)(nil), // 21: kingdom.openshell.managed.v1.ReadArchivedOutputRequest
+	nil,                               // 22: kingdom.openshell.managed.v1.CommandSpec.EnvironmentEntry
+	(*durationpb.Duration)(nil),       // 23: google.protobuf.Duration
 }
 var file_kingdom_managed_proto_depIdxs = []int32{
 	2,  // 0: kingdom.openshell.managed.v1.DescribeRuntimeResponse.runtime:type_name -> kingdom.openshell.managed.v1.RuntimeBinding
-	16, // 1: kingdom.openshell.managed.v1.CommandSpec.environment:type_name -> kingdom.openshell.managed.v1.CommandSpec.EnvironmentEntry
-	17, // 2: kingdom.openshell.managed.v1.CommandSpec.execution_timeout:type_name -> google.protobuf.Duration
+	22, // 1: kingdom.openshell.managed.v1.CommandSpec.environment:type_name -> kingdom.openshell.managed.v1.CommandSpec.EnvironmentEntry
+	23, // 2: kingdom.openshell.managed.v1.CommandSpec.execution_timeout:type_name -> google.protobuf.Duration
 	2,  // 3: kingdom.openshell.managed.v1.ExecutionSelector.runtime:type_name -> kingdom.openshell.managed.v1.RuntimeBinding
 	6,  // 4: kingdom.openshell.managed.v1.StartExecutionRequest.execution:type_name -> kingdom.openshell.managed.v1.ExecutionSelector
 	5,  // 5: kingdom.openshell.managed.v1.StartExecutionRequest.command:type_name -> kingdom.openshell.managed.v1.CommandSpec
@@ -1366,21 +1780,34 @@ var file_kingdom_managed_proto_depIdxs = []int32{
 	11, // 13: kingdom.openshell.managed.v1.TerminalReceipt.identity:type_name -> kingdom.openshell.managed.v1.CommandIdentity
 	14, // 14: kingdom.openshell.managed.v1.TerminalReceipt.output:type_name -> kingdom.openshell.managed.v1.OutputManifest
 	1,  // 15: kingdom.openshell.managed.v1.OutputChunk.stream:type_name -> kingdom.openshell.managed.v1.OutputStream
-	3,  // 16: kingdom.openshell.managed.v1.ManagedExecutions.DescribeRuntime:input_type -> kingdom.openshell.managed.v1.DescribeRuntimeRequest
-	7,  // 17: kingdom.openshell.managed.v1.ManagedExecutions.StartExecution:input_type -> kingdom.openshell.managed.v1.StartExecutionRequest
-	8,  // 18: kingdom.openshell.managed.v1.ManagedExecutions.GetExecution:input_type -> kingdom.openshell.managed.v1.GetExecutionRequest
-	9,  // 19: kingdom.openshell.managed.v1.ManagedExecutions.CancelExecution:input_type -> kingdom.openshell.managed.v1.CancelExecutionRequest
-	10, // 20: kingdom.openshell.managed.v1.ManagedExecutions.ReadOutput:input_type -> kingdom.openshell.managed.v1.ReadOutputRequest
-	4,  // 21: kingdom.openshell.managed.v1.ManagedExecutions.DescribeRuntime:output_type -> kingdom.openshell.managed.v1.DescribeRuntimeResponse
-	12, // 22: kingdom.openshell.managed.v1.ManagedExecutions.StartExecution:output_type -> kingdom.openshell.managed.v1.ExecutionStatus
-	12, // 23: kingdom.openshell.managed.v1.ManagedExecutions.GetExecution:output_type -> kingdom.openshell.managed.v1.ExecutionStatus
-	12, // 24: kingdom.openshell.managed.v1.ManagedExecutions.CancelExecution:output_type -> kingdom.openshell.managed.v1.ExecutionStatus
-	15, // 25: kingdom.openshell.managed.v1.ManagedExecutions.ReadOutput:output_type -> kingdom.openshell.managed.v1.OutputChunk
-	21, // [21:26] is the sub-list for method output_type
-	16, // [16:21] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	2,  // 16: kingdom.openshell.managed.v1.FinalizeRuntimeRequest.runtime:type_name -> kingdom.openshell.managed.v1.RuntimeBinding
+	11, // 17: kingdom.openshell.managed.v1.ArchivedCommand.identity:type_name -> kingdom.openshell.managed.v1.CommandIdentity
+	14, // 18: kingdom.openshell.managed.v1.ArchivedCommand.output:type_name -> kingdom.openshell.managed.v1.OutputManifest
+	2,  // 19: kingdom.openshell.managed.v1.RuntimeArchiveManifest.runtime:type_name -> kingdom.openshell.managed.v1.RuntimeBinding
+	17, // 20: kingdom.openshell.managed.v1.RuntimeArchiveManifest.commands:type_name -> kingdom.openshell.managed.v1.ArchivedCommand
+	18, // 21: kingdom.openshell.managed.v1.RuntimeArchive.manifest:type_name -> kingdom.openshell.managed.v1.RuntimeArchiveManifest
+	20, // 22: kingdom.openshell.managed.v1.ReadArchivedOutputRequest.execution:type_name -> kingdom.openshell.managed.v1.ArchivedExecutionRequest
+	16, // 23: kingdom.openshell.managed.v1.ManagedExecutions.FinalizeRuntime:input_type -> kingdom.openshell.managed.v1.FinalizeRuntimeRequest
+	20, // 24: kingdom.openshell.managed.v1.ManagedExecutions.GetArchivedExecution:input_type -> kingdom.openshell.managed.v1.ArchivedExecutionRequest
+	21, // 25: kingdom.openshell.managed.v1.ManagedExecutions.ReadArchivedOutput:input_type -> kingdom.openshell.managed.v1.ReadArchivedOutputRequest
+	3,  // 26: kingdom.openshell.managed.v1.ManagedExecutions.DescribeRuntime:input_type -> kingdom.openshell.managed.v1.DescribeRuntimeRequest
+	7,  // 27: kingdom.openshell.managed.v1.ManagedExecutions.StartExecution:input_type -> kingdom.openshell.managed.v1.StartExecutionRequest
+	8,  // 28: kingdom.openshell.managed.v1.ManagedExecutions.GetExecution:input_type -> kingdom.openshell.managed.v1.GetExecutionRequest
+	9,  // 29: kingdom.openshell.managed.v1.ManagedExecutions.CancelExecution:input_type -> kingdom.openshell.managed.v1.CancelExecutionRequest
+	10, // 30: kingdom.openshell.managed.v1.ManagedExecutions.ReadOutput:input_type -> kingdom.openshell.managed.v1.ReadOutputRequest
+	19, // 31: kingdom.openshell.managed.v1.ManagedExecutions.FinalizeRuntime:output_type -> kingdom.openshell.managed.v1.RuntimeArchive
+	12, // 32: kingdom.openshell.managed.v1.ManagedExecutions.GetArchivedExecution:output_type -> kingdom.openshell.managed.v1.ExecutionStatus
+	15, // 33: kingdom.openshell.managed.v1.ManagedExecutions.ReadArchivedOutput:output_type -> kingdom.openshell.managed.v1.OutputChunk
+	4,  // 34: kingdom.openshell.managed.v1.ManagedExecutions.DescribeRuntime:output_type -> kingdom.openshell.managed.v1.DescribeRuntimeResponse
+	12, // 35: kingdom.openshell.managed.v1.ManagedExecutions.StartExecution:output_type -> kingdom.openshell.managed.v1.ExecutionStatus
+	12, // 36: kingdom.openshell.managed.v1.ManagedExecutions.GetExecution:output_type -> kingdom.openshell.managed.v1.ExecutionStatus
+	12, // 37: kingdom.openshell.managed.v1.ManagedExecutions.CancelExecution:output_type -> kingdom.openshell.managed.v1.ExecutionStatus
+	15, // 38: kingdom.openshell.managed.v1.ManagedExecutions.ReadOutput:output_type -> kingdom.openshell.managed.v1.OutputChunk
+	31, // [31:39] is the sub-list for method output_type
+	23, // [23:31] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_kingdom_managed_proto_init() }
@@ -1398,7 +1825,7 @@ func file_kingdom_managed_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_kingdom_managed_proto_rawDesc), len(file_kingdom_managed_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   15,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

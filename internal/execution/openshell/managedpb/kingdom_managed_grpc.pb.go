@@ -21,11 +21,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ManagedExecutions_DescribeRuntime_FullMethodName = "/kingdom.openshell.managed.v1.ManagedExecutions/DescribeRuntime"
-	ManagedExecutions_StartExecution_FullMethodName  = "/kingdom.openshell.managed.v1.ManagedExecutions/StartExecution"
-	ManagedExecutions_GetExecution_FullMethodName    = "/kingdom.openshell.managed.v1.ManagedExecutions/GetExecution"
-	ManagedExecutions_CancelExecution_FullMethodName = "/kingdom.openshell.managed.v1.ManagedExecutions/CancelExecution"
-	ManagedExecutions_ReadOutput_FullMethodName      = "/kingdom.openshell.managed.v1.ManagedExecutions/ReadOutput"
+	ManagedExecutions_FinalizeRuntime_FullMethodName      = "/kingdom.openshell.managed.v1.ManagedExecutions/FinalizeRuntime"
+	ManagedExecutions_GetArchivedExecution_FullMethodName = "/kingdom.openshell.managed.v1.ManagedExecutions/GetArchivedExecution"
+	ManagedExecutions_ReadArchivedOutput_FullMethodName   = "/kingdom.openshell.managed.v1.ManagedExecutions/ReadArchivedOutput"
+	ManagedExecutions_DescribeRuntime_FullMethodName      = "/kingdom.openshell.managed.v1.ManagedExecutions/DescribeRuntime"
+	ManagedExecutions_StartExecution_FullMethodName       = "/kingdom.openshell.managed.v1.ManagedExecutions/StartExecution"
+	ManagedExecutions_GetExecution_FullMethodName         = "/kingdom.openshell.managed.v1.ManagedExecutions/GetExecution"
+	ManagedExecutions_CancelExecution_FullMethodName      = "/kingdom.openshell.managed.v1.ManagedExecutions/CancelExecution"
+	ManagedExecutions_ReadOutput_FullMethodName           = "/kingdom.openshell.managed.v1.ManagedExecutions/ReadOutput"
 )
 
 // ManagedExecutionsClient is the client API for ManagedExecutions service.
@@ -41,6 +44,9 @@ const (
 // Every method, including DescribeRuntime, requires gateway authentication and
 // workspace authorization. Unsupported peers must reject before admission.
 type ManagedExecutionsClient interface {
+	FinalizeRuntime(ctx context.Context, in *FinalizeRuntimeRequest, opts ...grpc.CallOption) (*RuntimeArchive, error)
+	GetArchivedExecution(ctx context.Context, in *ArchivedExecutionRequest, opts ...grpc.CallOption) (*ExecutionStatus, error)
+	ReadArchivedOutput(ctx context.Context, in *ReadArchivedOutputRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OutputChunk], error)
 	DescribeRuntime(ctx context.Context, in *DescribeRuntimeRequest, opts ...grpc.CallOption) (*DescribeRuntimeResponse, error)
 	StartExecution(ctx context.Context, in *StartExecutionRequest, opts ...grpc.CallOption) (*ExecutionStatus, error)
 	GetExecution(ctx context.Context, in *GetExecutionRequest, opts ...grpc.CallOption) (*ExecutionStatus, error)
@@ -55,6 +61,45 @@ type managedExecutionsClient struct {
 func NewManagedExecutionsClient(cc grpc.ClientConnInterface) ManagedExecutionsClient {
 	return &managedExecutionsClient{cc}
 }
+
+func (c *managedExecutionsClient) FinalizeRuntime(ctx context.Context, in *FinalizeRuntimeRequest, opts ...grpc.CallOption) (*RuntimeArchive, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RuntimeArchive)
+	err := c.cc.Invoke(ctx, ManagedExecutions_FinalizeRuntime_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *managedExecutionsClient) GetArchivedExecution(ctx context.Context, in *ArchivedExecutionRequest, opts ...grpc.CallOption) (*ExecutionStatus, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExecutionStatus)
+	err := c.cc.Invoke(ctx, ManagedExecutions_GetArchivedExecution_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *managedExecutionsClient) ReadArchivedOutput(ctx context.Context, in *ReadArchivedOutputRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OutputChunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ManagedExecutions_ServiceDesc.Streams[0], ManagedExecutions_ReadArchivedOutput_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ReadArchivedOutputRequest, OutputChunk]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ManagedExecutions_ReadArchivedOutputClient = grpc.ServerStreamingClient[OutputChunk]
 
 func (c *managedExecutionsClient) DescribeRuntime(ctx context.Context, in *DescribeRuntimeRequest, opts ...grpc.CallOption) (*DescribeRuntimeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -98,7 +143,7 @@ func (c *managedExecutionsClient) CancelExecution(ctx context.Context, in *Cance
 
 func (c *managedExecutionsClient) ReadOutput(ctx context.Context, in *ReadOutputRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OutputChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &ManagedExecutions_ServiceDesc.Streams[0], ManagedExecutions_ReadOutput_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ManagedExecutions_ServiceDesc.Streams[1], ManagedExecutions_ReadOutput_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +173,9 @@ type ManagedExecutions_ReadOutputClient = grpc.ServerStreamingClient[OutputChunk
 // Every method, including DescribeRuntime, requires gateway authentication and
 // workspace authorization. Unsupported peers must reject before admission.
 type ManagedExecutionsServer interface {
+	FinalizeRuntime(context.Context, *FinalizeRuntimeRequest) (*RuntimeArchive, error)
+	GetArchivedExecution(context.Context, *ArchivedExecutionRequest) (*ExecutionStatus, error)
+	ReadArchivedOutput(*ReadArchivedOutputRequest, grpc.ServerStreamingServer[OutputChunk]) error
 	DescribeRuntime(context.Context, *DescribeRuntimeRequest) (*DescribeRuntimeResponse, error)
 	StartExecution(context.Context, *StartExecutionRequest) (*ExecutionStatus, error)
 	GetExecution(context.Context, *GetExecutionRequest) (*ExecutionStatus, error)
@@ -143,6 +191,15 @@ type ManagedExecutionsServer interface {
 // pointer dereference when methods are called.
 type UnimplementedManagedExecutionsServer struct{}
 
+func (UnimplementedManagedExecutionsServer) FinalizeRuntime(context.Context, *FinalizeRuntimeRequest) (*RuntimeArchive, error) {
+	return nil, status.Error(codes.Unimplemented, "method FinalizeRuntime not implemented")
+}
+func (UnimplementedManagedExecutionsServer) GetArchivedExecution(context.Context, *ArchivedExecutionRequest) (*ExecutionStatus, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetArchivedExecution not implemented")
+}
+func (UnimplementedManagedExecutionsServer) ReadArchivedOutput(*ReadArchivedOutputRequest, grpc.ServerStreamingServer[OutputChunk]) error {
+	return status.Error(codes.Unimplemented, "method ReadArchivedOutput not implemented")
+}
 func (UnimplementedManagedExecutionsServer) DescribeRuntime(context.Context, *DescribeRuntimeRequest) (*DescribeRuntimeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DescribeRuntime not implemented")
 }
@@ -178,6 +235,53 @@ func RegisterManagedExecutionsServer(s grpc.ServiceRegistrar, srv ManagedExecuti
 	}
 	s.RegisterService(&ManagedExecutions_ServiceDesc, srv)
 }
+
+func _ManagedExecutions_FinalizeRuntime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FinalizeRuntimeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ManagedExecutionsServer).FinalizeRuntime(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ManagedExecutions_FinalizeRuntime_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ManagedExecutionsServer).FinalizeRuntime(ctx, req.(*FinalizeRuntimeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ManagedExecutions_GetArchivedExecution_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ArchivedExecutionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ManagedExecutionsServer).GetArchivedExecution(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ManagedExecutions_GetArchivedExecution_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ManagedExecutionsServer).GetArchivedExecution(ctx, req.(*ArchivedExecutionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ManagedExecutions_ReadArchivedOutput_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ReadArchivedOutputRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(ManagedExecutionsServer).ReadArchivedOutput(m, &grpc.GenericServerStream[ReadArchivedOutputRequest, OutputChunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ManagedExecutions_ReadArchivedOutputServer = grpc.ServerStreamingServer[OutputChunk]
 
 func _ManagedExecutions_DescribeRuntime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DescribeRuntimeRequest)
@@ -270,6 +374,14 @@ var ManagedExecutions_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*ManagedExecutionsServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
+			MethodName: "FinalizeRuntime",
+			Handler:    _ManagedExecutions_FinalizeRuntime_Handler,
+		},
+		{
+			MethodName: "GetArchivedExecution",
+			Handler:    _ManagedExecutions_GetArchivedExecution_Handler,
+		},
+		{
 			MethodName: "DescribeRuntime",
 			Handler:    _ManagedExecutions_DescribeRuntime_Handler,
 		},
@@ -287,6 +399,11 @@ var ManagedExecutions_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "ReadArchivedOutput",
+			Handler:       _ManagedExecutions_ReadArchivedOutput_Handler,
+			ServerStreams: true,
+		},
 		{
 			StreamName:    "ReadOutput",
 			Handler:       _ManagedExecutions_ReadOutput_Handler,
