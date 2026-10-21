@@ -164,6 +164,9 @@ func (w *Worker) Provision(ctx context.Context, p providerrequest.Preparation, r
 		if e := remote.BindRuntimeTx(ctx, tx, r.Owner, ref); e != nil {
 			return e
 		}
+		if e := remote.RecordRuntimeOwnerTx(ctx, tx, r.Owner, ref, expected); e != nil {
+			return e
+		}
 		return remote.RecordAdmissionTx(ctx, tx, r.Owner, ref, ref.CreationID, r.SpecDigest, hex.EncodeToString(admission))
 	})
 	if e != nil {
