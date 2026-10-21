@@ -22,7 +22,7 @@ The patched gateway keeps the SSH operation alive after a native execution timeo
 
 The boundary writes and synchronizes a logical admission record before invoking the executor. The record binds the request ID, payload digest, sandbox ID, runtime generation, and logical process ID. The journal is under `/.openshell/channel/sandbox/kingdom-exec-journal`, on the protected channel volume. The mandatory Landlock baseline excludes that path from workload access. File permissions alone would not be sufficient because the boundary and workload use the same UID.
 
-Records use exclusive creation and file/directory synchronization. A repeated request with lost in-memory state cannot launch again. A conflicting payload is rejected. Clean terminal records are bound to the original admission and synchronized before reporting clean completion. Wait and storage failures remain unresolved.
+Records use exclusive creation and file/directory synchronization. A repeated request with lost in-memory state cannot launch again. A conflicting payload is rejected. Schema 2 terminal records are bound to the original admission and synchronized before reporting completion. They retain raw exit status, requested termination, forced cleanup, and proven process-group closure as separate typed facts. A forced but proven shutdown is retained as non-clean. Wait and storage failures remain unresolved. Older or contradictory terminal records are rejected.
 
 This is a logical admission gate, not an acknowledgement gate for the exact child PID. A crash between admission and retained terminal evidence requires whole-sandbox shutdown before replacement. The journal survives boundary restarts while its channel volume remains; it does not survive sandbox deletion. There is no authenticated journal export or output-stream replay API in this prototype.
 
@@ -81,7 +81,7 @@ Use this gateway image for the disposable gateway service. This is a custom Dock
 
 - The profile can reject job control, daemon startup, and tools that create sessions or groups. General support for those tools needs a stronger per-command boundary, such as delegated cgroups.
 - The production proof depends on private PID-namespace ownership and on all trusted group creation using the same registry lock. Unit tests use isolated subreaper helpers; those tests do not establish arbitrary shared-namespace safety.
-- Forced cleanup currently returns a non-clean native result and leaves the durable request unresolved. Kingdom needs a typed outcome that separates proven shutdown, forced termination, ordinary exit status, and missing proof.
+- Forced cleanup returns a non-clean native result. The protected journal now distinguishes proven forced shutdown from missing proof, but these typed facts are not yet available through an authenticated public retrieval API.
 - Authenticated evidence retrieval, exact runtime identity binding in Kingdom, workspace export after shutdown, provider credentials, and end-to-end workflow recovery are not implemented here.
 - The boundary request ID differs from the public gateway request UUID in the tested transport. The next protocol change must carry that binding through to the retained evidence. Gateway duplicate rejection alone does not prove permanent journal deduplication.
 - The released v0.1.5 gateway and CLI can return 124 while a command remains live. The custom gateway adds bounded termination for native API timeout and client cancellation. The CLI uses a separate SSH path and is not fixed by this gateway patch. A timeout or disconnected stream still requires confirmed whole-sandbox shutdown before replacement; it is not a command shutdown receipt.
@@ -94,6 +94,8 @@ On 2026-10-21, the Linux ARM64 prototype passed 13 focused Rust tests and real O
 The initial timeout checks exposed the released gateway limitation above. Supported sandbox stop then left the workload container stopped with no running PID. Test containers, sandbox volumes, and gateway networks were removed.
 
 The v2 gateway change first reproduced missing remote termination with a failing SSH test. After the fix, 12 SSH transport tests and 11 mutation-replay tests passed. Live native timeout and client cancellation then left no command or child process in independent trusted inspection. Their journal admissions remained unresolved, with no clean terminal records. The gateway binary and Z3 library hashes are recorded in `manifest.json`. These results qualify this experiment only; they do not establish a hosted Kingdom release or end-to-end provider execution.
+
+The v3 boundary change first reproduced the missing forced-closure receipt with a failing test. The formatted source then passed the managed, journal/group, and default-mode boundary test filters (12, 12, and 14 tests, with overlap). It preserves a shared completion cache for simultaneous observers and retains non-clean typed closure when a cancelled command exits zero. The ARM64 musl runtime builds successfully. These v3 results are unit and build evidence; the earlier live gateway checks used v2. Evidence is under `kd-sandbox/central-openshell-20261021-terminal/evidence/`.
 
 The native probe can be repeated against an existing disposable sandbox with `/sandbox` writable:
 

@@ -11,7 +11,18 @@
  [dependencies]
 --- a/crates/openshell-sandbox/src/boundary_exec.rs
 +++ b/crates/openshell-sandbox/src/boundary_exec.rs
-@@ -32,6 +32,8 @@
+@@ -3,7 +3,9 @@
+ 
+ //! Workload-side implementation of RFC 0012 sandbox exec.
+ 
+-use crate::native_api::{BoundaryExec, BoundaryProcess, BoundaryTerminal, ExecSession};
++use crate::native_api::{
++    BoundaryExec, BoundaryProcess, BoundaryTerminal, ExecSession, ManagedCommandCompletion,
++};
+ 
+ use std::collections::HashMap;
+ #[cfg(target_os = "linux")]
+@@ -32,6 +34,8 @@
  #[derive(Clone)]
  pub struct LocalBoundaryExec {
      policy: SandboxPolicy,
@@ -20,7 +31,7 @@
      base_workdir: Option<String>,
      ca_file_paths: Option<Arc<(std::path::PathBuf, std::path::PathBuf)>>,
      provider_credentials: ProviderCredentialState,
-@@ -54,6 +56,8 @@
+@@ -54,6 +58,8 @@
          #[cfg(target_os = "linux")] launcher: crate::linux::workload_launcher::WorkloadLauncher,
      ) -> Self {
          Self {
@@ -29,7 +40,7 @@
              policy,
              base_workdir,
              ca_file_paths,
-@@ -216,8 +220,11 @@
+@@ -216,8 +222,11 @@
          #[cfg(target_os = "linux")]
          let prepared = self.prepare_sandbox(effective_workdir)?;
          #[cfg(target_os = "linux")]
@@ -43,7 +54,7 @@
          crate::pty::install_dedicated_process_group(&mut command);
          crate::pty::install_pre_exec_no_pty(
              &mut command,
-@@ -281,6 +288,8 @@
+@@ -281,6 +290,8 @@
              signal_lock,
              #[cfg(target_os = "linux")]
              managed_child,
@@ -52,7 +63,7 @@
          ));
          Ok(SpawnedExec {
              session: Some(ExecSession {
-@@ -326,8 +335,11 @@
+@@ -326,8 +337,11 @@
          #[cfg(target_os = "linux")]
          let prepared = self.prepare_sandbox(effective_workdir)?;
          #[cfg(target_os = "linux")]
@@ -66,7 +77,7 @@
          crate::pty::install_pre_exec(
              &mut command,
              self.policy.clone(),
-@@ -376,6 +388,8 @@
+@@ -376,6 +390,8 @@
              signal_lock,
              #[cfg(target_os = "linux")]
              managed_child,
@@ -75,7 +86,21 @@
          ));
          Ok(SpawnedExec {
              session: Some(ExecSession {
-@@ -548,6 +562,7 @@
+@@ -541,13 +557,20 @@
+     }
+ }
+ 
++#[derive(Clone)]
++struct LocalExecCompletion {
++    status: BoundaryExitStatus,
++    managed: Option<ManagedCommandCompletion>,
++}
++
+ struct LocalExecProcess {
+     pid: u32,
+-    result: Arc<std::sync::Mutex<Option<Result<BoundaryExitStatus, String>>>>,
++    result: Arc<std::sync::Mutex<Option<Result<LocalExecCompletion, String>>>>,
+     exited: Arc<tokio::sync::Notify>,
      runtime: Arc<crate::boundary_io::BoundaryRuntimeState>,
      terminal: Arc<std::sync::atomic::AtomicBool>,
      signal_lock: Arc<std::sync::Mutex<()>>,
@@ -83,7 +108,7 @@
  }
  
  impl LocalExecProcess {
-@@ -558,7 +573,10 @@
+@@ -558,7 +581,10 @@
          terminal: Arc<std::sync::atomic::AtomicBool>,
          signal_lock: Arc<std::sync::Mutex<()>>,
          #[cfg(target_os = "linux")] managed_child: Option<crate::managed_children::ManagedChild>,
@@ -94,33 +119,59 @@
          let result = Arc::new(std::sync::Mutex::new(None));
          let exited = Arc::new(tokio::sync::Notify::new());
          let result_for_wait = result.clone();
-@@ -577,10 +595,22 @@
+@@ -577,7 +603,20 @@
                      let _signal_guard = signal_lock_for_wait
                          .lock()
                          .unwrap_or_else(std::sync::PoisonError::into_inner);
 -                    let result = child.wait();
 +                    let result = if managed_commands {
 +                        match &terminal_observed {
-+                            Ok(()) => crate::kingdom_managed::reap_and_close_group(&mut child),
++                            Ok(()) => crate::kingdom_managed::reap_and_close_group(&mut child)
++                                .map(|completion| (completion.status, Some((
++                                    cancellation_for_wait.load(std::sync::atomic::Ordering::Acquire),
++                                    completion.forced_cleanup,
++                                )))),
 +                            Err(error) => {
 +                                let _ = killpg(Pid::from_raw(i32::try_from(pid).unwrap()), Signal::SIGKILL);
 +                                let _ = child.wait();
 +                                Err(std::io::Error::other(format!("managed command terminal observation failed: {error}")))
 +                            }
 +                        }
-+                    } else { child.wait() };
++                    } else { child.wait().map(|status| (status, None)) };
                      terminal_for_wait.store(true, std::sync::atomic::Ordering::Release);
                      if let Some(managed_child) = managed_child {
                          crate::managed_children::unregister(managed_child);
-+                    }
-+                    if managed_commands && cancellation_for_wait.load(std::sync::atomic::Ordering::Acquire) {
-+                        return Err(std::io::Error::other("managed command termination was requested; completion is not clean"));
-                     }
-                     match (terminal_observed, result) {
-                         (_, Ok(status)) => Ok(status),
-@@ -612,6 +642,12 @@
+@@ -594,7 +633,7 @@
                  }
-                 BoundaryExitStatus::Exited(status.code().unwrap_or(1))
+                 #[cfg(not(target_os = "linux"))]
+                 {
+-                    let result = child.wait();
++                    let result = child.wait().map(|status| (status, None));
+                     terminal_for_wait.store(true, std::sync::atomic::Ordering::Release);
+                     result
+                 }
+@@ -602,16 +641,22 @@
+             .await
+             .map_err(|error| error.to_string())
+             .and_then(|status| status.map_err(|error| error.to_string()))
+-            .map(|status| {
+-                #[cfg(unix)]
+-                {
+-                    use std::os::unix::process::ExitStatusExt;
+-                    if let Some(signal) = status.signal() {
+-                        return BoundaryExitStatus::Signaled(signal);
+-                    }
+-                }
+-                BoundaryExitStatus::Exited(status.code().unwrap_or(1))
++            .map(|(status, managed)| {
++                use std::os::unix::process::ExitStatusExt;
++                let status = status.signal().map_or_else(
++                    || BoundaryExitStatus::Exited(status.code().unwrap_or(1)),
++                    BoundaryExitStatus::Signaled,
++                );
++                LocalExecCompletion { status, managed: managed.map(|(termination_requested, forced_cleanup)| ManagedCommandCompletion {
++                    exit_status: status, termination_requested, forced_cleanup,
++                }) }
              });
 +            #[cfg(target_os = "linux")]
 +            let waited = if managed_commands && !runtime_for_wait.is_active() {
@@ -131,24 +182,78 @@
              runtime_for_wait.unregister_process_group(pid, &registration_terminal);
              if let Ok(mut slot) = result_for_wait.lock() {
                  *slot = Some(waited);
-@@ -625,6 +661,7 @@
+@@ -625,26 +670,11 @@
              runtime,
              terminal,
              signal_lock,
+-        }
+-    }
+-
+-    fn deliver(&self, signal: Signal) -> Result<(), BackendError> {
+-        self.runtime.ensure_active()?;
+-        let _signal_guard = self
+-            .signal_lock
+-            .lock()
+-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+-        if self.terminal.load(std::sync::atomic::Ordering::Acquire) {
+-            return Err(BackendError::Terminated("process has exited".to_string()));
+-        }
+-        let pid = i32::try_from(self.pid).unwrap_or(i32::MAX);
+-        killpg(Pid::from_raw(pid), signal).map_err(|error| BackendError::Process(error.to_string()))
+-    }
+-}
+-
+-#[async_trait]
+-impl BoundaryProcess for LocalExecProcess {
+-    async fn wait(&self) -> Result<BoundaryExitStatus, BackendError> {
 +            cancellation_requested,
++        }
++    }
++
++    async fn completion(&self) -> Result<LocalExecCompletion, BackendError> {
+         loop {
+             let notified = self.exited.notified();
+             let result = self
+@@ -657,6 +687,38 @@
+             }
+             notified.await;
          }
-     }
- 
-@@ -637,6 +674,8 @@
-         if self.terminal.load(std::sync::atomic::Ordering::Acquire) {
-             return Err(BackendError::Terminated("process has exited".to_string()));
-         }
++    }
++
++    fn deliver(&self, signal: Signal) -> Result<(), BackendError> {
++        self.runtime.ensure_active()?;
++        let _signal_guard = self
++            .signal_lock
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if self.terminal.load(std::sync::atomic::Ordering::Acquire) {
++            return Err(BackendError::Terminated("process has exited".to_string()));
++        }
 +        self.cancellation_requested
 +            .store(true, std::sync::atomic::Ordering::Release);
-         let pid = i32::try_from(self.pid).unwrap_or(i32::MAX);
-         killpg(Pid::from_raw(pid), signal).map_err(|error| BackendError::Process(error.to_string()))
++        let pid = i32::try_from(self.pid).unwrap_or(i32::MAX);
++        killpg(Pid::from_raw(pid), signal).map_err(|error| BackendError::Process(error.to_string()))
++    }
++}
++
++#[async_trait]
++impl BoundaryProcess for LocalExecProcess {
++    async fn wait(&self) -> Result<BoundaryExitStatus, BackendError> {
++        let completion = self.completion().await?;
++        if completion.managed.is_some_and(|facts| !facts.is_clean()) {
++            return Err(BackendError::Process("managed command was terminated or required forced cleanup; completion is not clean".into()));
++        }
++        Ok(completion.status)
++    }
++
++    async fn managed_completion(&self) -> Result<ManagedCommandCompletion, BackendError> {
++        self.completion().await?.managed.ok_or_else(|| {
++            BackendError::Unsupported("managed process closure is not enabled".into())
++        })
      }
-@@ -718,6 +757,101 @@
+ 
+     async fn signal(&self, signal: BoundarySignal) -> Result<(), BackendError> {
+@@ -718,6 +780,98 @@
          )
      }
  
@@ -200,13 +305,14 @@
 +            })
 +            .await
 +            .unwrap();
-+        let result = session.process.wait().await;
-+        assert!(
-+            result
-+                .unwrap_err()
-+                .to_string()
-+                .contains("forced cleanup completed")
-+        );
++        let (ordinary, managed) =
++            tokio::join!(session.process.wait(), session.process.managed_completion());
++        assert!(ordinary.is_err());
++        let facts = managed.unwrap();
++        assert_eq!(facts.exit_status, BoundaryExitStatus::Exited(0));
++        assert!(facts.forced_cleanup);
++        assert!(!facts.is_clean());
++        assert_eq!(session.process.managed_completion().await.unwrap(), facts);
 +    }
 +
 +    #[tokio::test]
@@ -236,15 +342,11 @@
 +        let mut ready = [0u8; 1];
 +        session.stdout.read_exact(&mut ready).await.unwrap();
 +        session.process.signal(BoundarySignal::Term).await.unwrap();
-+        assert!(
-+            session
-+                .process
-+                .wait()
-+                .await
-+                .unwrap_err()
-+                .to_string()
-+                .contains("termination was requested")
-+        );
++        assert!(session.process.wait().await.is_err());
++        let facts = session.process.managed_completion().await.unwrap();
++        assert_eq!(facts.exit_status, BoundaryExitStatus::Exited(0));
++        assert!(facts.termination_requested);
++        assert!(!facts.is_clean());
 +    }
 +
      #[test]
@@ -252,34 +354,45 @@
          let executor = executor();
 --- a/crates/openshell-sandbox/src/boundary_server.rs
 +++ b/crates/openshell-sandbox/src/boundary_server.rs
-@@ -1514,9 +1514,25 @@
+@@ -1514,14 +1514,32 @@
          process: Arc<dyn BoundaryProcess>,
          session: Arc<MainSession>,
          status: Arc<Mutex<Option<ExitStatusWire>>>,
 +        journal: Option<crate::kingdom_exec_journal::Lease>,
      ) {
-         let exit_status = match process.wait().await {
--            Ok(exit_status) => ExitStatusWire::from(exit_status),
-+            Ok(exit_status) => {
-+                let result = ExitStatusWire::from(exit_status);
-+                if let Some(lease) = journal {
-+                    let (code, signal) = match result {
-+                        ExitStatusWire::Exited(code) => (Some(code), None),
-+                        ExitStatusWire::Signaled(signal) => (None, Some(signal)),
-+                    };
-+                    if let Err(error) = lease.complete(code, signal) {
-+                        tracing::error!(%error, "Managed exec terminal journal failed; refusing success");
-+                        *lock(&status) = Some(ExitStatusWire::Exited(74));
-+                        let _ = session.finish_remote(74, false).await;
-+                        return;
+-        let exit_status = match process.wait().await {
++        let waited = if let Some(lease) = journal {
++            match process.managed_completion().await {
++                Ok(facts) => match lease.complete(facts) {
++                    Ok(()) if facts.is_clean() => Ok(facts.exit_status),
++                    Ok(()) => {
++                        Ok(openshell_isolation_interface::contract::BoundaryExitStatus::Exited(74))
 +                    }
-+                }
-+                result
++                    Err(error) => Err(
++                        openshell_isolation_interface::contract::BackendError::Process(format!(
++                            "managed terminal persistence failed: {error}"
++                        )),
++                    ),
++                },
++                Err(error) => Err(error),
 +            }
++        } else {
++            process.wait().await
++        };
++        let exit_status = match waited {
+             Ok(exit_status) => ExitStatusWire::from(exit_status),
              Err(error) => {
-                 // A process wait error is terminal per the BoundaryProcess
-                 // contract. Retaining `None` here makes this handle look live
-@@ -2321,15 +2337,48 @@
+-                // A process wait error is terminal per the BoundaryProcess
+-                // contract. Retaining `None` here makes this handle look live
+-                // forever and can permanently exhaust exec admission.
+-                tracing::warn!(%error, "Exec process wait failed; recording terminal status");
++                // A failed proof or write leaves admission unresolved, but this
++                // attachment must terminate and release its in-memory slot.
++                tracing::warn!(%error, "Exec completion unavailable; refusing clean terminal status");
+                 ExitStatusWire::Exited(74)
+             }
+         };
+@@ -2321,15 +2339,48 @@
                          format!("exec descriptor headroom unavailable: {error}"),
                      )
                  })?;
@@ -333,7 +446,7 @@
              let ExecSession {
                  process,
                  stdin,
-@@ -2360,7 +2409,7 @@
+@@ -2360,7 +2411,7 @@
              let wait_session = retained.clone();
              let wait_status = status.clone();
              self.process_runtime.spawn(async move {
@@ -342,7 +455,7 @@
              });
              let handle = ExecHandle {
                  request_id: request_id.to_string(),
-@@ -2467,6 +2516,11 @@
+@@ -2467,6 +2518,11 @@
          }
  
          fn attach(&self, policy: SandboxPolicyWire) -> Response {
@@ -354,7 +467,112 @@
              // Reject a conflicting request before establishing the boundary
              // or retaining the caller's policy for later replay.
              if let Err(error) = validate_vm_policy_identity(&self.config, &policy) {
-@@ -3970,7 +4024,8 @@
+@@ -3964,13 +4020,113 @@
+             }
+         }
+ 
++        struct ProvenForcedProcess;
++        #[async_trait::async_trait]
++        impl BoundaryProcess for ProvenForcedProcess {
++            async fn managed_completion(
++                &self,
++            ) -> Result<
++                crate::native_api::ManagedCommandCompletion,
++                openshell_isolation_interface::contract::BackendError,
++            > {
++                Ok(crate::native_api::ManagedCommandCompletion {
++                    exit_status:
++                        openshell_isolation_interface::contract::BoundaryExitStatus::Exited(0),
++                    termination_requested: false,
++                    forced_cleanup: true,
++                })
++            }
++
++            async fn wait(
++                &self,
++            ) -> Result<
++                openshell_isolation_interface::contract::BoundaryExitStatus,
++                openshell_isolation_interface::contract::BackendError,
++            > {
++                Err(
++                    openshell_isolation_interface::contract::BackendError::Process(
++                        "forced cleanup completed".into(),
++                    ),
++                )
++            }
++            async fn signal(
++                &self,
++                _: openshell_isolation_interface::contract::BoundarySignal,
++            ) -> Result<(), openshell_isolation_interface::contract::BackendError> {
++                Ok(())
++            }
++            async fn terminate(
++                &self,
++            ) -> Result<(), openshell_isolation_interface::contract::BackendError> {
++                Ok(())
++            }
++        }
++
++        fn managed_test_lease(root: &Path) -> crate::kingdom_exec_journal::Lease {
++            let intent = crate::kingdom_exec_journal::Intent {
++                request_id: "managed-test".into(),
++                payload_digest: "payload".into(),
++                sandbox_id: "sandbox".into(),
++                generation: "generation".into(),
++                process_id: "process".into(),
++            };
++            let crate::kingdom_exec_journal::Admission::New(lease) =
++                crate::kingdom_exec_journal::reserve(root, intent).unwrap()
++            else {
++                panic!("new admission")
++            };
++            lease
++        }
++
++        #[tokio::test]
++        async fn managed_forced_closure_retains_terminal_without_clean_success() {
++            let directory = tempfile::tempdir().unwrap();
++            let lease = managed_test_lease(directory.path());
++            let intent = lease.intent.clone();
++            let status = Arc::new(Mutex::new(None));
++            retain_exec_completion(
++                Arc::new(ProvenForcedProcess),
++                MainSession::inert(),
++                status.clone(),
++                Some(lease),
++            )
++            .await;
++            assert_eq!(*lock(&status), Some(ExitStatusWire::Exited(74)));
++            assert!(
++                matches!(
++                    crate::kingdom_exec_journal::reserve(directory.path(), intent).unwrap(),
++                    crate::kingdom_exec_journal::Admission::Existing(Some(_))
++                ),
++                "proven forced closure must retain a terminal receipt"
++            );
++        }
++
++        #[tokio::test]
++        async fn managed_unknown_closure_retains_only_admission() {
++            let directory = tempfile::tempdir().unwrap();
++            let lease = managed_test_lease(directory.path());
++            let intent = lease.intent.clone();
++            retain_exec_completion(
++                Arc::new(FailedWaitProcess),
++                MainSession::inert(),
++                Arc::new(Mutex::new(None)),
++                Some(lease),
++            )
++            .await;
++            assert!(matches!(
++                crate::kingdom_exec_journal::reserve(directory.path(), intent).unwrap(),
++                crate::kingdom_exec_journal::Admission::Existing(None)
++            ));
++        }
++
+         #[tokio::test]
+         async fn exec_wait_failure_records_reclaimable_terminal_status() {
+             let session = MainSession::inert();
              let mut output = session.subscribe();
              let status = Arc::new(Mutex::new(None));
  
@@ -366,7 +584,7 @@
              assert!(matches!(
 --- /dev/null
 +++ b/crates/openshell-sandbox/src/kingdom_exec_journal.rs
-@@ -0,0 +1,268 @@
+@@ -0,0 +1,349 @@
 +// SPDX-License-Identifier: Apache-2.0
 +//! Experimental durable admission tombstones. Never replay an admitted launch.
 +//! This directory must be provisioned outside all workload write grants. It is
@@ -394,6 +612,10 @@
 +#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 +#[serde(deny_unknown_fields)]
 +pub struct Terminal {
++    pub schema_version: u32,
++    pub clean: bool,
++    pub termination_requested: bool,
++    pub forced_cleanup: bool,
 +    pub intent: Intent,
 +    pub exit_code: Option<i32>,
 +    pub signal: Option<i32>,
@@ -520,13 +742,7 @@
 +                ));
 +            }
 +            let terminal = match read::<Terminal>(&root.join(format!("{key}.terminal.json"))) {
-+                Ok(value)
-+                    if value.intent == prior
-+                        && value.group_closed
-+                        && value.exit_code.is_some() != value.signal.is_some() =>
-+                {
-+                    Some(value)
-+                }
++                Ok(value) if value.intent == prior && value.valid() => Some(value),
 +                Ok(_) => return Err(io::Error::other("invalid terminal binding")),
 +                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
 +                Err(error) => return Err(error),
@@ -536,19 +752,37 @@
 +        Err(error) => Err(error),
 +    }
 +}
++impl Terminal {
++    fn valid(&self) -> bool {
++        self.schema_version == 2
++            && self.group_closed
++            && self.exit_code.is_some() != self.signal.is_some()
++            && self.clean == (!self.termination_requested && !self.forced_cleanup)
++    }
++}
 +impl Lease {
-+    pub fn complete(self, exit_code: Option<i32>, signal: Option<i32>) -> io::Result<()> {
-+        if exit_code.is_some() == signal.is_some() {
-+            return Err(io::Error::other("invalid terminal outcome"));
++    pub fn complete(self, facts: crate::native_api::ManagedCommandCompletion) -> io::Result<()> {
++        use openshell_isolation_interface::contract::BoundaryExitStatus;
++        let (exit_code, signal) = match facts.exit_status {
++            BoundaryExitStatus::Exited(code) => (Some(code), None),
++            BoundaryExitStatus::Signaled(signal) => (None, Some(signal)),
++        };
++        let terminal = Terminal {
++            schema_version: 2,
++            clean: facts.is_clean(),
++            termination_requested: facts.termination_requested,
++            forced_cleanup: facts.forced_cleanup,
++            intent: self.intent,
++            exit_code,
++            signal,
++            group_closed: true,
++        };
++        if !terminal.valid() {
++            return Err(io::Error::other("invalid managed terminal facts"));
 +        }
 +        persist(
 +            &self.root.join(format!("{}.terminal.json", self.key)),
-+            &Terminal {
-+                intent: self.intent,
-+                exit_code,
-+                signal,
-+                group_closed: true,
-+            },
++            &terminal,
 +        )
 +    }
 +}
@@ -588,13 +822,74 @@
 +        let Admission::New(lease) = reserve(dir.path(), intent()).unwrap() else {
 +            panic!("new")
 +        };
-+        lease.complete(Some(7), None).unwrap();
++        lease
++            .complete(crate::native_api::ManagedCommandCompletion {
++                exit_status: openshell_isolation_interface::contract::BoundaryExitStatus::Exited(7),
++                termination_requested: false,
++                forced_cleanup: false,
++            })
++            .unwrap();
 +        let Admission::Existing(Some(saved)) = reserve(dir.path(), intent()).unwrap() else {
 +            panic!("terminal")
 +        };
 +        assert_eq!(saved.exit_code, Some(7));
++        assert!(saved.clean);
 +        assert!(saved.group_closed);
 +    }
++    #[test]
++    fn forced_closure_retains_raw_exit_and_non_clean_facts() {
++        for (termination_requested, forced_cleanup) in [(true, false), (false, true), (true, true)]
++        {
++            let dir = tempfile::tempdir().unwrap();
++            let Admission::New(lease) = reserve(dir.path(), intent()).unwrap() else {
++                panic!("new")
++            };
++            lease
++                .complete(crate::native_api::ManagedCommandCompletion {
++                    exit_status:
++                        openshell_isolation_interface::contract::BoundaryExitStatus::Exited(0),
++                    termination_requested,
++                    forced_cleanup,
++                })
++                .unwrap();
++            let Admission::Existing(Some(saved)) = reserve(dir.path(), intent()).unwrap() else {
++                panic!("terminal")
++            };
++            assert_eq!(saved.schema_version, 2);
++            assert_eq!(saved.exit_code, Some(0));
++            assert!(saved.group_closed);
++            assert!(!saved.clean);
++            assert_eq!(saved.termination_requested, termination_requested);
++            assert_eq!(saved.forced_cleanup, forced_cleanup);
++        }
++    }
++
++    #[test]
++    fn contradictory_clean_claim_and_old_schema_are_rejected() {
++        for schema_version in [1, 2] {
++            let dir = tempfile::tempdir().unwrap();
++            let Admission::New(lease) = reserve(dir.path(), intent()).unwrap() else {
++                panic!("new")
++            };
++            let invalid = Terminal {
++                schema_version,
++                clean: true,
++                termination_requested: schema_version == 2,
++                forced_cleanup: false,
++                intent: lease.intent.clone(),
++                exit_code: Some(0),
++                signal: None,
++                group_closed: true,
++            };
++            persist(
++                &lease.root.join(format!("{}.terminal.json", lease.key)),
++                &invalid,
++            )
++            .unwrap();
++            assert!(reserve(dir.path(), intent()).is_err());
++        }
++    }
++
 +    #[test]
 +    fn missing_store_rejects_reservation() {
 +        let dir = tempfile::tempdir().unwrap();
@@ -622,6 +917,10 @@
 +            panic!("new")
 +        };
 +        let invalid = Terminal {
++            schema_version: 2,
++            clean: true,
++            termination_requested: false,
++            forced_cleanup: false,
 +            intent: lease.intent.clone(),
 +            exit_code: Some(0),
 +            signal: Some(9),
@@ -637,7 +936,7 @@
 +}
 --- /dev/null
 +++ b/crates/openshell-sandbox/src/kingdom_managed.rs
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,233 @@
 +// SPDX-License-Identifier: Apache-2.0
 +
 +//! Experimental command-group closure. Not a durable execution protocol.
@@ -654,13 +953,17 @@
 +    cfg!(feature = "kingdom-managed-commands")
 +}
 +
++#[derive(Debug)]
++pub(crate) struct GroupCompletion {
++    pub status: std::process::ExitStatus,
++    pub forced_cleanup: bool,
++}
++
 +/// Reap one terminal leader and all descendants in its immutable group.
 +/// The caller must hold its signal lock and must have observed leader terminal
 +/// with WNOWAIT. The registry lock blocks other trusted group launches and the
 +/// orphan reaper until ECHILD proves closure. Workloads cannot change groups.
-+pub(crate) fn reap_and_close_group(
-+    child: &mut std::process::Child,
-+) -> io::Result<std::process::ExitStatus> {
++pub(crate) fn reap_and_close_group(child: &mut std::process::Child) -> io::Result<GroupCompletion> {
 +    use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 +    let group = child.id();
 +    let group_pid = i32::try_from(group)
@@ -690,13 +993,10 @@
 +            Some(WaitPidFlag::WNOHANG | WaitPidFlag::__WALL),
 +        ) {
 +            Err(nix::errno::Errno::ECHILD) => {
-+                return if forced {
-+                    Err(io::Error::other(
-+                        "managed command left live descendants; forced cleanup completed",
-+                    ))
-+                } else {
-+                    Ok(status)
-+                };
++                return Ok(GroupCompletion {
++                    status,
++                    forced_cleanup: forced,
++                });
 +            }
 +            Ok(WaitStatus::StillAlive) => {
 +                forced = true;
@@ -775,12 +1075,7 @@
 +        let mut leader = child("sleep 60 & exit 0");
 +        crate::managed_children::wait_until_terminal(leader.id()).unwrap();
 +        let result = reap_and_close_group(&mut leader);
-+        assert!(
-+            result
-+                .unwrap_err()
-+                .to_string()
-+                .contains("forced cleanup completed")
-+        );
++        assert!(result.unwrap().forced_cleanup);
 +        assert!(
 +            sibling.try_wait().unwrap().is_none(),
 +            "unrelated sibling must remain alive"
@@ -809,16 +1104,8 @@
 +        )
 +        .unwrap();
 +        crate::managed_children::wait_until_terminal(leader.id()).unwrap();
-+        // Cancellation itself can leave a child briefly alive until SIGKILL
-+        // takes effect. Closure must either prove clean or report forced cleanup.
-+        let result = reap_and_close_group(&mut leader);
-+        assert!(
-+            result.is_ok()
-+                || result
-+                    .unwrap_err()
-+                    .to_string()
-+                    .contains("forced cleanup completed")
-+        );
++        // Closure remains proven whether cancellation needed additional cleanup.
++        reap_and_close_group(&mut leader).unwrap();
 +        assert!(sibling.try_wait().unwrap().is_none());
 +        leader.wait().unwrap();
 +        killpg(
@@ -839,8 +1126,7 @@
 +        let mut leader =
 +            child("i=0; while [ $i -lt 64 ]; do (sleep 60 &) & i=$((i+1)); done; exit 0");
 +        crate::managed_children::wait_until_terminal(leader.id()).unwrap();
-+        let error = reap_and_close_group(&mut leader).unwrap_err();
-+        assert!(error.to_string().contains("forced cleanup completed"));
++        assert!(reap_and_close_group(&mut leader).unwrap().forced_cleanup);
 +        use nix::sys::wait::{WaitPidFlag, waitpid};
 +        assert_eq!(
 +            waitpid(
@@ -923,6 +1209,44 @@
      instructions.push(stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
      Ok(ChildHardeningProgram { instructions })
  }
+--- a/crates/openshell-sandbox/src/native_api.rs
++++ b/crates/openshell-sandbox/src/native_api.rs
+@@ -10,6 +10,21 @@
+ };
+ use std::sync::Arc;
+ 
++/// A trusted process owner produced this value only after proving group closure.
++/// Raw exit status and requested/forced termination are separate facts.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct ManagedCommandCompletion {
++    pub exit_status: BoundaryExitStatus,
++    pub termination_requested: bool,
++    pub forced_cleanup: bool,
++}
++
++impl ManagedCommandCompletion {
++    pub fn is_clean(self) -> bool {
++        !self.termination_requested && !self.forced_cleanup
++    }
++}
++
+ #[async_trait]
+ pub trait BoundaryProcess: Send + Sync {
+     /// Attach to the admitted process's retained standard I/O. The boundary
+@@ -21,6 +36,13 @@
+     }
+     /// Await terminal status (stable across repeated calls).
+     async fn wait(&self) -> Result<BoundaryExitStatus, BackendError>;
++    /// Await proven managed-group closure from the same retained completion as wait.
++    /// An ordinary exit status is insufficient; implementations must opt in.
++    async fn managed_completion(&self) -> Result<ManagedCommandCompletion, BackendError> {
++        Err(BackendError::Unsupported(
++            "managed process closure is not supported".into(),
++        ))
++    }
+     /// Deliver a signal to the process or its group.
+     async fn signal(&self, signal: BoundarySignal) -> Result<(), BackendError>;
+     /// Terminate the process and its backend-owned process group.
 --- a/crates/openshell-server/src/grpc/interactive_exec_tests.rs
 +++ b/crates/openshell-server/src/grpc/interactive_exec_tests.rs
 @@ -11,8 +11,10 @@
