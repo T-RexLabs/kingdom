@@ -123,8 +123,18 @@ func ReadRemoteWriterClosure(ctx context.Context, q Reader, bindingID string) (R
 	if err != nil {
 		return result, err
 	}
+	var missingHelpers, unknownHelpers int
+	if err = q.QueryRowContext(ctx, `SELECT count(*) FROM remote_native_tools n LEFT JOIN provider_remote_native_completions c ON c.grant_id=n.grant_id WHERE n.binding_id=? AND c.grant_id IS NULL`, b.ID).Scan(&missingHelpers); err != nil {
+		return result, err
+	}
+	if missingHelpers != 0 {
+		return result, openResources(OpenUnproven, "managed native helper result remains unresolved")
+	}
+	if err = q.QueryRowContext(ctx, `SELECT count(*) FROM remote_native_tools n JOIN provider_remote_native_completions c ON c.grant_id=n.grant_id WHERE n.binding_id=? AND c.effect='unknown'`, b.ID).Scan(&unknownHelpers); err != nil {
+		return result, err
+	}
 	servers := 0
-	result.SuccessEligible = true
+	result.SuccessEligible = unknownHelpers == 0
 	for _, p := range result.Processes {
 		if p.Purpose == remote.ProviderServer {
 			servers++

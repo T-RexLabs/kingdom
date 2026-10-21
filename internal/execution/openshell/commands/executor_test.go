@@ -373,3 +373,36 @@ func TestLeaseReplacementDoesNotBlockHistoricalCancellation(t *testing.T) {
 		t.Fatalf("completion=%d start=%d cancel=%d", count, p.starts, p.cancels)
 	}
 }
+
+func TestUnknownCommandKeepsExclusiveToolSlot(t *testing.T) {
+	e, in, p := executorFixture(t)
+	p.lost = true
+	p.pending = true
+	if _, err := e.Invoke(context.Background(), in); !errors.Is(err, ErrUnresolved) {
+		t.Fatal(err)
+	}
+	other := in
+	other.CallID = "second"
+	if _, err := e.Invoke(context.Background(), other); !errors.Is(err, remote.ErrToolBusy) {
+		t.Fatalf("second tool admitted: %v", err)
+	}
+	var count int
+	e.db.QueryRow(`SELECT count(*) FROM provider_command_calls`).Scan(&count)
+	if count != 1 || p.starts != 1 {
+		t.Fatalf("claims=%d starts=%d", count, p.starts)
+	}
+	p.mu.Lock()
+	p.finish(false)
+	p.mu.Unlock()
+	if _, err := e.Invoke(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	p.lost = false
+	p.pending = false
+	if _, err := e.Invoke(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
+	if p.starts != 2 {
+		t.Fatal(p.starts)
+	}
+}

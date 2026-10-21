@@ -32,10 +32,9 @@ func (e *Executor) retain(ctx context.Context, r remote.Reservation, status *pb.
 		return remote.RecordAdmissionTx(ctx, tx, r.Owner, r.Reference, op.ID, op.PayloadDigest, hex.EncodeToString(digest))
 	})
 }
-func (e *Executor) complete(ctx context.Context, client *managed.Client, r remote.Reservation, claim providerrequest.CommandClaim, status *pb.ExecutionStatus) (opencode.ManagedCommandResult, error) {
-	result := opencode.ManagedCommandResult{ExecutionID: status.Identity.RequestId}
+func (e *Executor) collect(ctx context.Context, client *managed.Client, r remote.Reservation, status *pb.ExecutionStatus) ([]byte, error) {
 	if status.Terminal == nil {
-		return result, ErrUnresolved
+		return nil, ErrUnresolved
 	}
 	var output []byte
 	var sequence uint64
@@ -46,24 +45,31 @@ func (e *Executor) complete(ctx context.Context, client *managed.Client, r remot
 			}
 			output = append(output, chunk.Data...)
 			return e.transaction(ctx, func(tx *sql.Tx) error {
-				return remote.AppendManagedOutputTx(ctx, tx, r.Owner, r.Reference, result.ExecutionID, chunk)
+				return remote.AppendManagedOutputTx(ctx, tx, r.Owner, r.Reference, status.Identity.RequestId, chunk)
 			})
 		})
 		if err != nil || next == sequence {
-			return result, ErrUnresolved
+			return nil, ErrUnresolved
 		}
 		sequence = next
 	}
 	err := e.transaction(ctx, func(tx *sql.Tx) error {
-		if err := remote.RecordManagedReceiptTx(ctx, tx, r.Owner, r.Reference, result.ExecutionID, status.Terminal); err != nil {
-			return err
-		}
-		return providerrequest.CompleteRemoteCommandTx(ctx, tx, claim.ID, claim.Digest, result.ExecutionID, e.config.Now())
+		return remote.RecordManagedReceiptTx(ctx, tx, r.Owner, r.Reference, status.Identity.RequestId, status.Terminal)
+	})
+	return output, err
+}
+func (e *Executor) complete(ctx context.Context, client *managed.Client, r remote.Reservation, claim providerrequest.CommandClaim, status *pb.ExecutionStatus) (opencode.ManagedCommandResult, error) {
+	output, err := e.collect(ctx, client, r, status)
+	if err != nil {
+		return opencode.ManagedCommandResult{}, err
+	}
+	err = e.transaction(ctx, func(tx *sql.Tx) error {
+		return providerrequest.CompleteRemoteCommandTx(ctx, tx, claim.ID, claim.Digest, status.Identity.RequestId, e.config.Now())
 	})
 	if err != nil {
-		return result, err
+		return opencode.ManagedCommandResult{}, err
 	}
-	return commandResult(result.ExecutionID, status.Terminal, output), nil
+	return commandResult(status.Identity.RequestId, status.Terminal, output), nil
 }
 
 // Cancel fences the exact request before inspecting commands. Historical
@@ -86,18 +92,19 @@ func (e *Executor) Cancel(ctx context.Context, identity providerexecution.Reques
 		return err
 	}
 	e.cancelActive(identity)
-	rows, err := e.db.QueryContext(ctx, `SELECT c.command_id,c.claim_id,p.identity_digest FROM remote_commands c JOIN provider_command_calls p ON p.claim_id=c.claim_id WHERE c.allocation=? AND c.binding_id=? ORDER BY c.sequence`, r.Reference.Allocation, b.ID)
+	rows, err := e.db.QueryContext(ctx, `SELECT c.command_id,c.claim_id,p.identity_digest,0 FROM remote_commands c JOIN provider_command_calls p ON p.claim_id=c.claim_id WHERE c.allocation=? AND c.binding_id=? UNION ALL SELECT n.operation_id,n.grant_id,g.identity_digest,1 FROM remote_native_tools n JOIN provider_native_grants g ON g.grant_id=n.grant_id WHERE n.allocation=? AND n.binding_id=?`, r.Reference.Allocation, b.ID, r.Reference.Allocation, b.ID)
 	if err != nil {
 		return err
 	}
 	type entry struct {
-		id    string
-		claim providerrequest.CommandClaim
+		native bool
+		id     string
+		claim  providerrequest.CommandClaim
 	}
 	var entries []entry
 	for rows.Next() {
 		var item entry
-		if err = rows.Scan(&item.id, &item.claim.ID, &item.claim.Digest); err != nil {
+		if err = rows.Scan(&item.id, &item.claim.ID, &item.claim.Digest, &item.native); err != nil {
 			rows.Close()
 			return err
 		}
@@ -110,6 +117,20 @@ func (e *Executor) Cancel(ctx context.Context, identity providerexecution.Reques
 	}
 	var failure error
 	for _, item := range entries {
+		complete := func(tx *sql.Tx) error {
+			if item.native {
+				_, err := providerrequest.CompleteRemoteNativeTx(ctx, tx, item.claim.ID, item.claim.Digest, item.id, e.config.Now())
+				return err
+			}
+			return providerrequest.CompleteRemoteCommandTx(ctx, tx, item.claim.ID, item.claim.Digest, item.id, e.config.Now())
+		}
+		if _, closedErr := remote.ReadProcessClosure(ctx, e.db, r.Owner, r.Reference, item.id); closedErr == nil {
+			if err := e.transaction(ctx, complete); err != nil {
+				failure = errors.Join(failure, err)
+			}
+			continue
+		}
+
 		op, err := remote.ReadOperation(ctx, e.db, item.id)
 		if err != nil {
 			return err
@@ -119,7 +140,7 @@ func (e *Executor) Cancel(ctx context.Context, identity providerexecution.Reques
 				if err := remote.MarkExecutionNotStartedTx(ctx, tx, r.Owner, r.Reference, item.id); err != nil {
 					return err
 				}
-				return providerrequest.CompleteRemoteCommandTx(ctx, tx, item.claim.ID, item.claim.Digest, item.id, e.config.Now())
+				return complete(tx)
 			})
 			if err != nil {
 				failure = errors.Join(failure, err)
@@ -164,7 +185,10 @@ func (e *Executor) Cancel(ctx context.Context, identity providerexecution.Reques
 			}
 		}
 		if err == nil {
-			_, err = e.complete(ctx, client, r, item.claim, status)
+			_, err = e.collect(ctx, client, r, status)
+			if err == nil {
+				err = e.transaction(ctx, complete)
+			}
 		}
 		if err != nil {
 			failure = errors.Join(failure, ErrUnresolved)

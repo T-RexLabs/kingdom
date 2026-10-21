@@ -18,6 +18,7 @@ const (
 	WorkspaceImport ExecutionPurpose = "workspace_import"
 	ProviderServer  ExecutionPurpose = "provider_server"
 	Tool            ExecutionPurpose = "tool"
+	NativeTool      ExecutionPurpose = "native_tool"
 	WorkspaceExport ExecutionPurpose = "workspace_export"
 	NativeReceipts  ExecutionPurpose = "native_receipts"
 )
@@ -34,7 +35,7 @@ func PrepareManagedExecutionTx(ctx context.Context, tx *sql.Tx, owner Owner, ref
 	if managed.ValidateStart(request) != nil || expected.Validate() != nil || expected.GatewayID != ref.GatewayID || expected.WorkspaceID != ref.WorkspaceID || expected.Runtime.SandboxId != ref.SandboxID || expected.Runtime.BoundaryGeneration != ref.Generation || expected.Runtime.MainProcessInstanceId != ref.MainInstanceID || !proto.Equal(expected.Runtime, request.Execution.Runtime) {
 		return Operation{}, ErrConflict
 	}
-	if purpose != ProviderServer && purpose != Tool && purpose != WorkspaceExport && purpose != WorkspaceImport && purpose != NativeReceipts {
+	if purpose != ProviderServer && purpose != NativeTool && purpose != Tool && purpose != WorkspaceExport && purpose != WorkspaceImport && purpose != NativeReceipts {
 		return Operation{}, ErrConflict
 	}
 	original, e := managed.Digest(request)
@@ -70,6 +71,11 @@ func PrepareManagedExecutionTx(ctx context.Context, tx *sql.Tx, owner Owner, ref
 	if e = RequireNoDisposalIntent(ctx, tx, ref.Allocation); e != nil {
 		return Operation{}, e
 	}
+	if purpose == Tool || purpose == NativeTool {
+		if e = RequireToolSlotTx(ctx, tx, owner, ref, id); e != nil {
+			return Operation{}, e
+		}
+	}
 	if purpose == WorkspaceExport || purpose == NativeReceipts {
 		if !reservation.AdmissionClosed {
 			return Operation{}, ErrConflict
@@ -96,7 +102,19 @@ func PrepareManagedExecutionTx(ctx context.Context, tx *sql.Tx, owner Owner, ref
 	}
 
 	var op Operation
-	if purpose == Tool {
+	if purpose == NativeTool {
+		op, e = ReadOperation(ctx, tx, id)
+		if e != nil {
+			return op, e
+		}
+		var count int
+		if e = tx.QueryRowContext(ctx, `SELECT count(*) FROM remote_native_tools WHERE operation_id=? AND allocation=? AND binding_id=?`, id, ref.Allocation, owner.BindingID).Scan(&count); e != nil {
+			return op, e
+		}
+		if count != 1 || op.Kind != Execute || op.Delivery != Prepared || op.PayloadDigest != digest {
+			return op, ErrConflict
+		}
+	} else if purpose == Tool {
 		op, e = ReadOperation(ctx, tx, id)
 		if e != nil {
 			return op, e

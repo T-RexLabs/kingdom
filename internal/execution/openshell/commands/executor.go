@@ -31,6 +31,7 @@ var ErrUnresolved = errors.New("remote command remains unresolved")
 var ErrDenied = errors.New("remote command refused")
 
 type Config struct {
+	HelperSHA256   string
 	Workspace      string
 	Target         remote.Target
 	ProfileSHA256  []byte
@@ -153,6 +154,13 @@ func (e *Executor) Invoke(ctx context.Context, in opencode.ManagedCommandInput) 
 		current, reservation, err := providerrequest.ActiveRemoteCommandTx(ctx, tx, in.Identity, e.config.Now())
 		if err != nil || current.ID != b.ID || reservation.Reference != r.Reference {
 			return ErrDenied
+		}
+		var replayID string
+		if lookupErr := tx.QueryRowContext(ctx, `SELECT r.command_id FROM remote_commands r JOIN provider_command_calls c ON c.claim_id=r.claim_id WHERE c.binding_id=? AND c.message_id=? AND c.call_id=?`, b.ID, in.MessageID, in.CallID).Scan(&replayID); lookupErr != nil && lookupErr != sql.ErrNoRows {
+			return lookupErr
+		}
+		if err := remote.RequireToolSlotTx(ctx, tx, r.Owner, r.Reference, replayID); err != nil {
+			return err
 		}
 		claim, err = providerrequest.ClaimCommandTx(ctx, tx, providerrequest.NativeCall{BindingID: b.ID, Identity: in.Identity, MessageID: in.MessageID, CallID: in.CallID, Tool: "shell", Input: in.ToolInput}, e.config.Now())
 		if err != nil {

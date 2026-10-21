@@ -253,6 +253,17 @@ func ClaimDispatchTx(ctx context.Context, tx *sql.Tx, owner Owner, ref Reference
 			return false, err
 		}
 	}
+	if op.Kind == Execute {
+		var tool int
+		if err = tx.QueryRowContext(ctx, `SELECT (EXISTS(SELECT 1 FROM managed_executions WHERE operation_id=? AND purpose IN ('tool','native_tool')) OR EXISTS(SELECT 1 FROM remote_commands WHERE command_id=?) OR EXISTS(SELECT 1 FROM remote_native_tools WHERE operation_id=?))`, id, id, id).Scan(&tool); err != nil {
+			return false, err
+		}
+		if tool != 0 {
+			if err = RequireToolSlotTx(ctx, tx, owner, ref, id); err != nil {
+				return false, err
+			}
+		}
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE remote_operations SET delivery='delivery_uncertain' WHERE operation_id=? AND delivery='prepared'`, id)
 	if err != nil {
 		return false, err

@@ -13,6 +13,16 @@ import (
 // ActiveRemoteCommandTx checks canonical command authority in the caller's
 // transaction. It never issues provider dispatch or accepts local process proof.
 func ActiveRemoteCommandTx(ctx context.Context, tx *sql.Tx, identity providerexecution.RequestIdentity, now time.Time) (Binding, remote.Reservation, error) {
+	b, r, err := ActiveRemoteNativeTx(ctx, tx, identity, now)
+	if err == nil && b.Owner.Kind != OwnerRun {
+		err = fmt.Errorf("only run requests admit remote commands")
+	}
+	return b, r, err
+}
+
+// ActiveRemoteNativeTx permits the exact active run or planning request to
+// admit a confined helper. It does not grant shell authority to planning.
+func ActiveRemoteNativeTx(ctx context.Context, tx *sql.Tx, identity providerexecution.RequestIdentity, now time.Time) (Binding, remote.Reservation, error) {
 	b, err := ByIdentity(ctx, tx, identity)
 	if err != nil {
 		return b, remote.Reservation{}, err
@@ -21,7 +31,7 @@ func ActiveRemoteCommandTx(ctx context.Context, tx *sql.Tx, identity providerexe
 	if err != nil {
 		return b, r, err
 	}
-	if b.Owner.Kind != OwnerRun || r.AdmissionClosed || b.TerminalReference != nil {
+	if r.AdmissionClosed || b.TerminalReference != nil {
 		return b, r, fmt.Errorf("remote command admission closed")
 	}
 	if err = requireAdmission(ctx, tx, b, now); err != nil {
