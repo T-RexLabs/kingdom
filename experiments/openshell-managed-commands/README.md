@@ -1,111 +1,72 @@
-# OpenShell Managed Command Prototype
+# OpenShell Managed Execution Profile
 
-This opt-in OpenShell runtime profile tests trusted command supervision for Kingdom. It is not connected to `kd summon`, workflow settlement, or a hosted service. Normal local execution does not require this profile or OpenShell.
+This opt-in profile extends NVIDIA OpenShell v0.1.5, revision `bdb956f2cd65`. It is a Kingdom extension, not an upstream stable API. Stock OpenShell does not advertise the managed capability. Product workflow execution remains disabled until worker, settlement, workspace transfer, and live acceptance are complete. Default local Kingdom does not require OpenShell.
 
-The patch targets OpenShell v0.1.5, revision `bdb956f2cd65`. `manifest.json` pins the complete source tree, patch, and resulting tree. `prepare.py` refuses changed source, a changed patch, or an existing output directory.
+Before extending this profile, check NVIDIA's latest stable release with `gh api repos/NVIDIA/OpenShell/releases/latest --jq .tag_name`. Compare it with `upstream_version` in `manifest.json`. Check the installed CLI separately with `openshell --version`. Port and verify against a newer stable release before continuing; do not use moving `latest` image tags.
 
-Before extending this profile, check NVIDIA's latest stable release with `gh api repos/NVIDIA/OpenShell/releases/latest --jq .tag_name` and compare it with `upstream_version` in `manifest.json`. Check the installed CLI separately with `openshell --version`; its version can differ from the pinned SDK and runtime. If a newer stable release exists, port and verify the profile against that release before continuing. Keep exact source and image pins after the update; do not use a moving `latest` tag for verification.
+## Source and Artifact Pins
 
-## Execution Contract
+`manifest.json` pins the upstream tree, patch, and reviewed resulting tree. `prepare.py` refuses altered source, an altered patch, or an existing output directory. The custom gateway, supervisor, and sandbox runtime must all come from that tree. Updating the installed CLI does not install this extension.
 
-The Cargo feature `kingdom-managed-commands` is off by default. A custom sandbox runtime binary must explicitly enable it. Native API cancellation also requires the patched gateway described below. The released network supervisor remains unchanged.
+The deployment profile binds the gateway binary hash, supervisor image digest, sandbox runtime image digest, and runtime binary hash. The Docker driver checks these pins before admission, including the extracted runtime and actual created image identities. A workload cannot enable the capability by supplying a profile name. The boundary must run as PID 1 and validate its own executable before it advertises the capability.
 
-The trusted boundary assigns each command a process group before applying the workload filter. The profile then denies workload `setsid` and `setpgid`, including in the main workload. Commands cannot move themselves or their children out of their assigned group. The production profile requires the boundary to run as PID 1 in its private PID namespace.
+## Admission and Closure
 
-After the command leader exits, the boundary holds the shared launch/reaper registry lock, reaps the leader, and uses `waitpid` with `__WALL` to account for adopted children in that group. Other trusted launches cannot reuse the group during this operation. The kernel's `ECHILD` result establishes that no child chain remains. A scan of `/proc` is not used as proof of absence.
+The public protocol is in [contracts/openshell-managed](../../contracts/openshell-managed/README.md). The gateway derives native user or operator identity, immutable workspace identity, and runtime identity. Unauthenticated local-development identity cannot use managed execution. Gateway-created authority crosses an authenticated internal supervisor relay; public callers cannot supply it.
 
-Surviving children trigger forced cleanup and a non-clean result. Requested termination also produces a non-clean result, including when a command catches the signal and exits zero. Incomplete observations and cleanup deadlines remain errors. These checks do not change Kingdom's success rules.
+The gateway retains command intent before its first dispatch. The boundary retains protected intent before native execution. Replays never repeat an uncertain start. All identities include gateway, workspace, subject, request, runtime generation, main process instance, and deployment profile. Command specifications bind explicit arguments, environment overrides, fixed input, workdir, and limits. Provider credentials require a separate immutable invocation binding.
 
-The patched gateway keeps the SSH operation alive after a native execution timeout so it can send `KILL` and drain the remote channel. Client response-stream cancellation uses the same cleanup path. Cleanup covers blocked input and output, has a fixed deadline, and does not depend on the client reading more output. A synthetic timeout still leaves the gateway's durable request unresolved, even if cleanup receives exit zero. SSH channel closure alone does not prove that the process group is closed.
+The boundary assigns process groups before applying the workload filter. Workloads cannot use `setsid` or `setpgid` to escape. The trusted owner holds the launch/reaper registry lock while it reaps the group and proves kernel closure. `/proc` absence is not closure evidence. Requested termination or forced descendant cleanup stays non-clean even when the leader exits zero.
 
-## Durable Admission
+Input completion, raw exit status, group closure, forced cleanup, and output completeness are separate receipt facts. Output is retained as sequenced, typed frames with a digest. Missing evidence remains unresolved. Neither transport closure nor a receipt alone settles a Kingdom workflow.
 
-The boundary writes and synchronizes a logical admission record before invoking the executor. The record binds the request ID, payload digest, sandbox ID, runtime generation, and logical process ID. The journal is under `/.openshell/channel/sandbox/kingdom-exec-journal`, on the protected channel volume. The mandatory Landlock baseline excludes that path from workload access. File permissions alone would not be sufficient because the boundary and workload use the same UID.
+The managed journal is protected from workload reads and writes. Use strict Landlock, `filesystem.include_workdir=false`, and explicit workspace/scratch grants. The native executor and workload share an execution identity; file permissions alone do not protect journal data. Never put real user credentials in workload-readable files or environment variables.
 
-Records use exclusive creation and file/directory synchronization. A repeated request with lost in-memory state cannot launch again. A conflicting payload is rejected. Schema 2 terminal records are bound to the original admission and synchronized before reporting completion. They retain raw exit status, requested termination, forced cleanup, and proven process-group closure as separate typed facts. A forced but proven shutdown is retained as non-clean. Wait and storage failures remain unresolved. Older or contradictory terminal records are rejected.
+Each runtime retains at most 64 commands. Each command accepts a control request below 1 MiB and retains at most 16 MiB of output in 4,096 chunks. Large workspace transfers require a separately bounded stream; they must not be copied into command arguments or an unbounded journal.
 
-This is a logical admission gate, not an acknowledgement gate for the exact child PID. A crash between admission and retained terminal evidence requires whole-sandbox shutdown before replacement. The journal survives boundary restarts while its channel volume remains; it does not survive sandbox deletion. There is no authenticated journal export or output-stream replay API in this prototype.
+## Finalization and Recovery
 
-## Build and Test
+Managed admission reserves native lifecycle retention before dispatch. Native stop, restart, delete, recovery, and controller cleanup must respect it. PostgreSQL uses the same advisory lock for admission and destructive lifecycle calls; SQLite uses a single gateway process.
 
-Requirements: Docker on Linux ARM64 or a macOS ARM64 Docker VM, Python 3, and Git. The builder uses Rust 1.95.0 and locked Cargo dependencies. Its base image is pinned, but package-manager downloads are not a claim of byte-for-byte reproducible builds. Pin the resulting image digest when using it for a test.
+Finalization moves retention from Active to Finalizing, which prevents new starts while preserving recovery. The gateway independently obtains every command's closed receipt and exact retained output. It validates the full framed digest before publishing immutable archive data. Only a verified, content-addressed manifest permits Released and native teardown. A failed transfer or unknown command leaves resumable Finalizing state. No caller-supplied boolean can release retention.
 
-From the Kingdom repository root, prepare an unmodified OpenShell v0.1.5 source checkout or extracted archive:
+Archive reads work after the sandbox is gone and still enforce native identity and access. Failed or incomplete results remain failed or incomplete. Kingdom must separately retain a verified workspace export before requesting finalization. Out-of-band host or container destruction cannot establish managed closure.
+
+## Build
+
+Requirements: ARM64 Linux or an ARM64 Docker VM, Python 3, Git, and Docker. The builder pins Rust 1.95.0 and Cargo dependencies. Package-manager downloads are not a claim of byte-for-byte reproducible binaries; retain and use the actual built artifact digests.
 
 ```sh
+mkdir -p kd-sandbox/managed-build
 python3 experiments/openshell-managed-commands/prepare.py \
-  --source /path/to/unmodified/openshell \
-  --output /tmp/kingdom-openshell-managed-source
+  --source /path/to/exact/OpenShell-v0.1.5-source \
+  --output "$PWD/kd-sandbox/managed-build/source"
 docker build -f experiments/openshell-managed-commands/Dockerfile.builder \
   -t kingdom-openshell-managed-builder:local .
-mkdir -p kd-sandbox/openshell-managed-build/bin
-docker run --rm \
-  --mount type=bind,src=/tmp/kingdom-openshell-managed-source,dst=/src,readonly \
-  --mount type=bind,src="$PWD/kd-sandbox/openshell-managed-build/bin",dst=/out \
-  --mount type=volume,src=kingdom-openshell-managed-target,dst=/target \
-  kingdom-openshell-managed-builder:local sh -c '
-    cargo test --locked -p openshell-sandbox --features kingdom-managed-commands --lib kingdom_ -- --test-threads=1 &&
-    cargo test --locked -p openshell-sandbox --features kingdom-managed-commands --lib boundary_exec::tests::managed_ -- --test-threads=1 &&
-    cargo build --locked -p openshell-sandbox --features kingdom-managed-commands --bin openshell-sandbox --target aarch64-unknown-linux-musl &&
-    cp /target/aarch64-unknown-linux-musl/debug/openshell-sandbox /out/openshell-sandbox'
-docker build -f experiments/openshell-managed-commands/Dockerfile.runtime \
-  -t kingdom-openshell-managed:local kd-sandbox/openshell-managed-build
-```
-
-The tests use the GNU target. The deployable binary uses musl. Upstream v0.1.5 has an unrelated musl test-build error in its `msghdr` test fixtures; the production binary builds with musl.
-
-Configure a separate disposable gateway with `sandbox_runtime_image = "kingdom-openshell-managed:local"` in its Docker driver configuration. This replaces the trusted sandbox runtime, not the outer network supervisor. Use strict Landlock, `include_workdir: false`, and explicit workspace write grants. Do not attach provider credentials for these tests. Use non-PTY commands and `--no-login-shell`.
-
-For native API cancellation, also build the patched gateway. The GNU build needs Z3, included in the builder above. Use Rust's bundled ELF linker to reduce peak memory during gateway test linking:
-
-```sh
-docker run --rm \
-  --mount type=bind,src=/tmp/kingdom-openshell-managed-source,dst=/src,readonly \
-  --mount type=bind,src="$PWD/kd-sandbox/openshell-managed-build/bin",dst=/out \
-  --mount type=volume,src=kingdom-openshell-managed-target,dst=/target \
-  kingdom-openshell-managed-builder:local sh -c '
-    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang
-    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=$(rustc --print sysroot)/lib/rustlib/aarch64-unknown-linux-gnu/bin/gcc-ld/ld.lld"
-    cargo test --locked -p openshell-server --lib interactive_exec_tests &&
-    cargo test --locked -p openshell-server --lib mutation_replay::streaming::tests &&
-    cargo build --locked -p openshell-gateway --bin openshell-gateway --no-default-features --features compute-driver-docker,telemetry &&
-    cp /target/debug/openshell-gateway /out/openshell-gateway &&
-    cp /usr/lib/aarch64-linux-gnu/libz3.so.4 /out/libz3.so.4'
+mkdir -p kd-sandbox/managed-build/bin
+docker run --rm --cpus 2 --memory 5g --memory-swap 6g \
+  --mount type=bind,src="$PWD/kd-sandbox/managed-build/source",dst=/src,readonly \
+  --mount type=bind,src="$PWD/kd-sandbox/managed-build/bin",dst=/out \
+  --mount type=bind,src="$PWD/experiments/openshell-managed-commands/build-binaries.sh",dst=/build-binaries.sh,readonly \
+  --mount type=volume,src=kingdom-managed-cargo,dst=/usr/local/cargo/registry \
+  --mount type=volume,src=kingdom-managed-target,dst=/target \
+  kingdom-openshell-managed-builder:local sh /build-binaries.sh
 docker build -f experiments/openshell-managed-commands/Dockerfile.gateway \
-  -t kingdom-openshell-gateway:local kd-sandbox/openshell-managed-build
+  -t kingdom-managed-gateway:local kd-sandbox/managed-build
+docker build -f experiments/openshell-managed-commands/Dockerfile.supervisor \
+  -t kingdom-managed-supervisor:local kd-sandbox/managed-build
+docker build -f experiments/openshell-managed-commands/Dockerfile.runtime \
+  -t kingdom-managed-runtime:local kd-sandbox/managed-build
 ```
 
-Use this gateway image for the disposable gateway service. This is a custom Docker-only build from stable v0.1.5 source, not an upstream release binary. The existing local CLI installation is separate; upgrading it does not install this patch.
+Create the output parent before preparation. Use immutable `repository@sha256:...` image references from the resulting image store in the Docker driver and managed profile. The runtime uses ARM64 musl; gateway and supervisor use ARM64 GNU. The supervisor image includes the GNU support library required by the built binary; verify each image starts before sandbox acceptance. Test builds use GNU because the upstream musl test fixtures have an unrelated `msghdr` compile error.
 
-## Limits Before Kingdom Integration
+Use a separate disposable gateway with TLS and native authenticated user/operator access. Do not enable unauthenticated development access. Do not attach personal credentials during protocol acceptance. Never use port 8080 for Kingdom verification.
 
-- The profile can reject job control, daemon startup, and tools that create sessions or groups. General support for those tools needs a stronger per-command boundary, such as delegated cgroups.
-- The production proof depends on private PID-namespace ownership and on all trusted group creation using the same registry lock. Unit tests use isolated subreaper helpers; those tests do not establish arbitrary shared-namespace safety.
-- Forced cleanup returns a non-clean native result. The protected journal now distinguishes proven forced shutdown from missing proof, but these typed facts are not yet available through an authenticated public retrieval API.
-- Authenticated evidence retrieval, exact runtime identity binding in Kingdom, workspace export after shutdown, provider credentials, and end-to-end workflow recovery are not implemented here.
-- The boundary request ID differs from the public gateway request UUID in the tested transport. The next protocol change must carry that binding through to the retained evidence. Gateway duplicate rejection alone does not prove permanent journal deduplication.
-- The released v0.1.5 gateway and CLI can return 124 while a command remains live. The custom gateway adds bounded termination for native API timeout and client cancellation. The CLI uses a separate SSH path and is not fixed by this gateway patch. A timeout or disconnected stream still requires confirmed whole-sandbox shutdown before replacement; it is not a command shutdown receipt.
-- Do not accept the raw native exit status as Kingdom success or treat a missing journal as cleanup evidence.
+## Verification Status
 
-## Verification Result
+The v4 source passed 15 managed gateway tests and 252 native lifecycle tests. Backend, Docker driver, default boundary, managed sandbox, and focused owner tests also passed. Two existing Docker-live driver tests were ignored. The gateway tests include actual native authentication routing, membership revocation, non-admin finalization denial, uncertain dispatch, interrupted archive recovery, and deletion after archive. Rust and Go agree on canonical request, receipt, output, and archive vectors.
 
-On 2026-10-21, the Linux ARM64 prototype passed 13 focused Rust tests and real OpenShell checks for ordinary completion, leaked-child removal, group escape denial, and journal access denial. A forced boundary crash and gateway restart retained the journal byte-for-byte and did not produce a terminal record for interrupted work. A native API probe confirmed that repeating a completed request UUID did not launch it again.
+Live ARM64 acceptance passed with the exact v4 images: mutual TLS operator authentication, single-effect command replay, changed-request rejection, typed timeout and cancellation, blocked native stop/delete before finalization, and verified archive reads and replay after native deletion. A separate live transfer passed a 2 MiB incompressible project through the authenticated fixed-port tunnel and strict Landlock, with identical imported/exported manifests and clean helper receipts. The native capability negotiation regression exercises the actual descriptor validator and runtime gRPC service.
 
-The initial timeout checks exposed the released gateway limitation above. Supported sandbox stop then left the workload container stopped with no running PID. Test containers, sandbox volumes, and gateway networks were removed.
-
-The v2 gateway change first reproduced missing remote termination with a failing SSH test. After the fix, 12 SSH transport tests and 11 mutation-replay tests passed. Live native timeout and client cancellation then left no command or child process in independent trusted inspection. Their journal admissions remained unresolved, with no clean terminal records. The gateway binary and Z3 library hashes are recorded in `manifest.json`. These results qualify this experiment only; they do not establish a hosted Kingdom release or end-to-end provider execution.
-
-The v3 boundary change first reproduced the missing forced-closure receipt with a failing test. The formatted source then passed the managed, journal/group, and default-mode boundary test filters (12, 12, and 14 tests, with overlap). It preserves a shared completion cache for simultaneous observers and retains non-clean typed closure when a cancelled command exits zero. The ARM64 musl runtime builds successfully. These v3 results are unit and build evidence; the earlier live gateway checks used v2. Evidence is under `kd-sandbox/central-openshell-20261021-terminal/evidence/`.
-
-The native probe can be repeated against an existing disposable sandbox with `/sandbox` writable:
-
-```sh
-go run ./experiments/openshell-managed-commands/nativeprobe \
-  --endpoint 127.0.0.1:59543 --sandbox kd-managed-proof
-```
-
-It writes a unique marker, starts a command with a short execution timeout, and cancels another command after its readiness message. Inspect the trusted process state and journal afterwards, then stop and delete the disposable sandbox. The probe's exit status does not certify remote cleanup. Boundary evidence is under `kd-sandbox/central-openshell-20261021-supervisor/evidence/`; gateway cancellation evidence is under `kd-sandbox/central-openshell-20261021-cancellation/evidence/`.
-
-## Source and License
-
-This package contains a patch to [NVIDIA OpenShell v0.1.5](https://github.com/NVIDIA/OpenShell/tree/v0.1.5). Upstream notices are retained in the patched source. The patch and added Rust modules use Apache-2.0; the license is included in `LICENSE-APACHE-2.0`. This is an experimental Kingdom integration, not an NVIDIA-supported release.
+Evidence is retained under `kd-sandbox/central-openshell-20261021-managed-live/acceptance-06`, `kd-sandbox/workspace-transfer/acceptance-02`, and the build directory `kd-sandbox/central-openshell-20261021-managed-protocol/`. The manifest records the verified local image digests; these images are not published. These checks do not establish PostgreSQL concurrency, end-to-end hosted OpenCode execution, or production deployment readiness. The earlier native cancellation probe used an older profile and does not qualify v4.

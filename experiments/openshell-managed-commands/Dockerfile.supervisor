@@ -1,0 +1,3 @@
+FROM ghcr.io/nvidia/openshell/supervisor@sha256:650c791fb00320561612a892e86c5d23d8cfd30a16d07dc530ee57e6bcbbbb6b
+COPY --chmod=0555 bin/openshell-supervisor /openshell-supervisor
+COPY --chmod=0444 bin/libgcc_s.so.1 /lib/aarch64-linux-gnu/libgcc_s.so.1
