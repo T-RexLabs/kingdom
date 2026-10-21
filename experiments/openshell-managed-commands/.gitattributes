@@ -1,0 +1,2 @@
+# Unified diff context lines require a leading space, including blank lines.
+managed-commands.patch whitespace=-blank-at-eol

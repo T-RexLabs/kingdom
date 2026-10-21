@@ -1,0 +1,23 @@
+{
+  "profile": "kingdom-openshell-managed-commands-experiment/v1",
+  "upstream_version": "v0.1.5",
+  "upstream_revision": "bdb956f2cd65",
+  "source_url": "https://github.com/NVIDIA/OpenShell/tree/bdb956f2cd65",
+  "source_tree_sha256": "9ce4ae8323cfd5645b8b3d0275768bcf52bab8c2ac1e6361352fa041c33ed22e",
+  "patched_tree_sha256": "0b423eb3dcce066b757a73ad6a4ddb10417283b4afc791f101aeaec2d4c12071",
+  "patch_sha256": "8675c9417026df7f019c138f63620c29bb61f2e09fffd21c48f1c61644a19ccd",
+  "cargo_feature": "kingdom-managed-commands",
+  "rust_toolchain": "1.95.0",
+  "verified_target": "aarch64-unknown-linux-musl",
+  "changed_files": [
+    "crates/openshell-sandbox/Cargo.toml",
+    "crates/openshell-sandbox/src/boundary_exec.rs",
+    "crates/openshell-sandbox/src/boundary_server.rs",
+    "crates/openshell-sandbox/src/kingdom_exec_journal.rs",
+    "crates/openshell-sandbox/src/kingdom_managed.rs",
+    "crates/openshell-sandbox/src/lib.rs",
+    "crates/openshell-sandbox/src/linux/child_seccomp.rs"
+  ],
+  "tested_binary_sha256": "2961a7944770f06076ec9517128547aa2ed7b46eb058f088e27e0e9a2574e33f",
+  "verification_date": "2026-10-21"
+}

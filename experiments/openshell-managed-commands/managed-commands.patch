@@ -1,0 +1,925 @@
+--- a/crates/openshell-sandbox/Cargo.toml
++++ b/crates/openshell-sandbox/Cargo.toml
+@@ -20,6 +20,8 @@
+ required-features = ["perf-harness"]
+ 
+ [features]
++# Experimental, explicit custom-build profile. Never enabled in stock builds.
++kingdom-managed-commands = []
+ perf-harness = []
+ 
+ [dependencies]
+--- a/crates/openshell-sandbox/src/boundary_exec.rs
++++ b/crates/openshell-sandbox/src/boundary_exec.rs
+@@ -32,6 +32,8 @@
+ #[derive(Clone)]
+ pub struct LocalBoundaryExec {
+     policy: SandboxPolicy,
++    #[cfg(target_os = "linux")]
++    managed_commands: bool,
+     base_workdir: Option<String>,
+     ca_file_paths: Option<Arc<(std::path::PathBuf, std::path::PathBuf)>>,
+     provider_credentials: ProviderCredentialState,
+@@ -54,6 +56,8 @@
+         #[cfg(target_os = "linux")] launcher: crate::linux::workload_launcher::WorkloadLauncher,
+     ) -> Self {
+         Self {
++            #[cfg(target_os = "linux")]
++            managed_commands: crate::kingdom_managed::enabled(),
+             policy,
+             base_workdir,
+             ca_file_paths,
+@@ -216,8 +220,11 @@
+         #[cfg(target_os = "linux")]
+         let prepared = self.prepare_sandbox(effective_workdir)?;
+         #[cfg(target_os = "linux")]
+-        let child_hardening = crate::linux::child_seccomp::prepare(std::process::id())
+-            .map_err(|error| BackendError::Process(error.to_string()))?;
++        let child_hardening = crate::linux::child_seccomp::prepare_with_managed_groups(
++            std::process::id(),
++            self.managed_commands,
++        )
++        .map_err(|error| BackendError::Process(error.to_string()))?;
+         crate::pty::install_dedicated_process_group(&mut command);
+         crate::pty::install_pre_exec_no_pty(
+             &mut command,
+@@ -281,6 +288,8 @@
+             signal_lock,
+             #[cfg(target_os = "linux")]
+             managed_child,
++            #[cfg(target_os = "linux")]
++            self.managed_commands,
+         ));
+         Ok(SpawnedExec {
+             session: Some(ExecSession {
+@@ -326,8 +335,11 @@
+         #[cfg(target_os = "linux")]
+         let prepared = self.prepare_sandbox(effective_workdir)?;
+         #[cfg(target_os = "linux")]
+-        let child_hardening = crate::linux::child_seccomp::prepare(std::process::id())
+-            .map_err(|error| BackendError::Process(error.to_string()))?;
++        let child_hardening = crate::linux::child_seccomp::prepare_with_managed_groups(
++            std::process::id(),
++            self.managed_commands,
++        )
++        .map_err(|error| BackendError::Process(error.to_string()))?;
+         crate::pty::install_pre_exec(
+             &mut command,
+             self.policy.clone(),
+@@ -376,6 +388,8 @@
+             signal_lock,
+             #[cfg(target_os = "linux")]
+             managed_child,
++            #[cfg(target_os = "linux")]
++            self.managed_commands,
+         ));
+         Ok(SpawnedExec {
+             session: Some(ExecSession {
+@@ -548,6 +562,7 @@
+     runtime: Arc<crate::boundary_io::BoundaryRuntimeState>,
+     terminal: Arc<std::sync::atomic::AtomicBool>,
+     signal_lock: Arc<std::sync::Mutex<()>>,
++    cancellation_requested: Arc<std::sync::atomic::AtomicBool>,
+ }
+ 
+ impl LocalExecProcess {
+@@ -558,7 +573,10 @@
+         terminal: Arc<std::sync::atomic::AtomicBool>,
+         signal_lock: Arc<std::sync::Mutex<()>>,
+         #[cfg(target_os = "linux")] managed_child: Option<crate::managed_children::ManagedChild>,
++        #[cfg(target_os = "linux")] managed_commands: bool,
+     ) -> Self {
++        let cancellation_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
++        let cancellation_for_wait = cancellation_requested.clone();
+         let result = Arc::new(std::sync::Mutex::new(None));
+         let exited = Arc::new(tokio::sync::Notify::new());
+         let result_for_wait = result.clone();
+@@ -577,10 +595,22 @@
+                     let _signal_guard = signal_lock_for_wait
+                         .lock()
+                         .unwrap_or_else(std::sync::PoisonError::into_inner);
+-                    let result = child.wait();
++                    let result = if managed_commands {
++                        match &terminal_observed {
++                            Ok(()) => crate::kingdom_managed::reap_and_close_group(&mut child),
++                            Err(error) => {
++                                let _ = killpg(Pid::from_raw(i32::try_from(pid).unwrap()), Signal::SIGKILL);
++                                let _ = child.wait();
++                                Err(std::io::Error::other(format!("managed command terminal observation failed: {error}")))
++                            }
++                        }
++                    } else { child.wait() };
+                     terminal_for_wait.store(true, std::sync::atomic::Ordering::Release);
+                     if let Some(managed_child) = managed_child {
+                         crate::managed_children::unregister(managed_child);
++                    }
++                    if managed_commands && cancellation_for_wait.load(std::sync::atomic::Ordering::Acquire) {
++                        return Err(std::io::Error::other("managed command termination was requested; completion is not clean"));
+                     }
+                     match (terminal_observed, result) {
+                         (_, Ok(status)) => Ok(status),
+@@ -612,6 +642,12 @@
+                 }
+                 BoundaryExitStatus::Exited(status.code().unwrap_or(1))
+             });
++            #[cfg(target_os = "linux")]
++            let waited = if managed_commands && !runtime_for_wait.is_active() {
++                Err("managed boundary ended; completion is not clean".to_string())
++            } else {
++                waited
++            };
+             runtime_for_wait.unregister_process_group(pid, &registration_terminal);
+             if let Ok(mut slot) = result_for_wait.lock() {
+                 *slot = Some(waited);
+@@ -625,6 +661,7 @@
+             runtime,
+             terminal,
+             signal_lock,
++            cancellation_requested,
+         }
+     }
+ 
+@@ -637,6 +674,8 @@
+         if self.terminal.load(std::sync::atomic::Ordering::Acquire) {
+             return Err(BackendError::Terminated("process has exited".to_string()));
+         }
++        self.cancellation_requested
++            .store(true, std::sync::atomic::Ordering::Release);
+         let pid = i32::try_from(self.pid).unwrap_or(i32::MAX);
+         killpg(Pid::from_raw(pid), signal).map_err(|error| BackendError::Process(error.to_string()))
+     }
+@@ -718,6 +757,101 @@
+         )
+     }
+ 
++    #[tokio::test]
++    async fn managed_command_preserves_clean_exit() {
++        if !crate::kingdom_managed::isolated_subreaper(
++            "boundary_exec::tests::managed_command_preserves_clean_exit",
++        ) {
++            return;
++        }
++        let mut executor = executor();
++        executor.managed_commands = true;
++        let session = executor
++            .exec(ExecSpec {
++                program: "/bin/sh".into(),
++                args: vec!["-c".into(), "exit 7".into()],
++                shell: None,
++                runtime_helper: None,
++                env: vec![],
++                workdir: None,
++                pty: false,
++            })
++            .await
++            .unwrap();
++        assert_eq!(
++            session.process.wait().await.unwrap(),
++            BoundaryExitStatus::Exited(7)
++        );
++    }
++
++    #[tokio::test]
++    async fn managed_command_rejects_success_when_descendant_survives() {
++        if !crate::kingdom_managed::isolated_subreaper(
++            "boundary_exec::tests::managed_command_rejects_success_when_descendant_survives",
++        ) {
++            return;
++        }
++        let mut executor = executor();
++        executor.managed_commands = true;
++        let session = executor
++            .exec(ExecSpec {
++                program: "/bin/sh".into(),
++                args: vec!["-c".into(), "sleep 60 & exit 0".into()],
++                shell: None,
++                runtime_helper: None,
++                env: vec![],
++                workdir: None,
++                pty: false,
++            })
++            .await
++            .unwrap();
++        let result = session.process.wait().await;
++        assert!(
++            result
++                .unwrap_err()
++                .to_string()
++                .contains("forced cleanup completed")
++        );
++    }
++
++    #[tokio::test]
++    async fn managed_command_term_trap_cannot_report_clean_exit() {
++        if !crate::kingdom_managed::isolated_subreaper(
++            "boundary_exec::tests::managed_command_term_trap_cannot_report_clean_exit",
++        ) {
++            return;
++        }
++        let mut executor = executor();
++        executor.managed_commands = true;
++        let mut session = executor
++            .exec(ExecSpec {
++                program: "/bin/sh".into(),
++                args: vec![
++                    "-c".into(),
++                    "trap 'exit 0' TERM; printf r; while :; do :; done".into(),
++                ],
++                shell: None,
++                runtime_helper: None,
++                env: vec![],
++                workdir: None,
++                pty: false,
++            })
++            .await
++            .unwrap();
++        let mut ready = [0u8; 1];
++        session.stdout.read_exact(&mut ready).await.unwrap();
++        session.process.signal(BoundarySignal::Term).await.unwrap();
++        assert!(
++            session
++                .process
++                .wait()
++                .await
++                .unwrap_err()
++                .to_string()
++                .contains("termination was requested")
++        );
++    }
++
+     #[test]
+     fn shell_requests_are_resolved_by_the_workload_executor() {
+         let executor = executor();
+--- a/crates/openshell-sandbox/src/boundary_server.rs
++++ b/crates/openshell-sandbox/src/boundary_server.rs
+@@ -1514,9 +1514,25 @@
+         process: Arc<dyn BoundaryProcess>,
+         session: Arc<MainSession>,
+         status: Arc<Mutex<Option<ExitStatusWire>>>,
++        journal: Option<crate::kingdom_exec_journal::Lease>,
+     ) {
+         let exit_status = match process.wait().await {
+-            Ok(exit_status) => ExitStatusWire::from(exit_status),
++            Ok(exit_status) => {
++                let result = ExitStatusWire::from(exit_status);
++                if let Some(lease) = journal {
++                    let (code, signal) = match result {
++                        ExitStatusWire::Exited(code) => (Some(code), None),
++                        ExitStatusWire::Signaled(signal) => (None, Some(signal)),
++                    };
++                    if let Err(error) = lease.complete(code, signal) {
++                        tracing::error!(%error, "Managed exec terminal journal failed; refusing success");
++                        *lock(&status) = Some(ExitStatusWire::Exited(74));
++                        let _ = session.finish_remote(74, false).await;
++                        return;
++                    }
++                }
++                result
++            }
+             Err(error) => {
+                 // A process wait error is terminal per the BoundaryProcess
+                 // contract. Retaining `None` here makes this handle look live
+@@ -2321,15 +2337,48 @@
+                         format!("exec descriptor headroom unavailable: {error}"),
+                     )
+                 })?;
++            let process_id = if crate::kingdom_exec_journal::enabled() {
++                format!("{}:exec:{}", self.config.generation, uuid::Uuid::new_v4())
++            } else {
++                format!(
++                    "{}:exec:{}",
++                    self.config.generation,
++                    self.next_exec_id.fetch_add(1, Ordering::Relaxed)
++                )
++            };
++            let journal = if crate::kingdom_exec_journal::enabled() {
++                use crate::kingdom_exec_journal::{Admission, Intent, ROOT, reserve};
++                match reserve(
++                    Path::new(ROOT),
++                    Intent {
++                        request_id: request_id.to_string(),
++                        payload_digest: payload_digest.to_string(),
++                        sandbox_id: self.config.boundary_id.clone(),
++                        generation: self.config.generation.clone(),
++                        process_id: process_id.clone(),
++                    },
++                )
++                .map_err(|error| guest_error(BoundaryErrorKind::Unavailable, error.to_string()))?
++                {
++                    Admission::New(lease) => Some(lease),
++                    Admission::Existing(saved) => {
++                        return Err(guest_error(
++                            BoundaryErrorKind::Unavailable,
++                            if saved.is_some() {
++                                "durable exec is complete; stream replay unavailable"
++                            } else {
++                                "durable exec is unresolved; sandbox teardown required before replacement"
++                            },
++                        ));
++                    }
++                }
++            } else {
++                None
++            };
+             let session = self
+                 .process_runtime
+                 .block_on(executor.exec(spec.into()))
+                 .map_err(|error| guest_error(BoundaryErrorKind::Process, error.to_string()))?;
+-            let process_id = format!(
+-                "{}:exec:{}",
+-                self.config.generation,
+-                self.next_exec_id.fetch_add(1, Ordering::Relaxed)
+-            );
+             let ExecSession {
+                 process,
+                 stdin,
+@@ -2360,7 +2409,7 @@
+             let wait_session = retained.clone();
+             let wait_status = status.clone();
+             self.process_runtime.spawn(async move {
+-                retain_exec_completion(wait_process, wait_session, wait_status).await;
++                retain_exec_completion(wait_process, wait_session, wait_status, journal).await;
+             });
+             let handle = ExecHandle {
+                 request_id: request_id.to_string(),
+@@ -2467,6 +2516,11 @@
+         }
+ 
+         fn attach(&self, policy: SandboxPolicyWire) -> Response {
++            if crate::kingdom_exec_journal::enabled() {
++                if let Err(error) = crate::kingdom_exec_journal::validate_policy(&policy) {
++                    return guest_error(BoundaryErrorKind::Denied, error.to_string());
++                }
++            }
+             // Reject a conflicting request before establishing the boundary
+             // or retaining the caller's policy for later replay.
+             if let Err(error) = validate_vm_policy_identity(&self.config, &policy) {
+@@ -3970,7 +4024,8 @@
+             let mut output = session.subscribe();
+             let status = Arc::new(Mutex::new(None));
+ 
+-            retain_exec_completion(Arc::new(FailedWaitProcess), session, status.clone()).await;
++            retain_exec_completion(Arc::new(FailedWaitProcess), session, status.clone(), None)
++                .await;
+ 
+             assert_eq!(*lock(&status), Some(ExitStatusWire::Exited(74)));
+             assert!(matches!(
+--- /dev/null
++++ b/crates/openshell-sandbox/src/kingdom_exec_journal.rs
+@@ -0,0 +1,268 @@
++// SPDX-License-Identifier: Apache-2.0
++//! Experimental durable admission tombstones. Never replay an admitted launch.
++//! This directory must be provisioned outside all workload write grants. It is
++//! retained across boundary restarts, not claimed to survive sandbox deletion.
++use serde::{Deserialize, Serialize};
++use std::fs::{self, File, OpenOptions};
++use std::io::{self, Write};
++use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
++use std::path::{Path, PathBuf};
++
++pub const ROOT: &str = "/.openshell/channel/sandbox/kingdom-exec-journal";
++pub fn enabled() -> bool {
++    crate::kingdom_managed::enabled()
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Intent {
++    pub request_id: String,
++    pub payload_digest: String,
++    pub sandbox_id: String,
++    pub generation: String,
++    pub process_id: String,
++}
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Terminal {
++    pub intent: Intent,
++    pub exit_code: Option<i32>,
++    pub signal: Option<i32>,
++    pub group_closed: bool,
++}
++#[derive(Debug)]
++pub struct Lease {
++    root: PathBuf,
++    key: String,
++    pub intent: Intent,
++}
++#[derive(Debug)]
++pub enum Admission {
++    New(Lease),
++    Existing(Option<Terminal>),
++}
++
++pub fn validate_root(root: &Path) -> io::Result<()> {
++    let owner = nix::unistd::geteuid().as_raw();
++    for ancestor in root.ancestors().skip(1) {
++        let meta = fs::symlink_metadata(ancestor)?;
++        if !meta.is_dir() || (meta.uid() != 0 && meta.uid() != owner) || meta.mode() & 0o022 != 0 {
++            return Err(io::Error::other(
++                "journal ancestors must be trusted non-writable directories without symlinks",
++            ));
++        }
++    }
++    match fs::DirBuilder::new().mode(0o700).create(root) {
++        Ok(()) => File::open(
++            root.parent()
++                .ok_or_else(|| io::Error::other("missing parent"))?,
++        )?
++        .sync_all()?,
++        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
++        Err(error) => return Err(error),
++    }
++    let meta = fs::symlink_metadata(root)?;
++    if !meta.is_dir() || meta.uid() != owner || meta.mode() & 0o777 != 0o700 {
++        return Err(io::Error::other(
++            "journal must be a private directory owned by boundary UID",
++        ));
++    }
++    Ok(())
++}
++
++pub fn validate_policy(
++    policy: &openshell_sandbox_backend::boundary_protocol::SandboxPolicyWire,
++) -> io::Result<()> {
++    use openshell_sandbox_backend::boundary_protocol::LandlockCompatibilityWire;
++    if policy.include_workdir
++        || !matches!(policy.landlock, LandlockCompatibilityWire::HardRequirement)
++    {
++        return Err(io::Error::other(
++            "managed journal requires hard Landlock and explicit workdir grants",
++        ));
++    }
++    let root = Path::new(ROOT);
++    validate_root(root)?;
++    for path in &policy.read_write {
++        let canonical = path.canonicalize()?;
++        if root.starts_with(&canonical) || canonical.starts_with(root) {
++            return Err(io::Error::other(
++                "workload write grant overlaps trusted journal",
++            ));
++        }
++    }
++    Ok(())
++}
++
++fn persist(path: &Path, value: &impl Serialize) -> io::Result<()> {
++    let bytes = serde_json::to_vec(value)?;
++    let mut file = OpenOptions::new()
++        .write(true)
++        .create_new(true)
++        .mode(0o600)
++        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
++        .open(path)?;
++    file.write_all(&bytes)?;
++    file.sync_all()?;
++    File::open(
++        path.parent()
++            .ok_or_else(|| io::Error::other("missing parent"))?,
++    )?
++    .sync_all()
++}
++fn read<T: serde::de::DeserializeOwned>(path: &Path) -> io::Result<T> {
++    let file = OpenOptions::new()
++        .read(true)
++        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
++        .open(path)?;
++    let metadata = file.metadata()?;
++    if !metadata.is_file()
++        || metadata.len() > 64 * 1024
++        || metadata.uid() != nix::unistd::geteuid().as_raw()
++        || metadata.mode() & 0o077 != 0
++        || metadata.nlink() != 1
++    {
++        return Err(io::Error::other("invalid journal record"));
++    }
++    Ok(serde_json::from_reader(file)?)
++}
++
++pub fn reserve(root: &Path, intent: Intent) -> io::Result<Admission> {
++    // A digest is used only as a safe filename; the full identity is compared.
++    let key = hex::encode(
++        openshell_crypto::sha256(intent.request_id.as_bytes()).map_err(io::Error::other)?,
++    );
++    let path = root.join(format!("{key}.intent.json"));
++    match persist(&path, &intent) {
++        Ok(()) => Ok(Admission::New(Lease {
++            root: root.into(),
++            key,
++            intent,
++        })),
++        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
++            let prior: Intent = read(&path)?;
++            if prior.request_id != intent.request_id
++                || prior.payload_digest != intent.payload_digest
++                || prior.sandbox_id != intent.sandbox_id
++                || prior.generation != intent.generation
++            {
++                return Err(io::Error::other(
++                    "durable request identity or payload conflict",
++                ));
++            }
++            let terminal = match read::<Terminal>(&root.join(format!("{key}.terminal.json"))) {
++                Ok(value)
++                    if value.intent == prior
++                        && value.group_closed
++                        && value.exit_code.is_some() != value.signal.is_some() =>
++                {
++                    Some(value)
++                }
++                Ok(_) => return Err(io::Error::other("invalid terminal binding")),
++                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
++                Err(error) => return Err(error),
++            };
++            Ok(Admission::Existing(terminal))
++        }
++        Err(error) => Err(error),
++    }
++}
++impl Lease {
++    pub fn complete(self, exit_code: Option<i32>, signal: Option<i32>) -> io::Result<()> {
++        if exit_code.is_some() == signal.is_some() {
++            return Err(io::Error::other("invalid terminal outcome"));
++        }
++        persist(
++            &self.root.join(format!("{}.terminal.json", self.key)),
++            &Terminal {
++                intent: self.intent,
++                exit_code,
++                signal,
++                group_closed: true,
++            },
++        )
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn intent() -> Intent {
++        Intent {
++            request_id: "req-1".into(),
++            payload_digest: "payload".into(),
++            sandbox_id: "sandbox".into(),
++            generation: "generation".into(),
++            process_id: "logical-1".into(),
++        }
++    }
++    #[test]
++    fn reopen_never_dispatches_and_rejects_conflict() {
++        let dir = tempfile::tempdir().unwrap();
++        assert!(matches!(
++            reserve(dir.path(), intent()).unwrap(),
++            Admission::New(_)
++        ));
++        let mut retry = intent();
++        retry.process_id = "new-logical-id".into();
++        assert!(matches!(
++            reserve(dir.path(), retry).unwrap(),
++            Admission::Existing(None)
++        ));
++        let mut conflict = intent();
++        conflict.payload_digest = "different".into();
++        assert!(reserve(dir.path(), conflict).is_err());
++    }
++    #[test]
++    fn terminal_replay_is_bound_to_original_intent() {
++        let dir = tempfile::tempdir().unwrap();
++        let Admission::New(lease) = reserve(dir.path(), intent()).unwrap() else {
++            panic!("new")
++        };
++        lease.complete(Some(7), None).unwrap();
++        let Admission::Existing(Some(saved)) = reserve(dir.path(), intent()).unwrap() else {
++            panic!("terminal")
++        };
++        assert_eq!(saved.exit_code, Some(7));
++        assert!(saved.group_closed);
++    }
++    #[test]
++    fn missing_store_rejects_reservation() {
++        let dir = tempfile::tempdir().unwrap();
++        assert!(reserve(&dir.path().join("missing"), intent()).is_err());
++    }
++    #[test]
++    fn partial_intent_blocks_relaunch() {
++        let dir = tempfile::tempdir().unwrap();
++        let key = hex::encode(openshell_crypto::sha256(b"req-1").unwrap());
++        let path = dir.path().join(format!("{key}.intent.json"));
++        let mut file = OpenOptions::new()
++            .write(true)
++            .create_new(true)
++            .mode(0o600)
++            .open(path)
++            .unwrap();
++        file.write_all(b"{").unwrap();
++        file.sync_all().unwrap();
++        assert!(reserve(dir.path(), intent()).is_err());
++    }
++    #[test]
++    fn contradictory_terminal_outcome_is_rejected() {
++        let dir = tempfile::tempdir().unwrap();
++        let Admission::New(lease) = reserve(dir.path(), intent()).unwrap() else {
++            panic!("new")
++        };
++        let invalid = Terminal {
++            intent: lease.intent.clone(),
++            exit_code: Some(0),
++            signal: Some(9),
++            group_closed: true,
++        };
++        persist(
++            &lease.root.join(format!("{}.terminal.json", lease.key)),
++            &invalid,
++        )
++        .unwrap();
++        assert!(reserve(dir.path(), intent()).is_err());
++    }
++}
+--- /dev/null
++++ b/crates/openshell-sandbox/src/kingdom_managed.rs
+@@ -0,0 +1,246 @@
++// SPDX-License-Identifier: Apache-2.0
++
++//! Experimental command-group closure. Not a durable execution protocol.
++//! The leader enters this operation terminal but unreaped. All
++//! workload members must have the managed seccomp profile, which prevents
++//! changing process groups or sessions after trusted pre-exec assignment.
++
++use nix::sys::signal::{Signal, killpg};
++use nix::unistd::Pid;
++use std::io;
++use std::time::{Duration, Instant};
++
++pub(crate) fn enabled() -> bool {
++    cfg!(feature = "kingdom-managed-commands")
++}
++
++/// Reap one terminal leader and all descendants in its immutable group.
++/// The caller must hold its signal lock and must have observed leader terminal
++/// with WNOWAIT. The registry lock blocks other trusted group launches and the
++/// orphan reaper until ECHILD proves closure. Workloads cannot change groups.
++pub(crate) fn reap_and_close_group(
++    child: &mut std::process::Child,
++) -> io::Result<std::process::ExitStatus> {
++    use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
++    let group = child.id();
++    let group_pid = i32::try_from(group)
++        .ok()
++        .filter(|pid| *pid > 0)
++        .ok_or_else(|| io::Error::other("invalid managed process group"))?;
++    let owns_namespace = std::process::id() == 1;
++    // Unit tests use an isolated subreaper child. Production requires PID 1:
++    // an ordinary subreaper cannot exclude external group creators.
++    #[cfg(test)]
++    let owns_namespace = owns_namespace || rustix::process::child_subreaper()?.is_some();
++    if !owns_namespace {
++        let _ = killpg(Pid::from_raw(group_pid), Signal::SIGKILL);
++        let _ = child.wait();
++        return Err(io::Error::other(
++            "managed closure requires exclusive PID 1 ownership",
++        ));
++    }
++    let _registry = crate::managed_children::lock();
++    let status = child.wait()?;
++    let deadline = Instant::now() + Duration::from_secs(5);
++    let mut forced = false;
++    loop {
++        // __WALL includes clone children with non-SIGCHLD termination signals.
++        match waitpid(
++            Pid::from_raw(-group_pid),
++            Some(WaitPidFlag::WNOHANG | WaitPidFlag::__WALL),
++        ) {
++            Err(nix::errno::Errno::ECHILD) => {
++                return if forced {
++                    Err(io::Error::other(
++                        "managed command left live descendants; forced cleanup completed",
++                    ))
++                } else {
++                    Ok(status)
++                };
++            }
++            Ok(WaitStatus::StillAlive) => {
++                forced = true;
++                killpg(Pid::from_raw(group_pid), Signal::SIGKILL).map_err(io::Error::other)?;
++                if Instant::now() >= deadline {
++                    return Err(io::Error::other(
++                        "managed command closure was not proved before deadline",
++                    ));
++                }
++                std::thread::sleep(Duration::from_millis(5));
++            }
++            Ok(WaitStatus::Exited(..) | WaitStatus::Signaled(..)) => {}
++            Err(nix::errno::Errno::EINTR) => {}
++            Err(error) => return Err(io::Error::other(error)),
++            Ok(_) => return Err(io::Error::other("unexpected managed child wait state")),
++        }
++    }
++}
++
++#[cfg(test)]
++pub(crate) fn isolated_subreaper(test: &str) -> bool {
++    const HELPER: &str = "KINGDOM_SUBREAPER_TEST";
++    if std::env::var(HELPER).as_deref() == Ok(test) {
++        rustix::process::set_child_subreaper(Some(rustix::process::getpid())).unwrap();
++        return true;
++    }
++    let output = std::process::Command::new(std::env::current_exe().unwrap())
++        .args(["--exact", test, "--nocapture"])
++        .env(HELPER, test)
++        .output()
++        .unwrap();
++    assert!(
++        output.status.success(),
++        "{} {}",
++        String::from_utf8_lossy(&output.stdout),
++        String::from_utf8_lossy(&output.stderr)
++    );
++    false
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::os::unix::process::CommandExt;
++    use std::process::{Command, Stdio};
++
++    fn child(script: &str) -> std::process::Child {
++        let mut command = Command::new("/bin/sh");
++        command
++            .args(["-c", script])
++            .stdout(Stdio::null())
++            .stderr(Stdio::null());
++        command.process_group(0);
++        command.spawn().expect("spawn group leader")
++    }
++
++    #[test]
++    fn natural_exit_closes_without_cleanup() {
++        if !isolated_subreaper("kingdom_managed::tests::natural_exit_closes_without_cleanup") {
++            return;
++        }
++        let mut leader = child("exit 0");
++        crate::managed_children::wait_until_terminal(leader.id()).unwrap();
++        reap_and_close_group(&mut leader).unwrap();
++        assert!(leader.wait().unwrap().success());
++    }
++
++    #[test]
++    fn surviving_child_is_killed_and_not_reported_as_success() {
++        if !isolated_subreaper(
++            "kingdom_managed::tests::surviving_child_is_killed_and_not_reported_as_success",
++        ) {
++            return;
++        }
++        let mut sibling = child("sleep 60");
++        let mut leader = child("sleep 60 & exit 0");
++        crate::managed_children::wait_until_terminal(leader.id()).unwrap();
++        let result = reap_and_close_group(&mut leader);
++        assert!(
++            result
++                .unwrap_err()
++                .to_string()
++                .contains("forced cleanup completed")
++        );
++        assert!(
++            sibling.try_wait().unwrap().is_none(),
++            "unrelated sibling must remain alive"
++        );
++        leader.wait().unwrap();
++        killpg(
++            Pid::from_raw(i32::try_from(sibling.id()).unwrap()),
++            Signal::SIGKILL,
++        )
++        .unwrap();
++        sibling.wait().unwrap();
++    }
++
++    #[test]
++    fn cancellation_closes_the_group_without_touching_a_sibling() {
++        if !isolated_subreaper(
++            "kingdom_managed::tests::cancellation_closes_the_group_without_touching_a_sibling",
++        ) {
++            return;
++        }
++        let mut sibling = child("sleep 60");
++        let mut leader = child("sleep 60 & wait");
++        killpg(
++            Pid::from_raw(i32::try_from(leader.id()).unwrap()),
++            Signal::SIGKILL,
++        )
++        .unwrap();
++        crate::managed_children::wait_until_terminal(leader.id()).unwrap();
++        // Cancellation itself can leave a child briefly alive until SIGKILL
++        // takes effect. Closure must either prove clean or report forced cleanup.
++        let result = reap_and_close_group(&mut leader);
++        assert!(
++            result.is_ok()
++                || result
++                    .unwrap_err()
++                    .to_string()
++                    .contains("forced cleanup completed")
++        );
++        assert!(sibling.try_wait().unwrap().is_none());
++        leader.wait().unwrap();
++        killpg(
++            Pid::from_raw(i32::try_from(sibling.id()).unwrap()),
++            Signal::SIGKILL,
++        )
++        .unwrap();
++        sibling.wait().unwrap();
++    }
++
++    #[test]
++    fn double_fork_churn_cannot_evade_kernel_child_wait() {
++        if !isolated_subreaper(
++            "kingdom_managed::tests::double_fork_churn_cannot_evade_kernel_child_wait",
++        ) {
++            return;
++        }
++        let mut leader =
++            child("i=0; while [ $i -lt 64 ]; do (sleep 60 &) & i=$((i+1)); done; exit 0");
++        crate::managed_children::wait_until_terminal(leader.id()).unwrap();
++        let error = reap_and_close_group(&mut leader).unwrap_err();
++        assert!(error.to_string().contains("forced cleanup completed"));
++        use nix::sys::wait::{WaitPidFlag, waitpid};
++        assert_eq!(
++            waitpid(
++                Pid::from_raw(-i32::try_from(leader.id()).unwrap()),
++                Some(WaitPidFlag::WNOHANG | WaitPidFlag::__WALL)
++            ),
++            Err(nix::errno::Errno::ECHILD)
++        );
++    }
++
++    #[test]
++    #[allow(unsafe_code)]
++    fn managed_filter_denies_group_and_session_escape() {
++        const CHILD: &str = "KINGDOM_MANAGED_FILTER_TEST_CHILD";
++        if std::env::var_os(CHILD).is_some() {
++            let mut program = crate::linux::child_seccomp::prepare_with_managed_groups(
++                std::process::id() + 1,
++                true,
++            )
++            .unwrap();
++            program.install().unwrap();
++            assert_eq!(unsafe { libc::setpgid(0, 0) }, -1);
++            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
++            assert_eq!(unsafe { libc::setsid() }, -1);
++            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
++            return;
++        }
++        let output = Command::new(std::env::current_exe().unwrap())
++            .args([
++                "--exact",
++                "kingdom_managed::tests::managed_filter_denies_group_and_session_escape",
++                "--nocapture",
++            ])
++            .env(CHILD, "1")
++            .output()
++            .unwrap();
++        assert!(
++            output.status.success(),
++            "{}",
++            String::from_utf8_lossy(&output.stdout)
++        );
++    }
++}
+--- a/crates/openshell-sandbox/src/lib.rs
++++ b/crates/openshell-sandbox/src/lib.rs
+@@ -78,3 +78,8 @@
+ 
+ #[cfg(target_os = "linux")]
+ mod native_api;
++
++#[cfg(target_os = "linux")]
++pub mod kingdom_exec_journal;
++#[cfg(target_os = "linux")]
++mod kingdom_managed;
+--- a/crates/openshell-sandbox/src/linux/child_seccomp.rs
++++ b/crates/openshell-sandbox/src/linux/child_seccomp.rs
+@@ -129,6 +129,14 @@
+ /// `rt_tgsigqueueinfo`: Linux accepts nonleader TIDs for these operations, so a
+ /// static TGID comparison alone cannot protect future sandbox worker threads.
+ pub fn prepare(sandbox_tgid: u32) -> io::Result<ChildHardeningProgram> {
++    prepare_with_managed_groups(sandbox_tgid, crate::kingdom_managed::enabled())
++}
++
++/// Experimental profile: group assignment occurs before this filter is installed.
++pub(crate) fn prepare_with_managed_groups(
++    sandbox_tgid: u32,
++    managed: bool,
++) -> io::Result<ChildHardeningProgram> {
+     if sandbox_tgid == 0 {
+         return Err(io::Error::new(
+             io::ErrorKind::InvalidInput,
+@@ -249,6 +257,10 @@
+         append_argument_equal_deny(&mut instructions, libc::SYS_ioctl, 1, request)?;
+     }
+ 
++    if managed {
++        append_unconditional_deny(&mut instructions, libc::SYS_setsid)?;
++        append_unconditional_deny(&mut instructions, libc::SYS_setpgid)?;
++    }
+     instructions.push(stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
+     Ok(ChildHardeningProgram { instructions })
+ }
