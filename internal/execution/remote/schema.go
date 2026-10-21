@@ -11,7 +11,19 @@ import (
 // database. Product databases use the normal migration runner. Repeated calls
 // are safe; no separate copy of the schema is maintained here.
 func InstallSchemaTx(ctx context.Context, tx *sql.Tx) error {
-	for _, name := range []string{"0009_remote_runtime_reservations.up.sql", "0012_managed_execution_evidence.up.sql", "0016_remote_recovery_requests.up.sql"} {
+	for _, name := range []string{"0009_remote_runtime_reservations.up.sql", "0012_managed_execution_evidence.up.sql", "0016_remote_recovery_requests.up.sql", "0017_workspace_import_verification.up.sql"} {
+		// 0016 rebuilds tables to extend their constraints. Once its request
+		// table exists, later evidence tables can reference those rebuilt rows.
+		// Rebuilding them again would violate those retained foreign keys.
+		if name == "0016_remote_recovery_requests.up.sql" {
+			var applied int
+			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='remote_recovery_requests'`).Scan(&applied); err != nil {
+				return err
+			}
+			if applied != 0 {
+				continue
+			}
+		}
 		raw, err := dbmigrations.Read(name)
 		if err != nil {
 			return err
@@ -20,5 +32,7 @@ func InstallSchemaTx(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 	}
-	return nil
+	// Keep the never-reused allocator above any retained historical sequence.
+	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO remote_allocations(allocation) SELECT seq FROM sqlite_sequence WHERE name='remote_runtimes' AND seq>0`)
+	return err
 }

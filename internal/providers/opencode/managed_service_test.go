@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	fixtureledger "kingdom/internal/testutil/remoteledger"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -210,6 +211,7 @@ func recordedManagedEndpoint(t *testing.T, h *ownerFixture, p ManagedProvision) 
 	runtime := &pb.RuntimeBinding{SandboxId: "sandbox", BoundaryGeneration: "generation", MainProcessInstanceId: "main", DeploymentProfileSha256: bytes.Repeat([]byte{1}, 32)}
 	expected := managed.Owner{GatewayID: "gateway", WorkspaceID: "workspace", SubjectID: "subject", Runtime: runtime}
 	start := &pb.StartExecutionRequest{Execution: &pb.ExecutionSelector{Workspace: "workspace", Sandbox: "sandbox", RequestId: uuid.NewString(), Runtime: runtime}, Command: &pb.CommandSpec{Argv: []string{"/opencode"}, Workdir: "/workspace", OutputLimitBytes: 1024}}
+	fixtureledger.SeedImport(t, tx, r.Reference.Allocation, expected)
 	if _, err = remote.PrepareManagedExecutionTx(ctx, tx, r.Owner, r.Reference, remote.ProviderServer, expected, start); err != nil {
 		t.Fatal(err)
 	}

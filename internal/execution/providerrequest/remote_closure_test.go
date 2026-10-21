@@ -11,6 +11,7 @@ import (
 	"kingdom/internal/execution/openshell/managed"
 	pb "kingdom/internal/execution/openshell/managedpb"
 	"kingdom/internal/execution/remote"
+	fixtureledger "kingdom/internal/testutil/remoteledger"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,9 @@ func remoteProcessFixture(t *testing.T, db *sql.DB, b Binding, ref remote.Refere
 	}
 	runtime := &pb.RuntimeBinding{SandboxId: ref.SandboxID, BoundaryGeneration: ref.Generation, MainProcessInstanceId: ref.MainInstanceID, DeploymentProfileSha256: bytes.Repeat([]byte{1}, 32)}
 	expected := managed.Owner{GatewayID: ref.GatewayID, WorkspaceID: ref.WorkspaceID, SubjectID: "worker", Runtime: runtime}
+	if purpose == remote.ProviderServer {
+		fixtureledger.SeedImport(t, db, ref.Allocation, expected)
+	}
 	request := &pb.StartExecutionRequest{Execution: &pb.ExecutionSelector{Workspace: "workspace", Sandbox: "sandbox", RequestId: uuid.NewString(), Runtime: runtime}, Command: &pb.CommandSpec{Argv: []string{"/bin/server"}, Workdir: "/sandbox", OutputLimitBytes: 16}}
 	original, _ := managed.Digest(request)
 	effective, _ := managed.Digest(request.Command)
@@ -115,7 +119,7 @@ func TestRemoteCommandClosureRequiresExactRetainedReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if closed.SuccessEligible || len(closed.Processes) != 2 {
+	if closed.SuccessEligible || len(closed.Processes) != 3 {
 		t.Fatalf("forced cleanup supported success: %+v", closed)
 	}
 	if err := RequireResourcesClosedTx(ctx, db, b.ID); err == nil {

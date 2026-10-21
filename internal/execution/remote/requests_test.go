@@ -128,7 +128,11 @@ func TestWorkspaceImportMustFinishBeforeServerAndCannotRepeat(t *testing.T) {
 	transaction(t, db, func(tx *sql.Tx) error {
 		return RecordManagedReceiptTx(ctx, tx, r.Owner, r.Reference, identity.RequestId, managedReceipt(identity))
 	})
-	prepareManaged(t, db, r, ProviderServer, o, server)
+	// Process exit alone does not prove the imported workspace matches its input.
+	reject(t, db, nil, func(tx *sql.Tx) error {
+		_, e := PrepareManagedExecutionTx(ctx, tx, r.Owner, r.Reference, ProviderServer, o, server)
+		return e
+	})
 	// Re-running the install helper exercises the migration on retained evidence.
 	transaction(t, db, func(tx *sql.Tx) error { return InstallSchemaTx(ctx, tx) })
 	if _, found, e := ReadManagedReceipt(ctx, db, r.Owner, r.Reference, identity.RequestId); e != nil || !found {

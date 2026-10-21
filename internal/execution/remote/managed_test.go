@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
+	fixtureledger "kingdom/internal/testutil/remoteledger"
 	"path/filepath"
 	"testing"
 
@@ -27,6 +28,9 @@ func managedRequest(t *testing.T, r Reservation) (managed.Owner, *pb.StartExecut
 }
 func prepareManaged(t *testing.T, db *sql.DB, r Reservation, purpose ExecutionPurpose, expected managed.Owner, request *pb.StartExecutionRequest) {
 	t.Helper()
+	if purpose == ProviderServer {
+		fixtureledger.SeedImport(t, db, r.Reference.Allocation, expected)
+	}
 	transaction(t, db, func(tx *sql.Tx) error {
 		_, e := PrepareManagedExecutionTx(ctx, tx, r.Owner, r.Reference, purpose, expected, request)
 		return e

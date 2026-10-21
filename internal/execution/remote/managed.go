@@ -86,21 +86,11 @@ func PrepareManagedExecutionTx(ctx context.Context, tx *sql.Tx, owner Owner, ref
 		}
 	}
 	if purpose == ProviderServer {
-		var importID string
-		e = tx.QueryRowContext(ctx, `SELECT m.operation_id FROM managed_executions m JOIN remote_operations o ON o.operation_id=m.operation_id WHERE o.allocation=? AND m.purpose='workspace_import'`, ref.Allocation).Scan(&importID)
-		if e != nil && !errors.Is(e, sql.ErrNoRows) {
+		if e = RequireWorkspaceImportTx(ctx, tx, owner, ref); e != nil {
 			return Operation{}, e
 		}
-		if e == nil {
-			closure, err := ReadProcessClosure(ctx, tx, owner, ref, importID)
-			if err != nil {
-				return Operation{}, err
-			}
-			if !closure.Successful {
-				return Operation{}, ErrConflict
-			}
-		}
 	}
+
 	var op Operation
 	if purpose == Tool {
 		op, e = ReadOperation(ctx, tx, id)
