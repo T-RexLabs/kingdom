@@ -18,7 +18,7 @@ import (
 	pb "kingdom/internal/execution/openshell/managedpb"
 )
 
-const Capability = "kingdom.openshell.managed-execution.v1"
+const Capability = "openshell.kingdom.managed-execution.v1"
 const StartMethod = "/kingdom.openshell.managed.v1.ManagedExecutions/StartExecution"
 const MaxOutputBytes = 16 * 1024 * 1024
 const MaxOutputChunks = 4096
