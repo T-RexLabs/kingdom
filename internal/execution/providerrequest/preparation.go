@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"kingdom/internal/execution/access"
 )
 
 // ReservePreparationTx retains the exact lease that may prepare and activate an
@@ -27,7 +29,10 @@ func ReservePreparationTx(ctx context.Context, tx *sql.Tx, owner Owner, lease Le
 	if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO provider_preparations(owner_kind,invocation_id,lease_owner,lease_version) VALUES(?,?,?,?)`, owner.Kind, owner.InvocationID, lease.Owner, lease.Version); err != nil {
 		return err
 	}
-	return RequirePreparationLeaseTx(ctx, tx, owner, lease)
+	if err := RequirePreparationLeaseTx(ctx, tx, owner, lease); err != nil {
+		return err
+	}
+	return access.CaptureInvocationTx(ctx, tx, string(owner.Kind), owner.InvocationID)
 }
 
 // RequirePreparationLeaseTx also supports existing atomic local activation
