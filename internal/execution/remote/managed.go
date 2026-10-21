@@ -19,6 +19,7 @@ const (
 	ProviderServer  ExecutionPurpose = "provider_server"
 	Tool            ExecutionPurpose = "tool"
 	WorkspaceExport ExecutionPurpose = "workspace_export"
+	NativeReceipts  ExecutionPurpose = "native_receipts"
 )
 
 // PrepareManagedExecutionTx reserves a secret-free, exact command expectation.
@@ -33,7 +34,7 @@ func PrepareManagedExecutionTx(ctx context.Context, tx *sql.Tx, owner Owner, ref
 	if managed.ValidateStart(request) != nil || expected.Validate() != nil || expected.GatewayID != ref.GatewayID || expected.WorkspaceID != ref.WorkspaceID || expected.Runtime.SandboxId != ref.SandboxID || expected.Runtime.BoundaryGeneration != ref.Generation || expected.Runtime.MainProcessInstanceId != ref.MainInstanceID || !proto.Equal(expected.Runtime, request.Execution.Runtime) {
 		return Operation{}, ErrConflict
 	}
-	if purpose != ProviderServer && purpose != Tool && purpose != WorkspaceExport && purpose != WorkspaceImport {
+	if purpose != ProviderServer && purpose != Tool && purpose != WorkspaceExport && purpose != WorkspaceImport && purpose != NativeReceipts {
 		return Operation{}, ErrConflict
 	}
 	original, e := managed.Digest(request)
@@ -66,7 +67,10 @@ func PrepareManagedExecutionTx(ctx context.Context, tx *sql.Tx, owner Owner, ref
 	if !errors.Is(e, sql.ErrNoRows) {
 		return Operation{}, e
 	}
-	if purpose == WorkspaceExport {
+	if e = RequireNoDisposalIntent(ctx, tx, ref.Allocation); e != nil {
+		return Operation{}, e
+	}
+	if purpose == WorkspaceExport || purpose == NativeReceipts {
 		if !reservation.AdmissionClosed {
 			return Operation{}, ErrConflict
 		}

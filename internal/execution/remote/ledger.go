@@ -228,13 +228,25 @@ func ClaimDispatchTx(ctx context.Context, tx *sql.Tx, owner Owner, ref Reference
 	if op.Delivery != Prepared {
 		return false, nil
 	}
+	if op.Kind == Execute {
+		never, e := ReadExecutionNotStarted(ctx, tx, owner, ref, id)
+		if e != nil {
+			return false, e
+		}
+		if never {
+			return false, ErrAdmissionClosed
+		}
+	}
+	if err = RequireNoDisposalIntent(ctx, tx, ref.Allocation); err != nil {
+		return false, err
+	}
 	if op.Kind != Stop && r.AdmissionClosed {
 		var purpose string
 		err := tx.QueryRowContext(ctx, `SELECT purpose FROM managed_executions WHERE operation_id=?`, id).Scan(&purpose)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return false, err
 		}
-		if purpose != string(WorkspaceExport) {
+		if purpose != string(WorkspaceExport) && purpose != string(NativeReceipts) {
 			return false, ErrAdmissionClosed
 		}
 		if _, err = ReadWriterClosures(ctx, tx, owner, ref); err != nil {
