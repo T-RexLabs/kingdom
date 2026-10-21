@@ -28,13 +28,12 @@ import (
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/dbmigrations"
-	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/external"
 	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/localauth"
 	kingdom "kingdom/internal/orchestration"
 	"kingdom/internal/processguardian"
-	"kingdom/internal/providers/opencode"
+	"kingdom/internal/projectruntime"
 	"kingdom/internal/securefs"
 	"kingdom/internal/shutdown"
 	"kingdom/internal/state"
@@ -264,19 +263,6 @@ func (t *summonStartupTracker) writeState() {
 	}
 }
 
-// warmSummonProviderSurfaces performs the post-listen provider warm and
-// reports how long it took, so an operator watching summon can see the cost
-// being paid here instead of in their first planner session.
-func warmSummonProviderSurfaces(ctx context.Context, handler *api.Server, stderr io.Writer) {
-	warmCtx, cancel := context.WithTimeout(ctx, summonProviderWarmTimeout)
-	defer cancel()
-	started := time.Now()
-	handler.Warm(warmCtx)
-	if stderr != nil {
-		_, _ = fmt.Fprintf(stderr, "summon: provider surfaces warmed in %s\n", time.Since(started).Round(time.Millisecond))
-	}
-}
-
 func summonLogPath(kingdomHome string) string {
 	return filepath.Join(strings.TrimSpace(kingdomHome), "logs", defaultLogFileName)
 }
@@ -458,6 +444,7 @@ type summonDependencies struct {
 }
 
 func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string, deps summonDependencies) (err error) {
+	stderr = &summonWriter{out: stderr}
 	opts := summonOptions{}
 	flags := newFlagSet("summon")
 	bindSummonFlags(flags, &opts)
@@ -574,46 +561,46 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		return err
 	}
 	bootstrapPaths := bootstrapPathsFromConfig(cfg)
-	providerServiceRoot := opencode.ServiceRuntimeRoot(filepath.Join(cfg.KingdomHome, "runtime"))
-	providerService, err := opencode.NewService(opencode.ServiceConfig{
-		BinaryPath:  cfg.Provider.BinaryPath,
-		WorkDir:     filepath.Dir(cfg.KingdomHome),
-		RuntimeRoot: providerServiceRoot,
-		Requests:    providerrequest.NewAuthority(db, nil),
-	})
+	themeStore, err := theme.OpenStore(cfg.KingdomHome)
 	if err != nil {
-		return fmt.Errorf("configure OpenCode service: %w", err)
+		return fmt.Errorf("open theme store: %w", err)
 	}
-	// Registered before the consumers' cleanup: the shared provider must stay
-	// available until both planning and run consumers have finished draining.
-	defer func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if closeErr := providerService.CloseContext(closeCtx); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close OpenCode service: %w", closeErr))
-		}
-	}()
-
-	runtimeInstance, err := kingdom.NewRuntime(kingdom.Config{
-		DB:                  db,
-		StartupContext:      startupCtx,
-		Paths:               bootstrapPaths,
-		ProviderEngine:      cfg.Provider.Engine,
-		GovernanceMode:      cfg.Provider.GovernanceMode,
-		AutonomousApprovals: cfg.Governance.AutonomousApprovals,
-		PublishMode:         cfg.Publish.Mode,
-		WorkspaceRoot:       filepath.Join(cfg.KingdomHome, "runtime"),
-		GuardianRuntimeRoot: providerServiceRoot,
-		YoloOutputRoot:      publishOutputRootFromConfig(cfg),
-		WorktreeRetention:   worktreeRetention,
-		Provider:            providerService,
+	defer themeStore.Close()
+	project, err := projectruntime.New(startupCtx, projectruntime.Config{
+		Mode:                    projectruntime.Local,
+		DB:                      db,
+		ThemeStore:              themeStore,
+		Paths:                   bootstrapPaths,
+		ProjectRoot:             filepath.Dir(cfg.KingdomHome),
+		RuntimeRoot:             filepath.Join(cfg.KingdomHome, "runtime"),
+		BasePath:                cfg.Server.BasePath,
+		ProviderEngine:          cfg.Provider.Engine,
+		ProviderBinary:          cfg.Provider.BinaryPath,
+		GovernanceMode:          cfg.Provider.GovernanceMode,
+		AutonomousApprovals:     cfg.Governance.AutonomousApprovals,
+		PublishMode:             cfg.Publish.Mode,
+		YoloOutputRoot:          publishOutputRootFromConfig(cfg),
+		WorktreeRetention:       worktreeRetention,
+		OperatorCredential:      operatorCredential,
+		ExternalAdapter:         deps.externalAdapter,
+		GitHubSharedAppSlug:     cfg.GitHub.SharedApp.Slug,
+		GitHubSharedAppClientID: cfg.GitHub.SharedApp.ClientID,
 	})
 	if err != nil {
 		if startupStopWasRequested() {
 			return nil
 		}
-		return fmt.Errorf("bootstrap runtime: %w", err)
+		return err
 	}
+	runtimeInstance, apiHandler, providerService := project.Runtime, project.Handler, project.ProviderService
+	// The provider closes after planning and execution consumers have drained.
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if closeErr := project.CloseProvider(closeCtx); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close OpenCode service: %w", closeErr))
+		}
+	}()
 	runtimeLifecycleTransferred := false
 	defer func() {
 		if runtimeLifecycleTransferred {
@@ -621,7 +608,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		}
 		closeCtx, cancel := context.WithTimeout(context.Background(), summonGracefulShutdownTimeout)
 		defer cancel()
-		_ = runtimeInstance.GracefulClose(closeCtx)
+		_ = project.Close(closeCtx)
 	}()
 	if startupCtx.Err() != nil {
 		if startupStopWasRequested() {
@@ -629,60 +616,15 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		}
 		return startupCtx.Err()
 	}
-
-	// readInstallConfigFromStruct already normalized cfg.Server.BasePath,
-	// so every consumer below reads the canonical form directly. No
-	// local re-normalization, no scattered TrimRight fallbacks.
-	themeStore, err := theme.OpenStore(cfg.KingdomHome)
-	if err != nil {
-		return fmt.Errorf("open theme store: %w", err)
-	}
-	defer themeStore.Close()
-	apiHandler, err := api.NewHandler(api.ServerConfig{
-		ThemeStore:                 themeStore,
-		DB:                         db,
-		StartupContext:             startupCtx,
-		BasePath:                   cfg.Server.BasePath,
-		AutonomousApprovalsDefault: cfg.Governance.AutonomousApprovals,
-		ProviderEngine:             cfg.Provider.Engine,
-		ProviderService:            providerService,
-		ProviderModelCatalog:       api.NewOpenCodeProviderModelCatalog(providerService, nil, api.ProviderModelCatalogTTL),
-		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
-		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
-		ProjectRoot:                filepath.Dir(cfg.KingdomHome),
-		RuntimeRoot:                filepath.Join(cfg.KingdomHome, "runtime"),
-		RetryEngine:                runtimeInstance.RetryEngine(),
-		DefaultPublishMode:         cfg.Publish.Mode,
-		OperatorCredential:         operatorCredential,
-		ExternalAdapter:            deps.externalAdapter,
-		GitHubSharedAppSlug:        cfg.GitHub.SharedApp.Slug,
-		GitHubSharedAppClientID:    cfg.GitHub.SharedApp.ClientID,
-	})
-	if err != nil {
+	if err := project.Start(startupCtx); err != nil {
+		// Start already drains a failed assembly.
+		runtimeLifecycleTransferred = true
 		if startupStopWasRequested() {
 			return nil
 		}
-		return fmt.Errorf("build api handler: %w", err)
+		return err
 	}
-	if startupCtx.Err() != nil {
-		_ = apiHandler.Close(context.Background())
-		if startupStopWasRequested() {
-			return nil
-		}
-		return startupCtx.Err()
-	}
-	runtimeInstance.SetPreDispatchRecovery(apiHandler.RecoverPlanningOperations)
-	if err := runtimeInstance.Start(startupCtx); err != nil {
-		_ = apiHandler.Close(context.Background())
-		if startupStopWasRequested() {
-			return nil
-		}
-		return fmt.Errorf("start runtime: %w", err)
-	}
-	runtimeCloser := shutdown.CompositeCloser{Closers: []shutdown.Closer{
-		apiHandler,
-		shutdown.CloseFunc(runtimeInstance.GracefulClose),
-	}}
+	runtimeCloser := project
 
 	handler := withSummonAccessLog(api.NewSPAMux(apiHandler, webui.Handler(cfg.Server.BasePath), cfg.Server.BasePath), stderr)
 	server := api.NewHTTPServer(cfg.Server.Listen, handler)
@@ -744,13 +686,19 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 	// with a summon that hangs. For the same reason it reports through the log
 	// and never through the startup tracker, whose phases are a gate on
 	// readiness and are already past.
-	go warmSummonProviderSurfaces(startupCtx, apiHandler, stderr)
+	warmResult, stopWarm := startSummonWarm(startupCtx, apiHandler.Warm)
+	defer func() { err = errors.Join(err, stopWarm()) }()
 
 	if err := ensureWorkflowSeeds(startupCtx, cfg); err != nil {
 		if startupStopWasRequested() {
 			return nil
 		}
 		return fmt.Errorf("ensure workflow seeds: %w", err)
+	}
+	select {
+	case elapsed := <-warmResult:
+		_, _ = fmt.Fprintf(stderr, "summon: provider surfaces warmed in %s\n", elapsed.Round(time.Millisecond))
+	default:
 	}
 	if finishStartupWatch() {
 		return nil
