@@ -849,6 +849,8 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 		"0012_managed_execution_evidence.up.sql",
 		"0013_planning_operation_model_snapshot.up.sql",
 		"0014_execution_access_snapshots.up.sql",
+		"0015_remote_command_completion.up.sql",
+		"0016_remote_recovery_requests.up.sql",
 	}
 	if strings.Join(canonicalNames, ",") != strings.Join(expectedNames, ",") {
 		t.Fatalf("expected canonical migration sequence %v, got %v", expectedNames, canonicalNames)

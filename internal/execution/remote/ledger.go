@@ -41,14 +41,25 @@ func ReserveRuntimeTx(ctx context.Context, tx *sql.Tx, owner Owner, target Targe
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Reservation{}, err
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO remote_runtimes(creation_id,owner_kind,invocation_id,binding_id,lease_owner,lease_version,worker_id,gateway_id,workspace_id,spec_digest) VALUES(?,?,?,?,?,?,?,?,?,?)`, creationID, owner.Kind, owner.InvocationID, owner.BindingID, owner.LeaseOwner, owner.LeaseVersion, target.WorkerID, target.GatewayID, target.WorkspaceID, specDigest)
-	if err != nil {
-		return Reservation{}, fmt.Errorf("reserve remote runtime: %w", err)
-	}
-	allocation, err = result.LastInsertId()
+	allocation, err = allocateRuntimeTx(ctx, tx)
 	if err != nil {
 		return Reservation{}, err
 	}
+	return insertRuntimeTx(ctx, tx, owner, target, creationID, specDigest, allocation)
+}
+func allocateRuntimeTx(ctx context.Context, tx *sql.Tx) (int64, error) {
+	result, err := tx.ExecContext(ctx, `INSERT INTO remote_allocations DEFAULT VALUES`)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+func insertRuntimeTx(ctx context.Context, tx *sql.Tx, owner Owner, target Target, creationID, specDigest string, allocation int64) (Reservation, error) {
+	_, err := tx.ExecContext(ctx, `INSERT INTO remote_runtimes(allocation,creation_id,owner_kind,invocation_id,binding_id,lease_owner,lease_version,worker_id,gateway_id,workspace_id,spec_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, allocation, creationID, owner.Kind, owner.InvocationID, owner.BindingID, owner.LeaseOwner, owner.LeaseVersion, target.WorkerID, target.GatewayID, target.WorkspaceID, specDigest)
+	if err != nil {
+		return Reservation{}, fmt.Errorf("reserve remote runtime: %w", err)
+	}
+
 	if err = insertOperation(ctx, tx, Operation{ID: creationID, Allocation: allocation, Kind: Create, PayloadDigest: specDigest}); err != nil {
 		return Reservation{}, err
 	}
@@ -226,12 +237,8 @@ func ClaimDispatchTx(ctx context.Context, tx *sql.Tx, owner Owner, ref Reference
 		if purpose != string(WorkspaceExport) {
 			return false, ErrAdmissionClosed
 		}
-		var pending int
-		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM remote_operations o WHERE o.allocation=? AND o.kind='execute' AND o.operation_id<>? AND NOT EXISTS(SELECT 1 FROM managed_execution_receipts r WHERE r.operation_id=o.operation_id)`, ref.Allocation, id).Scan(&pending); err != nil {
+		if _, err = ReadWriterClosures(ctx, tx, owner, ref); err != nil {
 			return false, err
-		}
-		if pending != 0 {
-			return false, ErrConflict
 		}
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE remote_operations SET delivery='delivery_uncertain' WHERE operation_id=? AND delivery='prepared'`, id)

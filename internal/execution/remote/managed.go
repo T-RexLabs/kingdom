@@ -15,6 +15,7 @@ import (
 type ExecutionPurpose string
 
 const (
+	WorkspaceImport ExecutionPurpose = "workspace_import"
 	ProviderServer  ExecutionPurpose = "provider_server"
 	Tool            ExecutionPurpose = "tool"
 	WorkspaceExport ExecutionPurpose = "workspace_export"
@@ -32,7 +33,7 @@ func PrepareManagedExecutionTx(ctx context.Context, tx *sql.Tx, owner Owner, ref
 	if managed.ValidateStart(request) != nil || expected.Validate() != nil || expected.GatewayID != ref.GatewayID || expected.WorkspaceID != ref.WorkspaceID || expected.Runtime.SandboxId != ref.SandboxID || expected.Runtime.BoundaryGeneration != ref.Generation || expected.Runtime.MainProcessInstanceId != ref.MainInstanceID || !proto.Equal(expected.Runtime, request.Execution.Runtime) {
 		return Operation{}, ErrConflict
 	}
-	if purpose != ProviderServer && purpose != Tool && purpose != WorkspaceExport {
+	if purpose != ProviderServer && purpose != Tool && purpose != WorkspaceExport && purpose != WorkspaceImport {
 		return Operation{}, ErrConflict
 	}
 	original, e := managed.Digest(request)
@@ -69,15 +70,36 @@ func PrepareManagedExecutionTx(ctx context.Context, tx *sql.Tx, owner Owner, ref
 		if !reservation.AdmissionClosed {
 			return Operation{}, ErrConflict
 		}
-		var pending int
-		if e = tx.QueryRowContext(ctx, `SELECT count(*) FROM remote_operations o WHERE o.allocation=? AND o.kind='execute' AND NOT EXISTS(SELECT 1 FROM managed_execution_receipts r WHERE r.operation_id=o.operation_id)`, ref.Allocation).Scan(&pending); e != nil {
+		if _, e = ReadWriterClosures(ctx, tx, owner, ref); e != nil {
 			return Operation{}, e
-		}
-		if pending != 0 {
-			return Operation{}, ErrConflict
 		}
 	} else if reservation.AdmissionClosed {
 		return Operation{}, ErrAdmissionClosed
+	}
+	if purpose == WorkspaceImport {
+		var count int
+		if e = tx.QueryRowContext(ctx, `SELECT count(*) FROM remote_operations WHERE allocation=? AND kind='execute'`, ref.Allocation).Scan(&count); e != nil {
+			return Operation{}, e
+		}
+		if count != 0 {
+			return Operation{}, ErrConflict
+		}
+	}
+	if purpose == ProviderServer {
+		var importID string
+		e = tx.QueryRowContext(ctx, `SELECT m.operation_id FROM managed_executions m JOIN remote_operations o ON o.operation_id=m.operation_id WHERE o.allocation=? AND m.purpose='workspace_import'`, ref.Allocation).Scan(&importID)
+		if e != nil && !errors.Is(e, sql.ErrNoRows) {
+			return Operation{}, e
+		}
+		if e == nil {
+			closure, err := ReadProcessClosure(ctx, tx, owner, ref, importID)
+			if err != nil {
+				return Operation{}, err
+			}
+			if !closure.Successful {
+				return Operation{}, ErrConflict
+			}
+		}
 	}
 	var op Operation
 	if purpose == Tool {
