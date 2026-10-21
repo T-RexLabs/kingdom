@@ -51,14 +51,20 @@ type Completion struct {
 func DefaultLimits() workspacearchive.Limits {
 	return workspacearchive.Limits{ArchiveBytes: 128 << 20, ExpandedBytes: 1 << 30, FileBytes: 64 << 20, Entries: 32768, Depth: 64, PathBytes: 4096}
 }
+func ReceiptLimits() workspacearchive.Limits {
+	return workspacearchive.Limits{ArchiveBytes: 16 << 20, ExpandedBytes: 16 << 20, FileBytes: 1 << 20, Entries: 4096, Depth: 1, PathBytes: 128}
+}
 func digest(value string) bool {
 	decoded, err := hex.DecodeString(value)
 	return err == nil && len(decoded) == 32 && strings.ToLower(value) == value
 }
 func (j Job) Validate() error {
 	max := DefaultLimits()
+	if j.Mode == "receipts" {
+		max = ReceiptLimits()
+	}
 	l := j.Limits
-	if j.Version != 1 || (j.Mode != "import" && j.Mode != "export") || !digest(j.Nonce) || !digest(j.HelperSHA256) || j.TimeoutSeconds < 1 || j.TimeoutSeconds > 3600 || l.ArchiveBytes < 1 || l.ArchiveBytes > max.ArchiveBytes || l.ExpandedBytes < 1 || l.ExpandedBytes > max.ExpandedBytes || l.FileBytes < 1 || l.FileBytes > max.FileBytes || l.FileBytes > l.ExpandedBytes || l.Entries < 1 || l.Entries > max.Entries || l.Depth < 1 || l.Depth > max.Depth || l.PathBytes < 1 || l.PathBytes > max.PathBytes {
+	if j.Version != 1 || (j.Mode != "import" && j.Mode != "export" && j.Mode != "receipts") || !digest(j.Nonce) || !digest(j.HelperSHA256) || j.TimeoutSeconds < 1 || j.TimeoutSeconds > 3600 || l.ArchiveBytes < 1 || l.ArchiveBytes > max.ArchiveBytes || l.ExpandedBytes < 1 || l.ExpandedBytes > max.ExpandedBytes || l.FileBytes < 1 || l.FileBytes > max.FileBytes || l.FileBytes > l.ExpandedBytes || l.Entries < 1 || l.Entries > max.Entries || l.Depth < 1 || l.Depth > max.Depth || l.PathBytes < 1 || l.PathBytes > max.PathBytes {
 		return errors.New("invalid workspace transfer job")
 	}
 	if j.Mode == "import" {
@@ -114,14 +120,14 @@ func Command(job Job) (*pb.CommandSpec, error) {
 // Its caller must first validate the exact command receipt, clean closure,
 // complete input/output and framed output digest. This function is not that gate.
 func ValidateExport(ctx context.Context, parent string, download io.ReaderAt, size int64, stdout io.Reader, job Job) (*workspacearchive.Staged, error) {
-	if err := job.Validate(); err != nil || job.Mode != "export" {
+	if err := job.Validate(); err != nil || (job.Mode != "export" && job.Mode != "receipts") {
 		return nil, errors.New("invalid export job")
 	}
 	var completion Completion
 	if err := decodeBounded(stdout, &completion, MaxCompletionBytes); err != nil {
 		return nil, err
 	}
-	if completion.Version != 1 || completion.Mode != "export" || !digest(completion.ArchiveSHA256) || !digest(completion.ManifestSHA256) || completion.ArchiveBytes != size || size < 1 || size > job.Limits.ArchiveBytes {
+	if completion.Version != 1 || completion.Mode != job.Mode || !digest(completion.ArchiveSHA256) || !digest(completion.ManifestSHA256) || completion.ArchiveBytes != size || size < 1 || size > job.Limits.ArchiveBytes {
 		return nil, errors.New("invalid export completion")
 	}
 	staged, err := workspacearchive.ImportZIP(ctx, parent, download, size, job.Limits)

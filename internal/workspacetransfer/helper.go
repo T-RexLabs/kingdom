@@ -70,8 +70,15 @@ func serve(parent context.Context, job Job, root string, stdout io.Writer, liste
 	defer os.RemoveAll(scratch)
 	var exported workspacearchive.Export
 	var archive *os.File
-	if job.Mode == "export" {
-		project, err := securefs.OpenRoot(filepath.Join(root, "project"))
+	if job.Mode != "import" {
+		source := filepath.Join(root, "project")
+		if job.Mode == "receipts" {
+			source, err = snapshotReceipts(ctx, root, scratch, job.Limits)
+			if err != nil {
+				return err
+			}
+		}
+		project, err := securefs.OpenRoot(source)
 		if err != nil {
 			return err
 		}
@@ -157,7 +164,7 @@ func serve(parent context.Context, job Job, root string, stdout io.Writer, liste
 			err = r.Context().Err()
 		}
 		result.err = err
-		result.completion = completionFrom("export", exported.ArchiveBytes, exported.Manifest, exported.Digest)
+		result.completion = completionFrom(job.Mode, exported.ArchiveBytes, exported.Manifest, exported.Digest)
 	})
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: time.Duration(job.TimeoutSeconds) * time.Second, WriteTimeout: time.Duration(job.TimeoutSeconds) * time.Second, MaxHeaderBytes: 8 << 10, BaseContext: func(net.Listener) context.Context { return ctx }}
 	server.SetKeepAlivesEnabled(false)
