@@ -33,6 +33,14 @@ func ReserveRecoverableRemoteRuntimeTx(ctx context.Context, tx *sql.Tx, owner Ow
 	}
 	return requests.ReserveCreateTx(ctx, tx, remote.Owner{Kind: string(owner.Kind), InvocationID: owner.InvocationID, BindingID: bindingID, LeaseOwner: lease.Owner, LeaseVersion: lease.Version}, target, creationID, template)
 }
+
+// RequireRemotePreparationTx rechecks the canonical invocation, preparation and
+// lease before a worker admits fresh remote work in the same transaction.
+// Exact late evidence does not use this admission gate.
+func RequireRemotePreparationTx(ctx context.Context, tx *sql.Tx, owner Owner, lease Lease, bindingID string, now time.Time) error {
+	return requireRemoteReservation(ctx, tx, owner, lease, bindingID, now)
+}
+
 func requireRemoteReservation(ctx context.Context, tx *sql.Tx, owner Owner, lease Lease, bindingID string, now time.Time) error {
 	if now.IsZero() || bindingID == "" || lease.Owner == "" || lease.Version < 1 {
 		return fmt.Errorf("remote preparation requires owner, lease, binding, and time")
