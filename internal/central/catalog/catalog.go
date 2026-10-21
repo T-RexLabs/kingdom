@@ -134,9 +134,11 @@ func (s *Store) BootstrapOwner(ctx context.Context, identity Identity, displayNa
 	return user, tx.Commit()
 }
 
-type queryer interface {
+// Reader permits authorization lookups in the caller's transaction.
+type Reader interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
+type queryer = Reader
 
 func resolve(ctx context.Context, q queryer, id Identity) (User, error) {
 	var u User
@@ -151,6 +153,23 @@ func (s *Store) ResolveIdentity(ctx context.Context, id Identity) (User, error) 
 		return User{}, ErrDenied
 	}
 	return resolve(ctx, s.db, id)
+}
+
+// ActiveUser resolves only a currently enabled account. Session issuance and
+// authorization rechecks must not accept a cached user after disablement.
+func (s *Store) ActiveUser(ctx context.Context, id string) (User, error) {
+	return LookupUser(ctx, s.db, id)
+}
+
+// LookupUser reads current account authority through the supplied transaction
+// or database. It must be called inside the transaction that changes secrets.
+func LookupUser(ctx context.Context, reader Reader, id string) (User, error) {
+	var u User
+	err := reader.QueryRowContext(ctx, `SELECT id,display_name,team_owner FROM central_users WHERE id=? AND disabled=0`, id).Scan(&u.ID, &u.DisplayName, &u.TeamOwner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrDenied
+	}
+	return u, err
 }
 
 func insertUser(ctx context.Context, tx *sql.Tx, identity Identity, displayName string, owner bool) (User, error) {
