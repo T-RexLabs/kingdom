@@ -56,8 +56,10 @@ func BindRemoteTx(ctx context.Context, tx *sql.Tx, b Binding, ref remote.Referen
 // not accepted from an HTTP request or a model-generated payload. Every
 // subsequent mutation must still validate these facts in its own transaction.
 type Preparation struct {
-	Owner Owner
-	Lease Lease
+	// ResourceID is the canonical attempt or planning operation, never caller-selected.
+	ResourceID string
+	Owner      Owner
+	Lease      Lease
 }
 
 func preparationLease(ctx context.Context, q Reader, owner Owner) (Lease, error) {
@@ -80,6 +82,17 @@ func (a *Authority) Preparation(ctx context.Context, invocationID string) (Prepa
 		return Preparation{}, err
 	}
 	defer tx.Rollback()
+	result, err := a.preparation(ctx, tx, invocationID)
+	if err != nil {
+		return Preparation{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Preparation{}, err
+	}
+	return result, nil
+}
+
+func (a *Authority) preparation(ctx context.Context, tx Reader, invocationID string) (Preparation, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT owner_kind FROM provider_preparations WHERE invocation_id=?`, invocationID)
 	if err != nil {
 		return Preparation{}, err
@@ -116,8 +129,5 @@ func (a *Authority) Preparation(ctx context.Context, invocationID string) (Prepa
 	if now.IsZero() || e != nil || !now.Before(expiry) || !validState || current.invocationState != "issued" || current.activeInvocation != invocationID || current.leaseOwner != lease.Owner || current.leaseVersion != lease.Version || current.settlement != "" || owner.Kind == OwnerRun && (current.mode != "provider_backed" || current.runStatus != "running") || owner.Kind == OwnerPlanning && current.currentOperation != current.id {
 		return Preparation{}, fmt.Errorf("issued preparation owner or lease is no longer current")
 	}
-	if err := tx.Commit(); err != nil {
-		return Preparation{}, err
-	}
-	return Preparation{Owner: owner, Lease: lease}, nil
+	return Preparation{Owner: owner, Lease: lease, ResourceID: current.id}, nil
 }

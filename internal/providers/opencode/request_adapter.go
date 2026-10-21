@@ -9,12 +9,15 @@ import (
 	"sync"
 
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/execution/remote"
 )
 
 // Prepared is the provider identity of a request that has been set up but not
 // dispatched. Kingdom persists it with the canonical invocation before Execute
 // is allowed to send any work.
 type Prepared struct {
+	Backend           providerexecution.Backend
+	RemoteRuntime     remote.Reference
 	ProviderSessionID string
 	Identity          providerexecution.RequestIdentity
 }
@@ -160,7 +163,7 @@ func (s *Service) Prepare(ctx context.Context, req ExecuteRequest) (Prepared, er
 		defer cancel()
 		return Prepared{}, errors.Join(err, retireProfile(cleanup, started.client, directory, p.id))
 	}
-	return Prepared{ProviderSessionID: sessionID, Identity: prepared.identity}, nil
+	return Prepared{Backend: providerexecution.BackendLocal, ProviderSessionID: sessionID, Identity: prepared.identity}, nil
 }
 
 func requirePrepareRequest(req ExecuteRequest) error {

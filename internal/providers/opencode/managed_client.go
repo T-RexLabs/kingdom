@@ -12,7 +12,7 @@ const managedOrigin = "https://managed.invalid"
 // newManagedClient uses only the worker's authenticated, runtime-bound tunnel.
 // It cannot fall back to host networking or read a host OpenCode credential.
 func newManagedClient(transport http.RoundTripper) (*Client, error) {
-	if nilManagedTransport(transport) {
+	if nilManagedDependency(transport) {
 		return nil, errors.New("managed OpenCode transport is required")
 	}
 	fixed := managedTransport{next: transport}
@@ -42,7 +42,7 @@ func (t managedTransport) CloseIdleConnections() {
 	}
 }
 
-func nilManagedTransport(transport http.RoundTripper) bool {
+func nilManagedDependency(transport any) bool {
 	if transport == nil {
 		return true
 	}
