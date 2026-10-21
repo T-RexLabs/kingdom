@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func platformSupported() bool { return true }
@@ -168,7 +170,7 @@ func runGate(specReader io.Reader, release, childStdin *os.File) error {
 	if command[0] != 'R' {
 		return fmt.Errorf("invalid provider launch gate command")
 	}
-	if err := syscall.Dup2(int(childStdin.Fd()), int(os.Stdin.Fd())); err != nil {
+	if err := unix.Dup2(int(childStdin.Fd()), int(os.Stdin.Fd())); err != nil {
 		return fmt.Errorf("connect provider stdin: %w", err)
 	}
 	if err := syscall.SetNonblock(int(os.Stdin.Fd()), false); err != nil {
