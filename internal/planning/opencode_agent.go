@@ -207,14 +207,28 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompts
 		request.OpenContinuationPrompt = continuation.Open
 	}
 
+	if providerInvocation.Reserve != nil {
+		if err := providerInvocation.Reserve(ctx); err != nil {
+			return ProviderExecutionMetadata{}, fmt.Errorf("reserve planner preparation: %w", err)
+		}
+	}
 	prepared, err := a.executor.Prepare(ctx, request)
 	if err != nil {
+		if providerInvocation.AbandonPreparation != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			err = errors.Join(err, providerInvocation.AbandonPreparation(cleanupCtx))
+		}
 		return ProviderExecutionMetadata{}, fmt.Errorf("prepare opencode request: %w", err)
 	}
 	if err := providerInvocation.Activate(ctx, prepared); err != nil {
 		discardCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		return ProviderExecutionMetadata{}, errors.Join(fmt.Errorf("activate planner provider invocation: %w", err), a.executor.Discard(discardCtx, invocationID))
+		discardErr := a.executor.Discard(discardCtx, invocationID)
+		if providerInvocation.AbandonPreparation != nil {
+			discardErr = errors.Join(discardErr, providerInvocation.AbandonPreparation(discardCtx))
+		}
+		return ProviderExecutionMetadata{}, errors.Join(fmt.Errorf("activate planner provider invocation: %w", err), discardErr)
 	}
 	resp, err := a.executor.Execute(ctx, request)
 	metadata := ProviderExecutionMetadata{

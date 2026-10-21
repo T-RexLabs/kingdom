@@ -84,6 +84,13 @@ func RequireDisposedTx(ctx context.Context, q Reader, owner Owner) error {
 // attempt, including historical invocations no longer selected by that attempt.
 // Preparation reservations remain debt even before a request is bound.
 func RequireAttemptDisposedTx(ctx context.Context, q Reader, attemptID string) error {
+	var preparing int
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_preparations r JOIN provider_invocations p ON p.provider_invocation_id=r.invocation_id WHERE r.owner_kind='run' AND p.attempt_id=? AND r.admission_closed=0 AND p.invocation_state='issued'`, attemptID).Scan(&preparing); err != nil {
+		return err
+	}
+	if preparing != 0 {
+		return openResources(OpenUnproven, "provider preparation remains open")
+	}
 	var remoteDebt int
 	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM remote_runtimes r JOIN provider_invocations p ON p.provider_invocation_id=r.invocation_id WHERE r.owner_kind='run' AND p.attempt_id=?`, attemptID).Scan(&remoteDebt); err != nil {
 		return err
@@ -129,12 +136,41 @@ func CloseAttemptAdmissionTx(ctx context.Context, tx *sql.Tx, attemptID, closedA
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE remote_runtimes SET admission_closed=1 WHERE owner_kind='run' AND invocation_id IN (SELECT provider_invocation_id FROM provider_invocations WHERE attempt_id=?)`, attemptID)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE provider_preparations SET admission_closed=1 WHERE owner_kind='run' AND invocation_id IN (SELECT provider_invocation_id FROM provider_invocations WHERE attempt_id=?)`, attemptID); err != nil {
+		return err
+	}
+	var id string
+	err = tx.QueryRowContext(ctx, `SELECT p.provider_invocation_id FROM attempt_executions a JOIN provider_invocations p ON p.provider_invocation_id=a.active_provider_invocation_id JOIN provider_preparations r ON r.owner_kind='run' AND r.invocation_id=p.provider_invocation_id WHERE a.attempt_id=? AND p.invocation_state='issued' AND NOT EXISTS(SELECT 1 FROM remote_runtimes rr WHERE rr.owner_kind='run' AND rr.invocation_id=p.provider_invocation_id)`, attemptID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err = AbandonPreparationTx(ctx, tx, Owner{Kind: OwnerRun, InvocationID: id}); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE provider_invocations SET invocation_state='invalidated',invalid_reason='preparation_cancelled',updated_at=? WHERE provider_invocation_id=?`, closedAt, id); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE attempt_executions SET active_provider_invocation_id=NULL WHERE attempt_id=? AND active_provider_invocation_id=?`, attemptID, id)
+
 	return err
 }
 
 // RequireRunDisposedTx gates shared workspace release across every reserved or bound run
 // invocation, including siblings and historical attempts.
 func RequireRunDisposedTx(ctx context.Context, q Reader, runID string) error {
+	var preparing int
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_preparations r JOIN provider_invocations p ON p.provider_invocation_id=r.invocation_id WHERE r.owner_kind='run' AND p.run_id=? AND r.admission_closed=0 AND p.invocation_state='issued'`, runID).Scan(&preparing); err != nil {
+		return err
+	}
+	if preparing != 0 {
+		return openResources(OpenUnproven, "provider preparation remains open")
+	}
 	var remoteDebt int
 	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM remote_runtimes r JOIN provider_invocations p ON p.provider_invocation_id=r.invocation_id WHERE r.owner_kind='run' AND p.run_id=?`, runID).Scan(&remoteDebt); err != nil {
 		return err

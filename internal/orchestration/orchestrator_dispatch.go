@@ -317,11 +317,21 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 		agent:                                agentForRole,
 		occurredAt:                           now,
 	}
-	// The provider fixes the request's session and profile without sending any
-	// work. Activation then binds exactly that identity to the canonical
-	// invocation, and only after it commits may the request be dispatched.
+	// Reserve canonical ownership before provider startup. Activation then binds
+	// the prepared session and profile before request dispatch.
+	if _, err := o.executionStore.ReserveProviderInvocation(ctx, executionstore.ReserveProviderInvocationRequest{CreateProviderInvocationRequest: executionstore.CreateProviderInvocationRequest{ProviderInvocationID: providerInvocationID, AttemptID: attemptID, RunID: run.RunID, NodeRunID: attempt.NodeRunID, LogicalSessionID: sessionID, CompletionMode: executionSpec.CompletionMode, IssuedAt: now, CreatedAt: now}, ExpectedLeaseOwner: attempt.LeaseOwner, ExpectedLeaseVersion: attempt.LeaseVersion}); err != nil {
+		return fmt.Errorf("reserve provider startup: %w", err)
+	}
+	abandonPreparation := func() error {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		return o.executionStore.InvalidateUnlaunchedProviderInvocation(cleanupCtx, executionstore.InvalidateUnlaunchedProviderInvocationRequest{ProviderInvocationID: providerInvocationID, InvalidReason: "provider_preparation_failed", UpdatedAt: o.now().UTC().Format(time.RFC3339Nano), ExpectedLeaseOwner: attempt.LeaseOwner, ExpectedLeaseVersion: attempt.LeaseVersion})
+	}
 	prepared, prepareErr := o.provider.Prepare(ctx, o.providerRequest(job))
 	if prepareErr != nil {
+		if err := abandonPreparation(); err != nil {
+			return errors.Join(prepareErr, err)
+		}
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "prepare provider request", prepareErr)
 	}
 	if invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, providerInvocationID, prepared, executionSpec.CompletionMode, now); invocationErr != nil {
@@ -329,7 +339,11 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 		if errors.As(invocationErr, &outcomeUnknown) {
 			return fmt.Errorf("provider invocation activation outcome is unresolved for attempt %q: %w", attemptID, invocationErr)
 		}
-		return errors.Join(o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "create provider invocation", invocationErr), o.discardProviderRequest(ctx, providerInvocationID))
+		discardErr := o.discardProviderRequest(ctx, providerInvocationID)
+		if err := abandonPreparation(); err != nil {
+			return errors.Join(invocationErr, err, discardErr)
+		}
+		return errors.Join(o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "create provider invocation", invocationErr), discardErr)
 	}
 
 	_ = o.emitCommunicationMessage(ctx, communicationMessageRequest{

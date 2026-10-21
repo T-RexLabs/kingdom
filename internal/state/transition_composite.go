@@ -4435,9 +4435,27 @@ func supersedeStaleProviderInvocationTx(ctx context.Context, tx *sql.Tx, attempt
 		if err != nil {
 			return fmt.Errorf("parse stale replacement time: %w", err)
 		}
-		if _, err := providerrequest.AbandonOwnerTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: attempt.ActiveProviderInvocationID}, occurred); err != nil {
+		var invocationState string
+		if err := tx.QueryRowContext(ctx, `SELECT invocation_state FROM provider_invocations WHERE provider_invocation_id=?`, attempt.ActiveProviderInvocationID).Scan(&invocationState); err != nil {
+			return err
+		}
+		if invocationState == "issued" {
+			if err := providerrequest.AbandonPreparationTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: attempt.ActiveProviderInvocationID}); err != nil {
+				return err
+			}
+		} else if invocationState == "invalidated" {
+			var closed int
+			if err := tx.QueryRowContext(ctx, `SELECT admission_closed FROM provider_preparations WHERE owner_kind='run' AND invocation_id=?`, attempt.ActiveProviderInvocationID).Scan(&closed); err != nil {
+				return err
+			}
+			if closed != 1 {
+				return fmt.Errorf("issued preparation is not closed")
+			}
+			return nil
+		} else if _, err := providerrequest.AbandonOwnerTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: attempt.ActiveProviderInvocationID}, occurred); err != nil {
 			return fmt.Errorf("provider request cannot be abandoned for stale replacement: %w", err)
 		}
+
 		if err := ensureProviderTerminalHandoffNotPendingTx(ctx, tx, attempt); err != nil {
 			return err
 		}

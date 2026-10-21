@@ -42,7 +42,7 @@ func generateRunWorktreeCleanupOwner() (string, error) {
 	return "cleanup_" + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-// activateProviderInvocationForExecution creates the canonical invocation for a
+// activateProviderInvocationForExecution opens the reserved invocation for a
 // prepared provider request and binds the request's identity to it in the same
 // transaction, so nothing is dispatched before that binding exists.
 func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, sessionID, providerInvocationID string, prepared opencode.Prepared, completionMode executionstore.ProviderCompletionMode, issuedAt string) error {

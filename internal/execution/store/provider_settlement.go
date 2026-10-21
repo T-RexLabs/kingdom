@@ -1323,6 +1323,9 @@ func (s *Store) ActivateProviderInvocation(ctx context.Context, req ActivateProv
 		if req.RequestIdentity.SessionID != openReq.ProviderSessionID {
 			return fmt.Errorf("provider request activation requires its prepared session")
 		}
+		if err := providerrequest.RequirePreparationLeaseTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID}, providerrequest.Lease{Owner: expectedLeaseOwner, Version: expectedLeaseVersion}); err != nil {
+			return err
+		}
 		if bodyErr = activateProviderInvocationTx(ctx, tx, invocation, openReq, expectedLeaseOwner, expectedLeaseVersion); bodyErr != nil {
 			return bodyErr
 		}
@@ -1380,6 +1383,15 @@ func (s *Store) confirmProviderInvocationActivation(ctx context.Context, req Cre
 	}
 	if !found {
 		return ProviderInvocation{}, false, nil
+	}
+	if (actual.InvocationState == ProviderInvocationStateIssued || actual.InvocationState == ProviderInvocationStateInvalidated || actual.InvocationState == ProviderInvocationStateSuperseded) && sameProviderInvocationCreate(actual, req) {
+		_, bound, err := providerrequest.ForOwner(ctx, s.db, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocationID})
+		if err != nil {
+			return actual, false, err
+		}
+		if !bound {
+			return actual, false, nil
+		}
 	}
 	if expected.ProviderInvocationID == "" || actual != expected {
 		return actual, false, fmt.Errorf("durable provider invocation does not match the attempted activation")
@@ -2293,23 +2305,33 @@ func (s *Store) invalidateUnlaunchedProviderInvocationOnce(ctx context.Context, 
 		committed = true
 		return nil
 	}
-	if invocation.InvocationState != ProviderInvocationStateOpen {
-		return providerSettlementError("invalidate_unlaunched_provider_invocation", "invocation_not_open", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
-	}
-	binding, err := runRequestTx(ctx, tx, invocation.ProviderInvocationID)
-	if err != nil {
-		return err
-	}
-	if binding.DispatchIssuedAt != "" || binding.Lease != (providerrequest.Lease{Owner: owner, Version: version}) {
-		return fmt.Errorf("provider request has issued dispatch or a different rollback lease")
-	}
-	// No provider dispatch was admitted. Fence it permanently in this
-	// transaction before releasing the queued invocation.
-	if _, err := tx.ExecContext(ctx, `UPDATE provider_requests SET admission_closed_at=COALESCE(admission_closed_at,?) WHERE binding_id=?`, req.UpdatedAt, binding.ID); err != nil {
-		return err
-	}
-	if err := providerrequest.RequireResourcesClosedTx(ctx, tx, binding.ID); err != nil {
-		return err
+	if invocation.InvocationState == ProviderInvocationStateIssued {
+		if err := providerrequest.RequirePreparationLeaseTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID}, providerrequest.Lease{Owner: owner, Version: version}); err != nil {
+			return err
+		}
+		if err := providerrequest.AbandonPreparationTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID}); err != nil {
+			return err
+		}
+	} else {
+		if invocation.InvocationState != ProviderInvocationStateOpen {
+			return providerSettlementError("invalidate_unlaunched_provider_invocation", "invocation_not_open", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+		}
+		binding, err := runRequestTx(ctx, tx, invocation.ProviderInvocationID)
+		if err != nil {
+			return err
+		}
+		if binding.DispatchIssuedAt != "" || binding.Lease != (providerrequest.Lease{Owner: owner, Version: version}) {
+			return fmt.Errorf("provider request has issued dispatch or a different rollback lease")
+		}
+		// No provider dispatch was admitted. Fence it permanently in this
+		// transaction before releasing the queued invocation.
+		if _, err := tx.ExecContext(ctx, `UPDATE provider_requests SET admission_closed_at=COALESCE(admission_closed_at,?) WHERE binding_id=?`, req.UpdatedAt, binding.ID); err != nil {
+			return err
+		}
+		if err := providerrequest.RequireResourcesClosedTx(ctx, tx, binding.ID); err != nil {
+			return err
+		}
+
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
 		SET active_provider_invocation_id = NULL,

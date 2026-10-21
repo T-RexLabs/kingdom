@@ -159,7 +159,7 @@ func (r *operationRecovery) recoverEligiblePlaceholderTitleSessions(ctx context.
 // which decides whether the operation is eligible for this transition.
 func (r *operationRecovery) failStuck(ctx context.Context, op state.PlanningOperation, idleFor time.Duration) error {
 	cause := fmt.Errorf("%w (idle for %s)", ErrOperationStuck, idleFor.Round(time.Second))
-	cause, release, err := r.deps.abandonUnprovenRequest(ctx, op, cause)
+	cause, release, err := r.deps.abandonUnprovenRequest(ctx, &op, cause)
 	if err != nil {
 		return err
 	}
@@ -173,9 +173,17 @@ func (r *operationRecovery) failStuck(ctx context.Context, op state.PlanningOper
 // as failed. While something the request admitted may still run, it cannot be
 // closed without its provider evidence, and its operation stays blocked:
 // errBlockedByProviderRequest.
-func (d runtimeDeps) abandonUnprovenRequest(ctx context.Context, op state.PlanningOperation, cause error) (error, func(), error) {
+func (d runtimeDeps) abandonUnprovenRequest(ctx context.Context, op *state.PlanningOperation, cause error) (error, func(), error) {
 	noRelease := func() {}
-	if operationHasNoActiveProviderInvocation(op) {
+	if operationHasNoActiveProviderInvocation(*op) {
+		return cause, noRelease, nil
+	}
+	abandoned, err := d.store.AbandonPlanningPreparation(ctx, *op)
+	if err != nil {
+		return cause, noRelease, err
+	}
+	if abandoned {
+		op.ActiveProviderInvocationID = nil
 		return cause, noRelease, nil
 	}
 	invocationID := strings.TrimSpace(*op.ActiveProviderInvocationID)

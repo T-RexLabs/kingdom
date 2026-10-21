@@ -211,6 +211,9 @@ func (s *PlanningStore) ActivatePlanningProviderInvocation(ctx context.Context, 
 	if bound && (binding.Identity != req.RequestIdentity || binding.Lease != lease) {
 		return PlanningProviderInvocation{}, fmt.Errorf("planning provider request identity or lease conflicts with activation")
 	}
+	if err := providerrequest.RequirePreparationLeaseTx(ctx, tx, owner, lease); err != nil {
+		return PlanningProviderInvocation{}, err
+	}
 	if err := activatePlanningProviderInvocationTx(ctx, tx, invocation, openReq); err != nil {
 		return PlanningProviderInvocation{}, err
 	}
@@ -659,7 +662,7 @@ func linkPlanningOperationActiveInvocationTx(ctx context.Context, tx *sql.Tx, in
 	query := fmt.Sprintf(`UPDATE planning_operations
 		SET active_provider_invocation_id = ?
 		WHERE operation_id = ?
-		  AND COALESCE(TRIM(active_provider_invocation_id), '') = ''
+		  AND (COALESCE(TRIM(active_provider_invocation_id), '') = '' OR active_provider_invocation_id = ?)
 		  AND status = 'running'
 		  AND lease_owner = ?
 		  AND lease_version = ?
@@ -667,6 +670,7 @@ func linkPlanningOperationActiveInvocationTx(ctx context.Context, tx *sql.Tx, in
 	result, err := tx.ExecContext(ctx, query,
 		invocation.PlanningProviderInvocationID,
 		invocation.PlanningOperationID,
+		invocation.PlanningProviderInvocationID,
 		req.LeaseOwner,
 		req.LeaseVersion,
 		req.OpenedAt,

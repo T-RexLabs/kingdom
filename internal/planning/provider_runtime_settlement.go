@@ -41,9 +41,8 @@ func sanitizePlannerToken(raw string) string {
 	return value
 }
 
-// createPlanningProviderInvocation prepares the identity of a provider
-// invocation. The canonical invocation is created by Activate, once the
-// provider has fixed the session and profile that it binds.
+// createPlanningProviderInvocation supplies separate durable startup reservation
+// and activation gates. Only activation binds a prepared provider identity.
 func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, reusableProviderSessionID string) (*ProviderInvocationContext, error) {
 	if r == nil || r.deps.store == nil {
 		return nil, fmt.Errorf("planning store is required for provider invocation creation")
@@ -58,6 +57,16 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 		LogicalSessionID:          logicalSessionID,
 		ReusableProviderSessionID: strings.TrimSpace(reusableProviderSessionID),
 		InvocationID:              invocationID,
+		Reserve: func(ctx context.Context) error {
+			_, err := r.deps.store.ReservePlanningProviderInvocation(ctx, state.CreatePlanningProviderInvocationRequest{PlanningProviderInvocationID: invocationID, PlanningOperationID: operation.OperationID, PlanningSessionID: session.PlanningSessionID, LogicalSessionID: logicalSessionID, CreatedAt: issuedAt, LeaseOwner: operation.LeaseOwner, LeaseVersion: operation.LeaseVersion})
+			return err
+		},
+		AbandonPreparation: func(ctx context.Context) error {
+			op := operation
+			op.ActiveProviderInvocationID = stringPtr(invocationID)
+			_, err := r.deps.store.AbandonPlanningPreparation(ctx, op)
+			return err
+		},
 		Activate: func(activateCtx context.Context, prepared opencode.Prepared) error {
 			if _, err := r.deps.store.ActivatePlanningProviderInvocation(activateCtx, state.ActivatePlanningProviderInvocationRequest{
 				RequestIdentity:              prepared.Identity,

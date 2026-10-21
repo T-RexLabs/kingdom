@@ -22,8 +22,11 @@ func ReserveRemoteRuntimeTx(ctx context.Context, tx *sql.Tx, owner Owner, lease 
 	}
 	allowedState := canonical.state == "running" || owner.Kind == OwnerRun && (canonical.state == "queued" || canonical.state == "starting")
 	expiry, expiryErr := time.Parse(time.RFC3339Nano, canonical.expiry)
-	if !allowedState || canonical.invocationState != "open" || canonical.activeInvocation != owner.InvocationID || canonical.leaseOwner != lease.Owner || canonical.leaseVersion != lease.Version || expiryErr != nil || !now.Before(expiry) || canonical.settlement != "" || owner.Kind == OwnerRun && (canonical.mode != "provider_backed" || canonical.runStatus != "running") || owner.Kind == OwnerPlanning && canonical.currentOperation != canonical.id {
+	if !allowedState || (canonical.invocationState != "open" && canonical.invocationState != "issued") || canonical.activeInvocation != owner.InvocationID || canonical.leaseOwner != lease.Owner || canonical.leaseVersion != lease.Version || expiryErr != nil || !now.Before(expiry) || canonical.settlement != "" || owner.Kind == OwnerRun && (canonical.mode != "provider_backed" || canonical.runStatus != "running") || owner.Kind == OwnerPlanning && canonical.currentOperation != canonical.id {
 		return remote.Reservation{}, fmt.Errorf("canonical remote preparation owner or lease conflict")
+	}
+	if err := RequirePreparationLeaseTx(ctx, tx, owner, lease); err != nil {
+		return remote.Reservation{}, err
 	}
 	var local int
 	if err := tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM provider_requests WHERE binding_id=? OR run_invocation_id=? OR planning_invocation_id=?)+(SELECT count(*) FROM provider_process_guards WHERE provider_invocation_id=?)`, bindingID, owner.InvocationID, owner.InvocationID, owner.InvocationID).Scan(&local); err != nil {
@@ -67,6 +70,9 @@ func CloseOwnerRemoteAdmissionTx(ctx context.Context, tx *sql.Tx, owner Owner, c
 	if owner.Kind != OwnerRun && owner.Kind != OwnerPlanning || owner.InvocationID == "" {
 		return fmt.Errorf("remote admission owner is required")
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE provider_preparations SET admission_closed=1 WHERE owner_kind=? AND invocation_id=?`, string(owner.Kind), owner.InvocationID); err != nil {
+		return err
+	}
 	_, err := tx.ExecContext(ctx, `UPDATE remote_runtimes SET admission_closed=1 WHERE owner_kind=? AND invocation_id=?`, string(owner.Kind), owner.InvocationID)
 	return err
 }
@@ -75,6 +81,13 @@ func CloseOwnerRemoteAdmissionTx(ctx context.Context, tx *sql.Tx, owner Owner, c
 // provider binding. No remote reservation can be released by local process
 // absence or a transport admission; a verified remote closure path is required.
 func RequirePlanningSessionDisposedTx(ctx context.Context, q Reader, sessionID string) error {
+	var preparing int
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_preparations r JOIN planning_provider_invocations p ON p.planning_provider_invocation_id=r.invocation_id WHERE r.owner_kind='planning' AND p.planning_session_id=? AND r.admission_closed=0 AND p.invocation_state='issued'`, sessionID).Scan(&preparing); err != nil {
+		return err
+	}
+	if preparing != 0 {
+		return openResources(OpenUnproven, "planning preparation remains open")
+	}
 	var pending int
 	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM remote_runtimes r JOIN planning_provider_invocations p ON p.planning_provider_invocation_id=r.invocation_id WHERE r.owner_kind='planning' AND p.planning_session_id=?`, sessionID).Scan(&pending); err != nil {
 		return err

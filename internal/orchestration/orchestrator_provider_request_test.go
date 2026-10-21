@@ -23,7 +23,8 @@ type requestObserver struct {
 	opencode.Provider
 	db *sql.DB
 
-	prepareErr error
+	prepareErr   error
+	afterPrepare func(context.Context, opencode.ExecuteRequest) error
 
 	mu                   sync.Mutex
 	events               []string
@@ -59,6 +60,9 @@ func (o *requestObserver) Prepare(ctx context.Context, req opencode.ExecuteReque
 	}
 	prepared, err := o.Provider.Prepare(ctx, req)
 	o.prepared = prepared
+	if err == nil && o.afterPrepare != nil {
+		err = o.afterPrepare(ctx, req)
+	}
 	return prepared, err
 }
 
@@ -189,8 +193,8 @@ func TestDispatchPreparesRequestBeforeActivatingAndBindsItsIdentityAndLease(t *t
 	if got, want := observer.eventsSnapshot(), []string{"prepare:" + invocationID, "execute:" + invocationID}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("provider calls=%v, want %v", got, want)
 	}
-	if observer.invocationsAtPrepare != 0 {
-		t.Fatalf("the provider was prepared after the canonical invocation existed (%d rows)", observer.invocationsAtPrepare)
+	if observer.invocationsAtPrepare != 1 {
+		t.Fatalf("provider startup lacked its canonical invocation (%d rows)", observer.invocationsAtPrepare)
 	}
 	if !observer.boundAtExecute {
 		t.Fatal("the request ran before its identity was bound to the canonical invocation")
@@ -227,12 +231,10 @@ func TestFailedActivationDiscardsPreparedRequestAndFailsNodeSetup(t *testing.T) 
 		t.Fatalf("provider calls=%v, want a prepare followed by a discard of the same request", got)
 	}
 	assertSetupFailed(t, db, dispatch.attemptID, "create provider invocation")
-	if rows := dispatch.countRows(t, "provider_invocations"); rows != 0 {
-		t.Fatalf("failed activation left %d provider invocations", rows)
-	}
+	assertIssuedPreparationAbandoned(t, db, dispatch.attemptID)
 }
 
-func TestPrepareFailureFailsNodeSetupWithoutCreatingInvocation(t *testing.T) {
+func TestPrepareFailureRetainsAbandonedInvocationWithoutProviderEvidence(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 	applyMigration(t, db)
@@ -246,9 +248,7 @@ func TestPrepareFailureFailsNodeSetupWithoutCreatingInvocation(t *testing.T) {
 		t.Fatalf("provider calls=%v, want a single failed prepare", events)
 	}
 	assertSetupFailed(t, db, dispatch.attemptID, "prepare provider request")
-	if rows := dispatch.countRows(t, "provider_invocations"); rows != 0 {
-		t.Fatalf("prepare failure created %d provider invocations", rows)
-	}
+	assertIssuedPreparationAbandoned(t, db, dispatch.attemptID)
 	if rows := countTestRows(t, db, `SELECT COUNT(1) FROM provider_requests`); rows != 0 {
 		t.Fatalf("prepare failure bound %d provider requests", rows)
 	}
@@ -394,5 +394,38 @@ func TestRestartConsumesCompletedHandoffWithoutExecutingTheRequestAgain(t *testi
 	}
 	if got := h.requests.executions(invocation.ProviderInvocationID); got != 1 {
 		t.Fatalf("restart executed the request again: executions=%d", got)
+	}
+}
+
+func assertIssuedPreparationAbandoned(t *testing.T, db *sql.DB, attemptID string) {
+	t.Helper()
+	var state string
+	if err := db.QueryRow(`SELECT invocation_state FROM provider_invocations WHERE attempt_id=?`, attemptID).Scan(&state); err != nil || state != "invalidated" {
+		t.Fatalf("retained startup state %q: %v", state, err)
+	}
+	if n := countTestRows(t, db, `SELECT count(*) FROM provider_completion_evidence WHERE attempt_id=?`, attemptID); n != 0 {
+		t.Fatalf("preparation created %d provider evidence records", n)
+	}
+}
+
+func TestCancellationDuringPreparationDiscardsUnactivatedRequest(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	dispatch, observer := newRequestDispatch(t, db, &sequenceExecutionAdapter{outputs: []string{"must not execute"}})
+	observer.afterPrepare = func(ctx context.Context, req opencode.ExecuteRequest) error {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err = providerrequest.CloseAttemptAdmissionTx(ctx, tx, req.AttemptID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	dispatch.dispatchAndDrain(t)
+	events := observer.eventsSnapshot()
+	if len(events) != 2 || events[1] != "discard:"+events[0][len("prepare:"):] {
+		t.Fatalf("cancellation skipped prepared cleanup: %v", events)
 	}
 }

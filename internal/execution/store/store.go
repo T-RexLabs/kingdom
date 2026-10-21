@@ -1127,6 +1127,12 @@ func (s *Store) ClaimQueuedProviderAttempt(ctx context.Context, req ClaimQueuedP
 				return nil
 			}
 		}
+		if err := abandonExpiredPreparationTx(ctx, tx, attemptID, claimedAt); err != nil {
+			if errors.Is(err, providerrequest.ErrResourcesOpen) {
+				return nil
+			}
+			return err
+		}
 		if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, attemptID); err != nil {
 			if errors.Is(err, providerrequest.ErrResourcesOpen) {
 				return nil

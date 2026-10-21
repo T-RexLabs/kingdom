@@ -1004,7 +1004,7 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 	// A provider request that ended without terminal evidence settles as
 	// abandoned now, rather than when recovery finds the operation idle.
 	if operation.ActiveProviderInvocationID != nil && providerMetadataFromError(cause).StreamObservation.Request == nil {
-		abandoned, release, err := r.deps.abandonUnprovenRequest(ctx, operation, cause)
+		abandoned, release, err := r.deps.abandonUnprovenRequest(ctx, &operation, cause)
 		if err != nil {
 			return errors.Join(cause, err)
 		}
