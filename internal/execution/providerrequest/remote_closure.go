@@ -86,11 +86,11 @@ func remoteCommandBinding(ctx context.Context, q Reader, claimID, digest, operat
 	if allocation != r.Reference.Allocation || commandBinding != b.ID || remoteClaim != claimID || sequence != ordinal {
 		return b, r, remote.ErrConflict
 	}
-	_, purpose, err := remote.ReadManagedIdentity(ctx, q, r.Owner, r.Reference, operationID)
+	closure, err := remote.ReadProcessClosure(ctx, q, r.Owner, r.Reference, operationID)
 	if err != nil {
 		return b, r, err
 	}
-	if purpose != remote.Tool {
+	if closure.Purpose != remote.Tool {
 		return b, r, remote.ErrConflict
 	}
 	return b, r, nil
