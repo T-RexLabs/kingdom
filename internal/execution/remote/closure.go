@@ -9,6 +9,7 @@ import (
 // ProcessClosure describes verified process-group closure, never sandbox
 // disposal, credential revocation, or canonical workflow success.
 type ProcessClosure struct {
+	NotStarted           bool
 	OperationID          string
 	Purpose              ExecutionPurpose
 	TerminationRequested bool
@@ -21,6 +22,17 @@ type ProcessClosure struct {
 // ReadProcessClosure revalidates identity, output, and terminal evidence. A
 // missing receipt remains an error even when transport admission succeeded.
 func ReadProcessClosure(ctx context.Context, q Reader, owner Owner, ref Reference, id string) (ProcessClosure, error) {
+	never, err := ReadExecutionNotStarted(ctx, q, owner, ref, id)
+	if err != nil {
+		return ProcessClosure{}, err
+	}
+	if never {
+		var purpose ExecutionPurpose
+		if err = q.QueryRowContext(ctx, `SELECT purpose FROM managed_executions WHERE operation_id=?`, id).Scan(&purpose); err != nil {
+			return ProcessClosure{}, err
+		}
+		return ProcessClosure{OperationID: id, Purpose: purpose, NotStarted: true}, nil
+	}
 	identity, purpose, err := ReadManagedIdentity(ctx, q, owner, ref, id)
 	if err != nil {
 		return ProcessClosure{}, err
@@ -66,7 +78,7 @@ func ReadWriterClosures(ctx context.Context, q Reader, owner Owner, ref Referenc
 			rows.Close()
 			return nil, err
 		}
-		if purpose != WorkspaceExport {
+		if purpose != WorkspaceExport && purpose != NativeReceipts {
 			ids = append(ids, id)
 		}
 	}
