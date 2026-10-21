@@ -2028,7 +2028,7 @@ export interface components {
             /** @description Null inherits the canonical role default; a string is an explicit override, including an empty string. */
             guidance_override: string | null;
             /** @description Explicit role communication style, or null to inherit the workspace style. */
-            voice_override: components["schemas"]["AgentVoiceSelection"] | null;
+            voice_override: (components["schemas"]["AgentVoiceSelection"] | (never | null)) | null;
         };
         ResetAgentRoleGuidanceRequest: {
             expected_row_version: number;
