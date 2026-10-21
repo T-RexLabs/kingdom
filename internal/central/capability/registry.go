@@ -73,7 +73,7 @@ func New(ctx context.Context, cfg Config) (*Registry, error) {
 	db.SetMaxOpenConns(1)
 	fail := func() (*Registry, error) { db.Close(); file.Close(); return nil, ErrInvalid }
 	var version int
-	if db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version) != nil || version < 0 || version > 1 {
+	if db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version) != nil || version < 0 || version > 2 {
 		return fail()
 	}
 	if version == 0 {
@@ -95,8 +95,11 @@ func New(ctx context.Context, cfg Config) (*Registry, error) {
  CREATE TRIGGER IF NOT EXISTS worker_capability_request BEFORE UPDATE OF request ON worker_capabilities WHEN OLD.request IS NOT NULL BEGIN SELECT RAISE(ABORT,'model request identity is immutable');END;
  CREATE TRIGGER IF NOT EXISTS worker_capability_state BEFORE UPDATE OF state ON worker_capabilities WHEN
  (OLD.state='closed' AND NEW.state<>'closed') OR (OLD.state='revoking' AND NEW.state NOT IN ('revoking','closed')) OR (OLD.state='active' AND NEW.state='prepared') OR (OLD.state='fenced' AND NEW.state IN ('prepared','active')) BEGIN SELECT RAISE(ABORT,'model capability cannot reopen');END;
- CREATE TRIGGER IF NOT EXISTS worker_capability_retained BEFORE DELETE ON worker_capabilities BEGIN SELECT RAISE(ABORT,'model capability must be retained');END; PRAGMA user_version=1;`)
+ CREATE TRIGGER IF NOT EXISTS worker_capability_retained BEFORE DELETE ON worker_capabilities BEGIN SELECT RAISE(ABORT,'model capability must be retained');END; PRAGMA user_version=2;`)
 	if err != nil {
+		return fail()
+	}
+	if err = initializeClosureSchema(ctx, db); err != nil {
 		return fail()
 	}
 	actual, e2 := os.Lstat(path)
