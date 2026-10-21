@@ -313,12 +313,21 @@ func TestManagedPreparePinsCanonicalEndpointAndNeverDispatches(t *testing.T) {
 		return &testManagedHandle{endpoint: recordedManagedEndpoint(t, h, p), transport: managedProtocolTransport(t), authorize: func(_ context.Context, id providerexecution.RequestIdentity) error { authorized = id; return nil }, close: func(context.Context) error { closes++; return nil }}, nil
 	}}
 	s := serviceManaged(t, a, worker)
-	prepared, err := s.Prepare(context.Background(), req)
+	prepareContext, cancelPrepare := context.WithCancel(context.Background())
+	defer cancelPrepare()
+	prepared, err := s.Prepare(prepareContext, req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if prepared.Backend != providerexecution.BackendOpenShell || prepared.RemoteRuntime.Allocation == 0 || prepared.Identity != authorized || prepared.Identity.Location != "/workspace" {
 		t.Fatal("unbound preparation", prepared)
+	}
+	cancelPrepare()
+	capture := s.entries[req.InvocationID].session.capture
+	select {
+	case <-capture.done:
+		t.Fatal("successful preparation left no owned event capture")
+	case <-time.After(20 * time.Millisecond):
 	}
 	// The model has not received a prompt. Canonical activation remains separate.
 	var bindings int
@@ -333,6 +342,11 @@ func TestManagedPreparePinsCanonicalEndpointAndNeverDispatches(t *testing.T) {
 	}
 	if closes != 1 || len(s.entries) != 0 {
 		t.Fatal("owned server was not closed")
+	}
+	select {
+	case <-capture.done:
+	default:
+		t.Fatal("discard did not join the owned event capture")
 	}
 }
 func TestManagedPrepareRechecksLeaseAfterPluginAuthorization(t *testing.T) {
