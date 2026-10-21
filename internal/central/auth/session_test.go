@@ -467,3 +467,38 @@ func TestSlowSessionResponseCannotBlockRevocationOrShutdown(t *testing.T) {
 		})
 	}
 }
+
+func TestCentralSessionHandlerRechecksUserWithoutProjectAuthority(t *testing.T) {
+	f := setup(t, 0)
+	session, cookie := f.session(t)
+	if _, err := f.manager.AuthenticatedUser(request("GET", "/projects", cookie, "")); err == nil {
+		t.Fatal("cookie bypassed session context")
+	}
+	h := f.manager.SessionHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, err := f.manager.AuthenticatedUser(r)
+		if err != nil || user.ID != f.member.ID {
+			t.Errorf("user=%v error=%v", user, err)
+		}
+		if _, err := f.manager.ProjectAuthenticator(f.project.ID).Authenticate(r); err == nil {
+			t.Error("central context gained project authority")
+		}
+		w.WriteHeader(204)
+	}))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, request("POST", "/connections", cookie, session.CSRFToken))
+	if w.Code != 204 {
+		t.Fatalf("central request=%d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, request("POST", "/connections", cookie, ""))
+	if w.Code != 403 {
+		t.Fatalf("central mutation lacked CSRF: %d", w.Code)
+	}
+	started, ended := make(chan struct{}), make(chan struct{})
+	stream := f.manager.SessionHandler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { close(started); <-r.Context().Done(); close(ended) }))
+	go stream.ServeHTTP(httptest.NewRecorder(), request("GET", "/central-events", cookie, ""))
+	<-started
+	w = httptest.NewRecorder()
+	f.manager.Logout(w, request("POST", "/logout", cookie, session.CSRFToken))
+	waitEnded(t, ended)
+}

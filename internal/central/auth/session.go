@@ -331,6 +331,17 @@ func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) {
 // ProjectHandler is the only source of context accepted by ProjectAuthenticator.
 // It validates each incoming request before registering its revocation handle.
 func (m *Manager) ProjectHandler(project string, next http.Handler) http.Handler {
+	if project == "" {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { deny(w, api.ErrAccessDenied) })
+	}
+	return m.requestHandler(project, next)
+}
+
+// SessionHandler protects central catalog and connection routes that have no
+// selected project. Handlers obtain the current user through AuthenticatedUser.
+func (m *Manager) SessionHandler(next http.Handler) http.Handler { return m.requestHandler("", next) }
+
+func (m *Manager) requestHandler(project string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		_, hash, err := m.credential(r)
@@ -345,7 +356,7 @@ func (m *Manager) ProjectHandler(project string, next http.Handler) http.Handler
 			return
 		}
 		session, err := m.lookup(r.Context(), hash)
-		if err == nil {
+		if err == nil && project != "" {
 			err = m.catalog.Authorize(r.Context(), session.User.ID, project, catalog.UseProject)
 		}
 		if err != nil {
@@ -369,6 +380,28 @@ func (m *Manager) ProjectHandler(project string, next http.Handler) http.Handler
 	})
 }
 
+// AuthenticatedUser accepts only this manager's admitted request context and
+// rechecks current session and account state. Caller-supplied IDs are not used.
+func (m *Manager) AuthenticatedUser(r *http.Request) (catalog.User, error) {
+	v, ok := r.Context().Value(verifiedContextKey{}).(verifiedContext)
+	if !ok || v.manager != m || r.Context().Err() != nil {
+		return catalog.User{}, api.ErrAuthenticationRequired
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return catalog.User{}, api.ErrAuthenticationRequired
+	}
+	if _, ok := m.active[v.binding]; !ok {
+		return catalog.User{}, api.ErrAuthenticationRequired
+	}
+	session, err := m.lookup(r.Context(), v.binding.hash)
+	if err != nil {
+		return catalog.User{}, err
+	}
+	return session.User, nil
+}
+
 type projectAuthenticator struct {
 	manager *Manager
 	project string
@@ -379,7 +412,7 @@ func (m *Manager) ProjectAuthenticator(project string) api.Authenticator {
 }
 func (a projectAuthenticator) Authenticate(r *http.Request) (api.Principal, error) {
 	v, ok := r.Context().Value(verifiedContextKey{}).(verifiedContext)
-	if !ok || v.manager != a.manager || v.binding.project != a.project || r.Context().Err() != nil {
+	if !ok || a.project == "" || v.manager != a.manager || v.binding.project != a.project || r.Context().Err() != nil {
 		return api.Principal{}, api.ErrAuthenticationRequired
 	}
 	m := a.manager
@@ -461,7 +494,7 @@ func (m *Manager) recheckActive() {
 		if !found {
 			session, err := m.lookup(ctx, binding.hash)
 			valid = err == nil && session.User.ID == binding.actor
-			if valid {
+			if valid && binding.project != "" {
 				valid = m.catalog.Authorize(ctx, binding.actor, binding.project, catalog.UseProject) == nil
 			}
 			checked[k] = valid
