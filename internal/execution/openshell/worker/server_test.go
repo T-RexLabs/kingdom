@@ -133,3 +133,13 @@ func TestCleanupPreparedServerCreatesOnlyNoDispatchProof(t *testing.T) {
 		t.Fatalf("cleanup result %+v %v", closed, e)
 	}
 }
+
+func TestLauncherModelMatchesCanonicalProviderAndProxyModel(t *testing.T) {
+	for _, model := range []string{"gpt-6-luna", "namespace/model"} {
+		selection := access.Selection{Model: "openai/" + model, Connection: access.Connection{Provider: "openai"}}
+		providerID, modelID := launcherModel(selection)
+		if providerID != "openai" || modelID != model {
+			t.Fatalf("launcher mapping provider=%q model=%q; canonical OpenCode and proxy require openai/%s", providerID, modelID, model)
+		}
+	}
+}

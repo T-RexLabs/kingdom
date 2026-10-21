@@ -111,6 +111,7 @@ func (w *Worker) LaunchServer(ctx, lifetime context.Context, p providerrequest.P
 	if e != nil {
 		return nil, e
 	}
+	providerID, modelID := launcherModel(binding.Access.Selection)
 	var l launch
 	fresh := false
 	e = w.transaction(ctx, func(tx *sql.Tx) error {
@@ -164,7 +165,7 @@ func (w *Worker) LaunchServer(ctx, lifetime context.Context, p providerrequest.P
 		if e != nil {
 			return nil, e
 		}
-		job := providerlauncher.Job{Version: 1, LauncherSHA256: profile.LauncherSHA256, OpenCodeSHA256: profile.OpenCodeSHA256, ControlToken: control, ServerPassword: password, ProxyURL: model.BaseURL, ProxyToken: model.Token(), ProviderID: "kingdom", ModelID: binding.Access.Selection.Model, CallbackURL: plugin.BaseURL, CallbackToken: plugin.Token(), InstanceID: r.Reference.MainInstanceID, ContextLimit: profile.ContextLimit, OutputLimit: profile.OutputLimit, LifetimeSeconds: int64(profile.Lifetime / time.Second)}
+		job := providerlauncher.Job{Version: 1, LauncherSHA256: profile.LauncherSHA256, OpenCodeSHA256: profile.OpenCodeSHA256, ControlToken: control, ServerPassword: password, ProxyURL: model.BaseURL, ProxyToken: model.Token(), ProviderID: providerID, ModelID: modelID, CallbackURL: plugin.BaseURL, CallbackToken: plugin.Token(), InstanceID: r.Reference.MainInstanceID, ContextLimit: profile.ContextLimit, OutputLimit: profile.OutputLimit, LifetimeSeconds: int64(profile.Lifetime / time.Second)}
 		spec, e := providerlauncher.Command(job)
 		if e != nil {
 			return nil, e
@@ -192,7 +193,7 @@ func (w *Worker) LaunchServer(ctx, lifetime context.Context, p providerrequest.P
 		return nil, e
 	}
 	fixed, e := providerlauncher.Command(job)
-	if e != nil || !proto.Equal(fixed, request.Command) || job.LauncherSHA256 != profile.LauncherSHA256 || job.OpenCodeSHA256 != profile.OpenCodeSHA256 || job.ProxyURL != w.config.Egress.ModelURL || job.CallbackURL != w.config.Egress.CallbackURL || job.ModelID != binding.Access.Selection.Model || job.InstanceID != r.Reference.MainInstanceID || l.model == "" || l.plugin == "" {
+	if e != nil || !proto.Equal(fixed, request.Command) || job.LauncherSHA256 != profile.LauncherSHA256 || job.OpenCodeSHA256 != profile.OpenCodeSHA256 || job.ProxyURL != w.config.Egress.ModelURL || job.CallbackURL != w.config.Egress.CallbackURL || job.ProviderID != providerID || job.ModelID != modelID || job.InstanceID != r.Reference.MainInstanceID || l.model == "" || l.plugin == "" {
 		return nil, remote.ErrConflict
 	}
 	client, e := managed.New(ctx, w.wire, owner, w.config.Workspace, nativeName(r.Reference))
@@ -337,4 +338,8 @@ func (s *Server) AuthorizeRequest(ctx context.Context, identity providerexecutio
 func validBinaryDigest(value string) bool {
 	raw, err := hex.DecodeString(value)
 	return err == nil && len(raw) == 32 && strings.ToLower(value) == value
+}
+
+func launcherModel(selection access.Selection) (string, string) {
+	return selection.Connection.Provider, strings.TrimPrefix(selection.Model, selection.Connection.Provider+"/")
 }
