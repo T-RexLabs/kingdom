@@ -62,3 +62,38 @@ func TestWriterClosureRejectsForeignOwnerAndRuntime(t *testing.T) {
 		t.Fatal("replacement runtime closed writers")
 	}
 }
+
+func TestWriterClosureIncludesNativeHelper(t *testing.T) {
+	db := openLedger(t, ":memory:")
+	r := bound(t, db)
+	expected, start, identity := managedRequest(t, r)
+	prepareManaged(t, db, r, ProviderServer, expected, start)
+	dispatchManaged(t, db, r, identity.RequestId)
+	transaction(t, db, func(tx *sql.Tx) error { return RecordManagedIdentityTx(ctx, tx, r.Owner, r.Reference, identity) })
+	transaction(t, db, func(tx *sql.Tx) error {
+		return RecordManagedReceiptTx(ctx, tx, r.Owner, r.Reference, identity.RequestId, managedReceipt(identity))
+	})
+	// The isolated ledger fixture has no provider grant tables. Seed the retained
+	// purpose directly to test closure classification; canonical native reservation
+	// and grant linkage have separate executor integration tests.
+	if _, err := db.Exec(`DROP TRIGGER managed_execution_pins_immutable`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE managed_executions SET purpose='native_tool' WHERE operation_id=?`, identity.RequestId); err != nil {
+		t.Fatal(err)
+	}
+	transaction(t, db, func(tx *sql.Tx) error { return CloseAdmissionTx(ctx, tx, r.Owner, r.Reference) })
+	closures, err := ReadWriterClosures(ctx, db, r.Owner, r.Reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, closure := range closures {
+		if closure.OperationID == identity.RequestId {
+			found = closure.Purpose == NativeTool && closure.Successful
+		}
+	}
+	if !found {
+		t.Fatal("closed native helper missing from writer inventory")
+	}
+}

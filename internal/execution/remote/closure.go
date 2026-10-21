@@ -93,7 +93,7 @@ func ReadWriterClosures(ctx context.Context, q Reader, owner Owner, ref Referenc
 		if e != nil {
 			return nil, e
 		}
-		if closed.Purpose != ProviderServer && closed.Purpose != Tool && closed.Purpose != WorkspaceImport {
+		if closed.Purpose != ProviderServer && closed.Purpose != Tool && closed.Purpose != NativeTool && closed.Purpose != WorkspaceImport {
 			return nil, ErrConflict
 		}
 		result = append(result, closed)
