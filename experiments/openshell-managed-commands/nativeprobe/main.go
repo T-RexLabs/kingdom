@@ -31,6 +31,10 @@ type observation struct {
 }
 
 func receive(client pb.OpenShellClient, name string, request *pb.ExecSandboxRequest) observation {
+	return receiveWithCancellation(client, name, request, false)
+}
+
+func receiveWithCancellation(client pb.OpenShellClient, name string, request *pb.ExecSandboxRequest, cancelWhenStarted bool) observation {
 	result := observation{Case: name, RequestID: request.RequestId}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -54,6 +58,9 @@ func receive(client pb.OpenShellClient, name string, request *pb.ExecSandboxRequ
 			if exit := event.GetExit(); exit != nil {
 				value := exit.ExitCode
 				result.Exit = &value
+			}
+			if cancelWhenStarted && strings.Contains(result.Output, "cancel-command-started\n") {
+				cancel()
 			}
 		}
 	}
@@ -92,12 +99,17 @@ func main() {
 	timed := request("trap 'exit 0' TERM; printf 'timeout-command-started\\n'; while :; do sleep 1; done")
 	timed.ExecutionTimeout = durationpb.New(2 * time.Second)
 	results = append(results, receive(client, "native-execution-timeout", timed))
+	cancelled := request("trap '' TERM; printf 'cancel-command-started\\n'; while :; do sleep 1; done")
+	results = append(results, receiveWithCancellation(client, "native-client-cancellation", cancelled, true))
 	_ = json.NewEncoder(os.Stdout).Encode(results)
 	if results[0].Error != "" || results[0].Exit == nil || *results[0].Exit != 0 || results[1].Error == "" ||
 		results[2].Error != "" || strings.TrimSpace(results[2].Output) != "once" {
 		os.Exit(1)
 	}
 	if results[3].Exit != nil && *results[3].Exit == 0 {
+		os.Exit(1)
+	}
+	if results[4].Error == "" || !strings.Contains(results[4].Output, "cancel-command-started\n") || results[4].Exit != nil {
 		os.Exit(1)
 	}
 }

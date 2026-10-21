@@ -1,11 +1,11 @@
 {
-  "profile": "kingdom-openshell-managed-commands-experiment/v1",
+  "profile": "kingdom-openshell-managed-commands-experiment/v2",
   "upstream_version": "v0.1.5",
   "upstream_revision": "bdb956f2cd65",
   "source_url": "https://github.com/NVIDIA/OpenShell/tree/bdb956f2cd65",
   "source_tree_sha256": "9ce4ae8323cfd5645b8b3d0275768bcf52bab8c2ac1e6361352fa041c33ed22e",
-  "patched_tree_sha256": "0b423eb3dcce066b757a73ad6a4ddb10417283b4afc791f101aeaec2d4c12071",
-  "patch_sha256": "8675c9417026df7f019c138f63620c29bb61f2e09fffd21c48f1c61644a19ccd",
+  "patched_tree_sha256": "1ba7c14b6398e92967b4fda1014d11c2cbd3d31e7554d7e9256f00a79ee8d5b0",
+  "patch_sha256": "ef74f6f89d9660810b79ddca9266bddd23ab28cc0defc44dac44052c0e3b1a65",
   "cargo_feature": "kingdom-managed-commands",
   "rust_toolchain": "1.95.0",
   "verified_target": "aarch64-unknown-linux-musl",
@@ -16,8 +16,21 @@
     "crates/openshell-sandbox/src/kingdom_exec_journal.rs",
     "crates/openshell-sandbox/src/kingdom_managed.rs",
     "crates/openshell-sandbox/src/lib.rs",
-    "crates/openshell-sandbox/src/linux/child_seccomp.rs"
+    "crates/openshell-sandbox/src/linux/child_seccomp.rs",
+    "crates/openshell-server/src/grpc/interactive_exec_tests.rs",
+    "crates/openshell-server/src/grpc/mutation_replay/streaming/tests.rs",
+    "crates/openshell-server/src/grpc/sandbox.rs"
   ],
   "tested_binary_sha256": "2961a7944770f06076ec9517128547aa2ed7b46eb058f088e27e0e9a2574e33f",
-  "verification_date": "2026-10-21"
+  "verification_date": "2026-10-21",
+  "gateway": {
+    "target": "aarch64-unknown-linux-gnu",
+    "features": [
+      "compute-driver-docker",
+      "telemetry"
+    ],
+    "binary_sha256": "b9e973ec73274511f4e4aa59f18be831e9a0d92024dc18ef6b1151f5f6e42c83",
+    "base_image": "ghcr.io/nvidia/openshell/gateway@sha256:4ae2d75c30d1a767a322e17147bb5e3c82da6a2755d6494a6a315f261da78191",
+    "z3_library_sha256": "6a1f171b6a6b040ffa0bf7e8048c50a7a7984720eabb488bf21780d9cdc0738a"
+  }
 }
