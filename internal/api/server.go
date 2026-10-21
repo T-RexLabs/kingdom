@@ -84,6 +84,10 @@ type ServerConfig struct {
 	// OperatorCredential is the local bearer credential read from a protected
 	// file by the process entrypoint. It is never persisted by the API.
 	OperatorCredential []byte
+	// Authenticator enables trusted hosted authentication instead of local
+	// operator authentication. It must be bound to this project's identity.
+	// It cannot be combined with OperatorCredential.
+	Authenticator Authenticator
 }
 
 type Server struct {
@@ -122,6 +126,7 @@ type Server struct {
 	workflowCompiler        *workflow.Compiler
 	cursors                 *cursorSigner
 	auth                    *authManager
+	authenticator           Authenticator
 	// handler is the fully composed http handler tree (mux + middleware).
 	// We keep it on Server so *Server itself can satisfy http.Handler and
 	// callers can hold a single object that owns both serving and
@@ -279,9 +284,16 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	auth, err := newAuthManager(cfg.OperatorCredential, now)
-	if err != nil {
-		return nil, fmt.Errorf("initialize local authentication: %w", err)
+	var auth *authManager
+	if cfg.Authenticator != nil {
+		if len(cfg.OperatorCredential) != 0 {
+			return nil, fmt.Errorf("hosted authenticator cannot be combined with local operator credentials")
+		}
+	} else {
+		auth, err = newAuthManager(cfg.OperatorCredential, now)
+		if err != nil {
+			return nil, fmt.Errorf("initialize local authentication: %w", err)
+		}
 	}
 
 	projectRoot := strings.TrimSpace(cfg.ProjectRoot)
@@ -387,6 +399,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		lifecycleCancel:            lifecycleCancel,
 		cursors:                    cursorSigner,
 		auth:                       auth,
+		authenticator:              cfg.Authenticator,
 	}
 	var plannerAgent planning.Agent
 	if githubKeys != nil || githubUserTokens != nil {

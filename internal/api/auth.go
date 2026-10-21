@@ -27,7 +27,9 @@ const (
 
 var errBrowserSessionCapacity = errors.New("browser session capacity reached")
 
-type principal struct {
+// Principal is verified identity supplied by an authentication boundary. It is
+// never populated from caller-supplied attribution headers.
+type Principal struct {
 	ActorID       string
 	RoleID        string
 	Method        string
@@ -35,6 +37,22 @@ type principal struct {
 	SessionOrigin string
 	ExpiresAt     time.Time
 }
+
+type principal = Principal
+
+// Authenticator authenticates and authorizes one request for the project bound
+// to this API handler. Implementations must verify session, origin, CSRF, and
+// current project membership on every call. The central service must cancel
+// request contexts when an active session or membership is revoked.
+// Local browser bootstrap and public callbacks are not exempt in this mode.
+type Authenticator interface {
+	Authenticate(*http.Request) (Principal, error)
+}
+
+var (
+	ErrAuthenticationRequired = errors.New("authentication required")
+	ErrAccessDenied           = errors.New("access denied")
+)
 
 type principalContextKey struct{}
 
@@ -189,6 +207,10 @@ func (s *Server) authenticationMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		r.Header.Del("X-Actor-Id")
 		r.Header.Del("X-Role-Id")
+		if s.authenticator != nil {
+			s.authenticateExternal(next, w, r)
+			return
+		}
 		if isPublicGitHubSetupCallback(r) || isBrowserSessionBootstrap(r) {
 			next.ServeHTTP(w, r)
 			return
@@ -249,6 +271,31 @@ func (s *Server) authenticationMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (s *Server) authenticateExternal(next http.Handler, w http.ResponseWriter, r *http.Request) {
+	// This endpoint grants a local session based on loopback transport. Hosted
+	// handlers must never expose it, including to already authenticated users.
+	if isBrowserSessionBootstrap(r) {
+		http.NotFound(w, r)
+		return
+	}
+	p, err := s.authenticator.Authenticate(r)
+	if errors.Is(err, ErrAccessDenied) {
+		writeCanonicalError(w, http.StatusForbidden, errorcatalog.CodePolicyViolation, "access denied", "api.auth", nil)
+		return
+	}
+	now := time.Now()
+	if s.now != nil {
+		now = s.now()
+	}
+	if err != nil || strings.TrimSpace(p.ActorID) == "" || strings.TrimSpace(p.RoleID) == "" || strings.TrimSpace(p.Method) == "" || p.ExpiresAt.IsZero() || !p.ExpiresAt.After(now) {
+		s.writeUnauthorized(w)
+		return
+	}
+	ctx, cancel := context.WithDeadline(context.WithValue(r.Context(), principalContextKey{}, p), p.ExpiresAt)
+	defer cancel()
+	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
 func isBrowserSessionBootstrap(r *http.Request) bool {
