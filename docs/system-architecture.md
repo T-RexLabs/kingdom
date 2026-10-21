@@ -30,6 +30,8 @@ Agent Communication Style and Agent Guidance settings are shared workspace state
 
 Run creation captures each role's effective settings and the protected prompt catalog revision; planning-session creation captures the Plan Author's effective settings and that catalog revision. Both snapshots are immutable and written in the same transaction as the new resource, so later edits or catalog changes affect new work without changing existing runs or sessions. OpenCode receives the captured role, style, guidance, and Kingdom Contract as the system instruction of the request's own immutable profile.
 
+Each planning operation also captures its model selection when it is queued. Session edits affect new operations. Retries retain the original selection. Automatic titles use the selection of their triggering reply; recovery skips an optional title if it cannot find one unique triggering operation. Migration captures the available session selection for historical operations because earlier session edits cannot be reconstructed.
+
 Dynamic Run Context is streamed at its workflow stage, followed by the snapshot-resolved Final Checks as the last authored section. Each provider attempt atomically captures the exact system prompt and dynamic context under its queued lease; Agent Activity displays both immutable channels, after content verification. Provider-added environment and tool prompts are outside Kingdom visibility. Planning uses one Plan Author identity and the selected mode contract, with mode-specific Final Checks appended after the complete transcript and external context. See the [prompt authoring guide](prompt-authoring.md) for the source map and change rules.
 
 ## Authority and Evidence
