@@ -37,6 +37,7 @@ type Config struct {
 	Workspace     string
 	Image         string
 	ProfileSHA256 []byte
+	Egress        Egress
 	Now           func() time.Time
 }
 type Worker struct {
@@ -51,6 +52,10 @@ func New(db *sql.DB, requests *remote.RequestStore, n Native, wire pb.ManagedExe
 	if db == nil || requests == nil || n == nil || wire == nil || c.Workspace == "" || c.Target.WorkerID == "" || c.Target.GatewayID == "" || c.Target.WorkspaceID == "" || len(c.ProfileSHA256) != 32 || !imagePin(c.Image) {
 		return nil, errors.New("invalid managed worker configuration")
 	}
+	if _, e := c.Egress.policy(); e != nil {
+		return nil, e
+	}
+	c.Egress.AllowedIPs = append([]string(nil), c.Egress.AllowedIPs...)
 	if c.Now == nil {
 		c.Now = time.Now
 	}
@@ -77,7 +82,8 @@ func (w *Worker) check(ctx context.Context, tx *sql.Tx, p providerrequest.Prepar
 	return providerrequest.RequireRemotePreparationTx(ctx, tx, p.Owner, p.Lease, binding, w.config.Now())
 }
 func (w *Worker) template() *native.CreateSandboxRequest {
-	return &native.CreateSandboxRequest{WorkspaceScope: &dm.WorkspaceSelector{Selection: &dm.WorkspaceSelector_Workspace{Workspace: w.config.Workspace}}, Spec: &native.SandboxSpec{Template: &native.SandboxTemplate{Image: w.config.Image}, RestartPolicy: native.SandboxRestartPolicy_SANDBOX_RESTART_POLICY_NEVER, Command: []string{"/bin/sleep", "infinity"}, Policy: &policy.SandboxPolicy{Version: 1, Filesystem: &policy.FilesystemPolicy{ReadOnly: []string{"/usr", "/bin", "/lib", "/etc", "/proc/self", "/dev/urandom"}, ReadWrite: []string{"/workspace", "/tmp", "/dev/null"}, IncludeWorkdir: false}, Landlock: &policy.LandlockPolicy{Compatibility: "hard_requirement"}}}}
+	network, _ := w.config.Egress.policy()
+	return &native.CreateSandboxRequest{WorkspaceScope: &dm.WorkspaceSelector{Selection: &dm.WorkspaceSelector_Workspace{Workspace: w.config.Workspace}}, Spec: &native.SandboxSpec{Template: &native.SandboxTemplate{Image: w.config.Image}, RestartPolicy: native.SandboxRestartPolicy_SANDBOX_RESTART_POLICY_NEVER, Command: []string{"/bin/sleep", "infinity"}, Policy: &policy.SandboxPolicy{Version: 1, NetworkPolicies: network, Filesystem: &policy.FilesystemPolicy{ReadOnly: []string{"/usr", "/bin", "/lib", "/etc", "/proc/self", "/dev/urandom"}, ReadWrite: []string{"/workspace", "/tmp", "/dev/null"}, IncludeWorkdir: false}, Landlock: &policy.LandlockPolicy{Compatibility: "hard_requirement"}}}}
 }
 
 // Reserve persists the exact encrypted request and non-reusable native name.
