@@ -14,7 +14,7 @@ import (
 // own exact canonical settlement. Mutable owner pointers may already refer to a
 // later retry; they cannot substitute for this invocation's historical facts.
 func RequireDisposedTx(ctx context.Context, q Reader, owner Owner) error {
-	if err := requireNoRemoteReservation(ctx, q, owner); err != nil {
+	if err := RequireOwnerRemoteDisposed(ctx, q, owner); err != nil {
 		return err
 	}
 	b, found, err := ForOwner(ctx, q, owner)
@@ -27,6 +27,13 @@ func RequireDisposedTx(ctx context.Context, q Reader, owner Owner) error {
 	if err := RequireResourcesClosedTx(ctx, q, b.ID); err != nil {
 		return err
 	}
+	return requireBoundSettlement(ctx, q, b)
+}
+
+// requireBoundSettlement checks immutable workflow settlement independently of
+// remote deletion, which happens after export and may be retried after restart.
+func requireBoundSettlement(ctx context.Context, q Reader, b Binding) error {
+	owner := b.Owner
 	canonical, err := loadOwner(ctx, q, owner)
 	if err != nil {
 		return err
@@ -91,12 +98,8 @@ func RequireAttemptDisposedTx(ctx context.Context, q Reader, attemptID string) e
 	if preparing != 0 {
 		return openResources(OpenUnproven, "provider preparation remains open")
 	}
-	var remoteDebt int
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM remote_runtimes r JOIN provider_invocations p ON p.provider_invocation_id=r.invocation_id WHERE r.owner_kind='run' AND p.attempt_id=?`, attemptID).Scan(&remoteDebt); err != nil {
+	if err := requireRemoteOwnersDisposed(ctx, q, `SELECT DISTINCT r.owner_kind,r.invocation_id FROM remote_runtimes r JOIN provider_invocations p ON p.provider_invocation_id=r.invocation_id WHERE r.owner_kind='run' AND p.attempt_id=?`, attemptID); err != nil {
 		return err
-	}
-	if remoteDebt != 0 {
-		return openResources(OpenUnproven, "attempt has unresolved remote runtime reservations")
 	}
 
 	rows, err := q.QueryContext(ctx, `SELECT pr.run_invocation_id FROM provider_requests pr JOIN provider_invocations pi ON pi.provider_invocation_id=pr.run_invocation_id WHERE pi.attempt_id=?`, attemptID)
@@ -171,12 +174,8 @@ func RequireRunDisposedTx(ctx context.Context, q Reader, runID string) error {
 	if preparing != 0 {
 		return openResources(OpenUnproven, "provider preparation remains open")
 	}
-	var remoteDebt int
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM remote_runtimes r JOIN provider_invocations p ON p.provider_invocation_id=r.invocation_id WHERE r.owner_kind='run' AND p.run_id=?`, runID).Scan(&remoteDebt); err != nil {
+	if err := requireRemoteOwnersDisposed(ctx, q, `SELECT DISTINCT r.owner_kind,r.invocation_id FROM remote_runtimes r JOIN provider_invocations p ON p.provider_invocation_id=r.invocation_id WHERE r.owner_kind='run' AND p.run_id=?`, runID); err != nil {
 		return err
-	}
-	if remoteDebt != 0 {
-		return openResources(OpenUnproven, "run has unresolved remote runtime reservations")
 	}
 
 	rows, err := q.QueryContext(ctx, `SELECT pi.provider_invocation_id FROM provider_requests pr JOIN provider_invocations pi ON pi.provider_invocation_id=pr.run_invocation_id WHERE pi.run_id=?`, runID)

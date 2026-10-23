@@ -2306,7 +2306,7 @@ func (s *Store) invalidateUnlaunchedProviderInvocationOnce(ctx context.Context, 
 		return nil
 	}
 	if invocation.InvocationState == ProviderInvocationStateIssued {
-		if err := providerrequest.RequirePreparationLeaseTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID}, providerrequest.Lease{Owner: owner, Version: version}); err != nil {
+		if err := providerrequest.RequirePreparationCleanupLeaseTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID}, providerrequest.Lease{Owner: owner, Version: version}); err != nil {
 			return err
 		}
 		if err := providerrequest.AbandonPreparationTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID}); err != nil {

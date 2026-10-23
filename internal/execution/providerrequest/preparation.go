@@ -53,7 +53,7 @@ func RequirePreparationLeaseTx(ctx context.Context, q Reader, owner Owner, lease
 	return nil
 }
 
-// AbandonPreparationTx proves that an issued invocation has no provider effects.
+// AbandonPreparationTx proves that an issued invocation has no remaining provider effects.
 // It fences the historical reservation, including when a recovery lease owns the
 // canonical operation now. It never creates provider completion evidence.
 func AbandonPreparationTx(ctx context.Context, tx *sql.Tx, owner Owner) error {
@@ -71,7 +71,7 @@ func AbandonPreparationTx(ctx context.Context, tx *sql.Tx, owner Owner) error {
 	if count != 1 {
 		return fmt.Errorf("preparation reservation missing")
 	}
-	if err = requireNoRemoteReservation(ctx, tx, owner); err != nil {
+	if err = abandonRemotePreparationsTx(ctx, tx, owner); err != nil {
 		return err
 	}
 	_, bound, err := ForOwner(ctx, tx, owner)
@@ -89,4 +89,20 @@ func AbandonPreparationTx(ctx context.Context, tx *sql.Tx, owner Owner) error {
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE provider_preparations SET admission_closed=1 WHERE owner_kind=? AND invocation_id=?`, owner.Kind, owner.InvocationID)
 	return err
+}
+
+// RequirePreparationCleanupLeaseTx checks historical ownership without granting
+// fresh work. Cleanup must remain possible after its permanent admission fence.
+func RequirePreparationCleanupLeaseTx(ctx context.Context, q Reader, owner Owner, lease Lease) error {
+	if lease.Owner == "" || lease.Version < 1 {
+		return fmt.Errorf("cleanup lease is required")
+	}
+	var saved Lease
+	if err := q.QueryRowContext(ctx, `SELECT lease_owner,lease_version FROM provider_preparations WHERE owner_kind=? AND invocation_id=?`, owner.Kind, owner.InvocationID).Scan(&saved.Owner, &saved.Version); err != nil {
+		return err
+	}
+	if saved != lease {
+		return fmt.Errorf("preparation cleanup lease conflicts with historical owner")
+	}
+	return nil
 }

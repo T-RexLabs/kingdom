@@ -41,7 +41,7 @@ func TestPreparationHasDurableInvocationBeforeProviderStartup(t *testing.T) {
 }
 
 func TestPreparationAbandonmentAndExpiredReclaim(t *testing.T) {
-	for _, mode := range []string{"failure", "crash", "cancel"} {
+	for _, mode := range []string{"failure", "fenced_failure", "crash", "cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			db := openTestDB(t)
 			applyMigration(t, db, "0001_initial_schema.up.sql")
@@ -62,7 +62,16 @@ func TestPreparationAbandonmentAndExpiredReclaim(t *testing.T) {
 				t.Fatal(err)
 			}
 			switch mode {
-			case "failure":
+			case "failure", "fenced_failure":
+				if mode == "fenced_failure" {
+					if _, e := db.Exec(`UPDATE provider_preparations SET admission_closed=1 WHERE invocation_id='startup'`); e != nil {
+						t.Fatal(e)
+					}
+					wrong := s.InvalidateUnlaunchedProviderInvocation(ctx, InvalidateUnlaunchedProviderInvocationRequest{ProviderInvocationID: "startup", InvalidReason: "prepare_failed", UpdatedAt: "2026-03-01T12:00:02Z", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion + 1})
+					if wrong == nil {
+						t.Fatal("foreign cleanup lease invalidated fenced preparation")
+					}
+				}
 				err = s.InvalidateUnlaunchedProviderInvocation(ctx, InvalidateUnlaunchedProviderInvocationRequest{ProviderInvocationID: "startup", InvalidReason: "prepare_failed", UpdatedAt: "2026-03-01T12:00:02Z", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion})
 			case "crash":
 				var acquired bool

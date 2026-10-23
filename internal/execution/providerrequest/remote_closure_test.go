@@ -123,7 +123,14 @@ func TestRemoteCommandClosureRequiresExactRetainedReceipt(t *testing.T) {
 		t.Fatalf("forced cleanup supported success: %+v", closed)
 	}
 	if err := RequireResourcesClosedTx(ctx, db, b.ID); err == nil {
-		t.Fatal("writer closure became full runtime disposal")
+		t.Fatal("writer closure without capability proof became resource closure")
+	}
+	seedRemoteClosureCertificates(t, db, b, ref)
+	if err := RequireResourcesClosedTx(ctx, db, b.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireOwnerRemoteDisposed(ctx, db, b.Owner); err == nil {
+		t.Fatal("closed writers and capabilities substituted for runtime deletion")
 	}
 	if err := transaction(t, db, func(tx *sql.Tx) error { return IssueDispatchTx(ctx, tx, b.ID, b.Identity, b.Lease, now) }); !errors.Is(err, ErrDispatchClosed) {
 		t.Fatalf("dispatch enabled: %v", err)

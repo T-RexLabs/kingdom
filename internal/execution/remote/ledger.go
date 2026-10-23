@@ -228,6 +228,15 @@ func ClaimDispatchTx(ctx context.Context, tx *sql.Tx, owner Owner, ref Reference
 	if op.Delivery != Prepared {
 		return false, nil
 	}
+	if op.Kind == Create {
+		never, e := ReadRuntimeNeverCreated(ctx, tx, owner, ref)
+		if e != nil {
+			return false, e
+		}
+		if never {
+			return false, ErrAdmissionClosed
+		}
+	}
 	if op.Kind == Execute {
 		never, e := ReadExecutionNotStarted(ctx, tx, owner, ref, id)
 		if e != nil {

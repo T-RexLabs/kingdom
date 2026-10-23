@@ -117,12 +117,5 @@ func RequirePlanningSessionDisposedTx(ctx context.Context, q Reader, sessionID s
 	if preparing != 0 {
 		return openResources(OpenUnproven, "planning preparation remains open")
 	}
-	var pending int
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM remote_runtimes r JOIN planning_provider_invocations p ON p.planning_provider_invocation_id=r.invocation_id WHERE r.owner_kind='planning' AND p.planning_session_id=?`, sessionID).Scan(&pending); err != nil {
-		return err
-	}
-	if pending != 0 {
-		return openResources(OpenUnproven, "planning session has unresolved remote runtime reservations")
-	}
-	return nil
+	return requireRemoteOwnersDisposed(ctx, q, `SELECT DISTINCT r.owner_kind,r.invocation_id FROM remote_runtimes r JOIN planning_provider_invocations p ON p.planning_provider_invocation_id=r.invocation_id WHERE r.owner_kind='planning' AND p.planning_session_id=?`, sessionID)
 }
