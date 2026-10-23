@@ -62,7 +62,7 @@ it("does not poll an expired attempt and cancels the retained identity with a mu
  const user = userEvent.setup();
  centralFetch.mockImplementation(async (path: string, options?: RequestInit) => {
   if (path.endsWith("/methods")) return { providers: ["github-copilot"] };
-  if (options?.method === "DELETE") return { ...attempt, status: "cancelled" };
+  if (options?.method === "DELETE") return { ...attempt, status: "canceled" };
   return { ...attempt, expires_at: new Date(Date.now() - 1000).toISOString() };
  });
  view(); await user.type(await screen.findByLabelText("Account Connection Name"), "Mine");
@@ -137,3 +137,33 @@ it("permits a new sign-in when a saved attempt belongs to an ended session", asy
  expect(sessionStorage.getItem("kingdom.personal-sign-in:owner")).toBeNull();
  expect(centralFetch.mock.calls.some(call => call[1]?.method === "POST")).toBe(false);
 });
+
+it("continues status polling through publication and cleanup without showing stale OAuth instructions", async () => {
+ const user = userEvent.setup(); let checks = 0;
+ centralFetch.mockImplementation(async (path: string, options?: RequestInit) => {
+  if (path.endsWith("/methods")) return { providers: ["github-copilot"] };
+  if (options?.method === "POST") return { ...attempt, status: "publishing" };
+  return ++checks === 1 ? { ...attempt, status: "cleanup" } : { ...attempt, status: "complete", connection: { id: "connection" } };
+ });
+ const connected=vi.fn(); view(connected);
+ await user.type(await screen.findByLabelText("Account Connection Name"), "Mine");
+ await user.click(screen.getByRole("button", { name: "Sign In with GitHub Copilot" }));
+ expect(await screen.findByText("Finishing sign-in…")).toBeInTheDocument();
+ expect(screen.queryByText("Enter code: ABCD-1234")).not.toBeInTheDocument();
+ expect(screen.queryByRole("link")).not.toBeInTheDocument();
+ await waitFor(() => expect(connected).toHaveBeenCalledOnce(), { timeout: 4500 });
+ expect(checks).toBe(2);
+}, 6000);
+it("continues the ChatGPT handoff through completing", async () => {
+ const user = userEvent.setup();
+ centralFetch.mockImplementation(async (path: string, options?: RequestInit) => {
+  if (path.endsWith("/methods")) return { providers: ["openai"] };
+  return options?.method === "POST" ? { ...attempt, provider: "openai", status: "completing", url: undefined } : { ...attempt, provider: "openai", status: "complete", connection: { id: "chatgpt-connection" } };
+ });
+ const connected=vi.fn(); view(connected);
+ await user.type(await screen.findByLabelText("Account Connection Name"), "Mine");
+ await user.click(screen.getByRole("button", { name: "Connect ChatGPT" }));
+ expect(await screen.findByText("Finishing sign-in…")).toBeInTheDocument();
+ expect(screen.queryByText(/pairing code is no longer available/)).not.toBeInTheDocument();
+ await waitFor(() => expect(connected).toHaveBeenCalledOnce(), { timeout: 3000 });
+}, 5000);

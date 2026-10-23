@@ -8,7 +8,7 @@ export type PersonalProvider = "github-copilot" | "openai";
 type SignIn = {
   id: string;
   provider: PersonalProvider;
-  status: "starting" | "pending" | "complete" | "failed" | "expired" | "cancelled" | "interrupted";
+  status: "starting" | "pending" | "publishing" | "cleanup" | "canceling" | "completing" | "complete" | "failed" | "expired" | "canceled" | "interrupted";
   expires_at: string;
   url?: string;
   instructions?: string;
@@ -16,7 +16,8 @@ type SignIn = {
   connection?: { id: string };
 };
 type StartRequest = { key: string; body: string };
-const pendingStatus = (status: SignIn["status"]) => status === "pending" || status === "starting";
+const pendingStatus = (status: SignIn["status"]) => ["starting", "pending", "publishing", "cleanup", "canceling", "completing"].includes(status);
+const authorizationPending = (status: SignIn["status"]) => status === "pending" || status === "starting";
 function retainedAttempt(key: string): string | null {
   try { return sessionStorage.getItem(key); } catch { return null; }
 }
@@ -81,10 +82,10 @@ export function PersonalAccounts({ ownerID, onConnected }: { ownerID: string; on
 
   useEffect(() => {
     if (!attemptID || busy || error || attempt && !pendingStatus(attempt.status)) return;
-    const expiry = attempt ? Date.parse(attempt.expires_at) : Number.POSITIVE_INFINITY;
+    const expiry = attempt && authorizationPending(attempt.status) ? Date.parse(attempt.expires_at) : Number.POSITIVE_INFINITY;
     const delay = attempt ? Math.max(0, Math.min(1500, expiry - Date.now())) : 0;
     const timer = window.setTimeout(() => {
-      if (attempt && (!Number.isFinite(expiry) || expiry <= Date.now())) setAttempt({ ...attempt, status: "expired" });
+      if (attempt && authorizationPending(attempt.status) && (!Number.isFinite(expiry) || expiry <= Date.now())) setAttempt({ ...attempt, status: "expired" });
       else void check(attemptID);
     }, Number.isFinite(delay) ? delay : 0);
     return () => window.clearTimeout(timer);
@@ -116,7 +117,7 @@ export function PersonalAccounts({ ownerID, onConnected }: { ownerID: string; on
     try {
       await centralFetch<void>(`/personal-accounts/sign-ins/${encodeURIComponent(request.id)}`, { method: "DELETE", headers: { "Idempotency-Key": request.key }, signal: controller.signal });
       if (!controller.signal.aborted) {
-        accept({ id: request.id, provider: attempt?.provider ?? provider, expires_at: attempt?.expires_at ?? new Date().toISOString(), status: "cancelled" });
+        accept({ id: request.id, provider: attempt?.provider ?? provider, expires_at: attempt?.expires_at ?? new Date().toISOString(), status: "canceled" });
         cancellation.current = null;
       }
     } catch { if (!controller.signal.aborted) setError("Cancellation is not confirmed. Check the same sign-in or retry cancellation."); }
@@ -136,7 +137,7 @@ export function PersonalAccounts({ ownerID, onConnected }: { ownerID: string; on
   const effectiveProvider = attempt?.provider ?? selected;
   const link = attempt?.provider === "github-copilot" ? githubSignInURL(attempt.url) : undefined;
   const unsafeLink = attempt?.provider === "github-copilot" && !!attempt.url && !link;
-  const expired = attempt && (attempt.status === "expired" || !Number.isFinite(Date.parse(attempt.expires_at)) || Date.parse(attempt.expires_at) <= Date.now());
+  const expired = attempt && (attempt.status === "expired" || authorizationPending(attempt.status) && (!Number.isFinite(Date.parse(attempt.expires_at)) || Date.parse(attempt.expires_at) <= Date.now()));
   const active = busy || !!attemptID || pending.current !== null;
   return <div className="max-w-xl space-y-4 rounded-lg border border-border p-5">
     <div><h3 className="font-medium">Personal Account</h3><p className="mt-2 text-sm text-foreground-muted">Use your own provider subscription. This connection is available only to you. Each provider applies its own plan and usage limits.</p></div>
@@ -149,12 +150,12 @@ export function PersonalAccounts({ ownerID, onConnected }: { ownerID: string; on
       <Button type="submit" disabled={busy || !label.trim()}>{busy ? "Starting…" : pending.current ? "Retry Same Sign-In" : selected === "openai" ? "Connect ChatGPT" : "Sign In with GitHub Copilot"}</Button>
     </form> : null}
     {attemptID && <div className="space-y-3">
-      {expired ? <p className="text-sm">This sign-in has expired. Cancel it and start a new sign-in.</p> : attempt?.status === "failed" || attempt?.status === "interrupted" ? <p className="text-sm">Sign-in did not complete. Start a new sign-in to try again.</p> : attempt?.status === "cancelled" ? <p role="status" className="text-sm">Sign-in was cancelled.</p> : <>
-        <p role="status" className="text-sm">{busy ? "Checking sign-in…" : "Waiting for sign-in to complete."}</p>
-        {effectiveProvider === "github-copilot" && <>{attempt?.instructions && <p className="whitespace-pre-wrap text-sm">{attempt.instructions}</p>}{link && <a href={link} target="_blank" rel="noopener noreferrer" className="inline-block text-sm underline">Open GitHub Sign-In</a>}</>}
-        {effectiveProvider === "openai" && (attempt?.pairing_code ? <div className="space-y-3 text-sm"><p>On a computer with a browser, run the command below. Enter the pairing code when the helper asks for it.</p><code className="block select-all break-all rounded bg-surface px-3 py-2">kd chatgpt attach --service {window.location.origin}</code><div><p className={fieldLabelClass}>Pairing Code</p><output className="block select-all break-all font-mono">{attempt.pairing_code}</output></div><Button variant="secondary" onClick={() => void copyCode()}>Copy Pairing Code</Button><p className="text-foreground-muted">Keep this code private. Kingdom shows it only in this tab.</p></div> : <p className="text-sm">The pairing code is no longer available in this tab. If you did not start the helper, cancel this sign-in and start again.</p>)}
+      {expired ? <p className="text-sm">This sign-in has expired. Cancel it and start a new sign-in.</p> : attempt?.status === "failed" || attempt?.status === "interrupted" ? <p className="text-sm">Sign-in did not complete. Start a new sign-in to try again.</p> : attempt?.status === "canceled" ? <p role="status" className="text-sm">Sign-in was cancelled.</p> : <>
+        <p role="status" className="text-sm">{busy ? "Checking sign-in…" : attempt?.status === "canceling" ? "Canceling sign-in…" : attempt && !authorizationPending(attempt.status) ? "Finishing sign-in…" : "Waiting for sign-in to complete."}</p>
+        {attempt?.status === "pending" && effectiveProvider === "github-copilot" && <>{attempt?.instructions && <p className="whitespace-pre-wrap text-sm">{attempt.instructions}</p>}{link && <a href={link} target="_blank" rel="noopener noreferrer" className="inline-block text-sm underline">Open GitHub Sign-In</a>}</>}
+        {attempt?.status === "pending" && effectiveProvider === "openai" && (attempt?.pairing_code ? <div className="space-y-3 text-sm"><p>On a computer with a browser, run the command below. Enter the pairing code when the helper asks for it.</p><code className="block select-all break-all rounded bg-surface px-3 py-2">kd chatgpt attach --service {window.location.origin}</code><div><p className={fieldLabelClass}>Pairing Code</p><output className="block select-all break-all font-mono">{attempt.pairing_code}</output></div><Button variant="secondary" onClick={() => void copyCode()}>Copy Pairing Code</Button><p className="text-foreground-muted">Keep this code private. Kingdom shows it only in this tab.</p></div> : <p className="text-sm">The pairing code is no longer available in this tab. If you did not start the helper, cancel this sign-in and start again.</p>)}
       </>}
-      <div className="flex flex-wrap gap-2">{!expired && (!attempt || pendingStatus(attempt.status)) && <Button variant="secondary" disabled={busy} onClick={() => void check(attemptID)}>{error ? "Retry Sign-In Status" : "Check Sign-In"}</Button>}{attempt?.status !== "cancelled" && <Button variant="ghost" disabled={busy} onClick={() => void cancel()}>Cancel Sign-In</Button>}{attempt && !pendingStatus(attempt.status) && <Button variant="secondary" disabled={busy} onClick={reset}>Start New Sign-In</Button>}</div>
+      <div className="flex flex-wrap gap-2">{!expired && (!attempt || pendingStatus(attempt.status)) && <Button variant="secondary" disabled={busy} onClick={() => void check(attemptID)}>{error ? "Retry Sign-In Status" : "Check Sign-In"}</Button>}{attempt?.status !== "canceled" && <Button variant="ghost" disabled={busy} onClick={() => void cancel()}>Cancel Sign-In</Button>}{attempt && !pendingStatus(attempt.status) && <Button variant="secondary" disabled={busy} onClick={reset}>Start New Sign-In</Button>}</div>
     </div>}
     {attempt?.status === "complete" && <div className="space-y-3"><p role="status" className="text-sm">Your personal account is connected. Select a project and refresh its models before you start new work.</p><Button variant="secondary" onClick={reset}>Connect Another Account</Button></div>}
   </div>;
