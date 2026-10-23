@@ -308,3 +308,32 @@ func TestRedirectCannotEscapeTunnel(t *testing.T) {
 		t.Fatal("redirect opened another tunnel")
 	}
 }
+
+// OpenCode wait replies only after the owned request has completed. The
+// forwarding establishment budget must not become its execution deadline.
+func TestWaitResponseCanOutliveTunnelOpenTimeout(t *testing.T) {
+	c := config(func(ctx context.Context, _ string, _ string, _ uint32) (io.ReadWriteCloser, error) {
+		return stream(ctx, func(conn net.Conn) {
+			r, err := http.ReadRequest(bufio.NewReader(conn))
+			if err != nil {
+				return
+			}
+			io.Copy(io.Discard, r.Body)
+			time.Sleep(100 * time.Millisecond)
+			fmt.Fprint(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+		}), nil
+	})
+	c.OpenTimeout = 20 * time.Millisecond
+	tr := open(t, c)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	res, err := tr.RoundTrip(request(t, ctx, "POST"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil || string(body) != "ok" {
+		t.Fatalf("body=%q err=%v", body, err)
+	}
+}

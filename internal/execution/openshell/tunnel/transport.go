@@ -81,7 +81,9 @@ func New(ownerLifetime context.Context, c Config, authorization string) (*Transp
 	c.Target = c.Target.clone()
 	ctx, cancel := context.WithCancel(ownerLifetime)
 	t := &Transport{config: c, authorization: authorization, ctx: ctx, cancel: cancel, slots: make(chan struct{}, c.MaxConnections), connections: make(map[*bridge]struct{}), done: make(chan struct{})}
-	t.http = &http.Transport{DialContext: t.dial, Proxy: nil, DisableKeepAlives: true, ForceAttemptHTTP2: false, MaxConnsPerHost: c.MaxConnections, MaxResponseHeaderBytes: 1 << 20, ResponseHeaderTimeout: c.OpenTimeout}
+	// Long-poll response deadlines belong to the request context. OpenTimeout
+	// bounds forwarding and identity checks only, not provider execution.
+	t.http = &http.Transport{DialContext: t.dial, Proxy: nil, DisableKeepAlives: true, ForceAttemptHTTP2: false, MaxConnsPerHost: c.MaxConnections, MaxResponseHeaderBytes: 1 << 20}
 	go func() { <-ctx.Done(); t.shutdown() }()
 	return t, nil
 }
