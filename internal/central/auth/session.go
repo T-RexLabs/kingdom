@@ -375,7 +375,38 @@ func (m *Manager) requestHandler(project string, next http.Handler) http.Handler
 		m.active[binding] = struct{}{}
 		p := api.Principal{ActorID: session.User.ID, RoleID: "member", Method: "cookie", SessionID: session.SessionID, SessionOrigin: m.origin, ExpiresAt: session.ExpiresAt}
 		m.mu.Unlock()
-		defer func() { cancel(); m.mu.Lock(); delete(m.active, binding); m.mu.Unlock() }()
+		// Canceling a derived request context does not interrupt ResponseWriter
+		// writes or request-body reads. Expire the actual wire deadlines too.
+		// Unsupported wrappers retain the active request until their handler
+		// returns; cancellation alone is never evidence that a blocked write ended.
+		controller := http.NewResponseController(w)
+		finished, watchDone := make(chan struct{}), make(chan struct{})
+		go func(watchCtx context.Context) {
+			defer close(watchDone)
+			select {
+			case <-watchCtx.Done():
+			case <-finished:
+				if watchCtx.Err() == nil {
+					return
+				}
+			}
+			_ = controller.SetReadDeadline(time.Now())
+			_ = controller.SetWriteDeadline(time.Now())
+		}(ctx)
+		defer func() {
+			// Completion and revocation linearize under the same lock. A
+			// revocation before detachment cancels ctx; the watcher retains
+			// expired deadlines through the server's final buffered flush.
+			// Later revocations cannot reopen this completed request.
+			m.mu.Lock()
+			delete(m.active, binding)
+			close(finished)
+			m.mu.Unlock()
+			<-watchDone
+			// Join before normal completion cancels its private context, so a
+			// successful response never expires the keep-alive connection.
+			cancel()
+		}()
 		ctx = context.WithValue(ctx, verifiedContextKey{}, verifiedContext{manager: m, binding: binding, principal: p})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
