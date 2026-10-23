@@ -29,6 +29,22 @@ func MatchesSelection(raw string, s Selection) error {
 	return nil
 }
 
+// MatchesSnapshotSelection keeps local credential references server-owned while
+// retaining the exact model and effort selected at enqueue.
+func MatchesSnapshotSelection(raw string, s Snapshot) error {
+	if s.Validate() != nil {
+		return ErrInvalid
+	}
+	if s.AuthorityDomain() != DomainLocalOwner {
+		return MatchesSelection(raw, s.Selection)
+	}
+	var requested RequestedSelection
+	if json.Unmarshal([]byte(raw), &requested) != nil || requested.Connection != nil || requested.Model != s.Selection.Model || requested.ThinkingEffort != s.Selection.ThinkingEffort {
+		return ErrInvalid
+	}
+	return nil
+}
+
 // CopyPlanningTx copies only an automatic title's canonical causal reply from
 // the same session. The source actor and exact revision remain unchanged.
 func CopyPlanningTx(ctx context.Context, tx *sql.Tx, target, source string) error {

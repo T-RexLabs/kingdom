@@ -28,7 +28,7 @@ func (s *PlanningStore) captureOperationAccess(ctx context.Context, tx *sql.Tx, 
 		return access.CopyPlanningTx(ctx, tx, row.OperationID, row.ModelSelectionSourceOperationID)
 	}
 	if s.resolveAccess == nil {
-		return fmt.Errorf("hosted planning access resolver is required")
+		return fmt.Errorf("managed planning access resolver is required")
 	}
 	snapshot, err := s.resolveAccess(ctx, row.ModelSelectionJSON)
 	if err != nil {
@@ -37,7 +37,7 @@ func (s *PlanningStore) captureOperationAccess(ctx context.Context, tx *sql.Tx, 
 	if snapshot.ProjectID != project {
 		return access.ErrInvalid
 	}
-	if err := access.MatchesSelection(row.ModelSelectionJSON, snapshot.Selection); err != nil {
+	if err := access.MatchesSnapshotSelection(row.ModelSelectionJSON, snapshot); err != nil {
 		return err
 	}
 	return access.CapturePlanningTx(ctx, tx, row.OperationID, snapshot)

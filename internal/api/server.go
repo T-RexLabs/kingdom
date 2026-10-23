@@ -54,6 +54,7 @@ var generatedIDCounter uint64
 
 type ServerConfig struct {
 	HostedSelection *HostedSelectionConfig
+	LocalSelection  *LocalSelectionConfig
 	// ThemeStore is owned by the runtime that constructs the API server.
 	ThemeStore                 *theme.Store
 	DB                         *sql.DB
@@ -94,6 +95,7 @@ type ServerConfig struct {
 
 type Server struct {
 	hostedSelection            *HostedSelectionConfig
+	localSelection             *LocalSelectionConfig
 	themes                     *theme.Store
 	db                         *sql.DB
 	now                        func() time.Time
@@ -284,10 +286,18 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	if err := validateHostedSelectionConfig(startupCtx, cfg.DB, cfg); err != nil {
 		return nil, err
 	}
+	if err := validateLocalSelectionConfig(startupCtx, cfg.DB, cfg); err != nil {
+		return nil, err
+	}
 	var planningOptions []state.PlanningStoreOption
 	if cfg.HostedSelection != nil {
 		planningOptions = append(planningOptions, state.WithPlanningAccessResolver(func(ctx context.Context, raw string) (access.Snapshot, error) {
 			return resolveHostedSelection(ctx, cfg.HostedSelection, raw)
+		}))
+	}
+	if cfg.LocalSelection != nil {
+		planningOptions = append(planningOptions, state.WithPlanningAccessResolver(func(ctx context.Context, raw string) (access.Snapshot, error) {
+			return resolveLocalSelection(ctx, cfg.LocalSelection, raw)
 		}))
 	}
 	planningStore := state.NewPlanningStore(cfg.DB, planningOptions...)
@@ -379,6 +389,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 
 	s := &Server{
 		hostedSelection:            cfg.HostedSelection,
+		localSelection:             cfg.LocalSelection,
 		themes:                     cfg.ThemeStore,
 		db:                         cfg.DB,
 		now:                        now,

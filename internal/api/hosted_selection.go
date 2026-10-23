@@ -33,12 +33,16 @@ func validateHostedSelectionConfig(ctx context.Context, db *sql.DB, cfg ServerCo
 		return err
 	}
 	if cfg.HostedSelection == nil {
-		if project != "" {
+		if project != "" && cfg.LocalSelection == nil {
 			return errors.New("hosted project requires a selection resolver")
 		}
 		return nil
 	}
-	if project == "" || project != cfg.HostedSelection.ProjectID || cfg.HostedSelection.Resolver == nil || cfg.Authenticator == nil || cfg.ProviderModelCatalog == nil {
+	domain, _, domainErr := access.ProjectDomain(ctx, db)
+	if domainErr != nil {
+		return domainErr
+	}
+	if domain != access.DomainHosted || cfg.LocalSelection != nil || project == "" || project != cfg.HostedSelection.ProjectID || cfg.HostedSelection.Resolver == nil || cfg.Authenticator == nil || cfg.ProviderModelCatalog == nil {
 		return errors.New("hosted selection requires matching project, authenticator, resolver and explicit catalog")
 	}
 	return nil
@@ -65,6 +69,14 @@ func resolveHostedSelection(ctx context.Context, cfg *HostedSelectionConfig, raw
 	return snapshot, nil
 }
 func (s *Server) planningSelection(ctx context.Context, selection *gen.PlanningAgentModelSelection) error {
+	if s.localSelection != nil {
+		raw, err := json.Marshal(selection)
+		if err != nil {
+			return err
+		}
+		_, err = resolveLocalSelection(ctx, s.localSelection, string(raw))
+		return err
+	}
 	if s.hostedSelection == nil {
 		if selection != nil && selection.Connection != nil {
 			return errors.New("model connections are not accepted in local mode")
@@ -79,7 +91,7 @@ func (s *Server) planningSelection(ctx context.Context, selection *gen.PlanningA
 	return err
 }
 func (s *Server) runAccessSnapshot(ctx context.Context, selection *gen.RunModelSelection) (*access.RunSnapshot, error) {
-	if s.hostedSelection == nil {
+	if s.hostedSelection == nil && s.localSelection == nil {
 		return nil, nil
 	}
 	if selection == nil {
@@ -90,13 +102,16 @@ func (s *Server) runAccessSnapshot(ctx context.Context, selection *gen.RunModelS
 		if err != nil {
 			return access.Snapshot{}, err
 		}
+		if s.localSelection != nil {
+			return resolveLocalSelection(ctx, s.localSelection, string(raw))
+		}
 		return resolveHostedSelection(ctx, s.hostedSelection, string(raw))
 	}
 	global, err := resolve(selection.Global)
 	if err != nil {
 		return nil, err
 	}
-	result := &access.RunSnapshot{Version: 1, ActorID: global.ActorID, ProjectID: global.ProjectID, Global: global.Selection, Roles: map[string]access.Selection{}}
+	result := &access.RunSnapshot{Version: global.Version, Domain: global.Domain, ActorID: global.ActorID, ProjectID: global.ProjectID, Global: global.Selection, Roles: map[string]access.Selection{}}
 	if selection.RoleOverrides != nil {
 		for role, entry := range *selection.RoleOverrides {
 			snapshot, err := resolve(entry)
