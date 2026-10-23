@@ -239,6 +239,12 @@ func requireEmptyInbox(ctx context.Context, client *Client, directory, sessionID
 	return nil
 }
 
+// Drain releases local preparation resources. Local requests have no separate
+// remote sandbox disposal obligation.
+func (s *Service) Drain(ctx context.Context, invocationID string) error {
+	return s.Discard(ctx, invocationID)
+}
+
 // Discard releases a prepared request that will not be executed.
 func (s *Service) Discard(ctx context.Context, invocationID string) error {
 	prepared := s.requests.registry.invocation(invocationID)

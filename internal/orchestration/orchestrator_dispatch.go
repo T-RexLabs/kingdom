@@ -327,9 +327,18 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 		defer cancel()
 		return o.executionStore.InvalidateUnlaunchedProviderInvocation(cleanupCtx, executionstore.InvalidateUnlaunchedProviderInvocationRequest{ProviderInvocationID: providerInvocationID, InvalidReason: "provider_preparation_failed", UpdatedAt: o.now().UTC().Format(time.RFC3339Nano), ExpectedLeaseOwner: attempt.LeaseOwner, ExpectedLeaseVersion: attempt.LeaseVersion})
 	}
+	cleanupIssued := func() error {
+		if err := o.drainProviderRequest(ctx, providerInvocationID); err != nil {
+			return err
+		}
+		if err := o.discardProviderRequest(ctx, providerInvocationID); err != nil {
+			return err
+		}
+		return abandonPreparation()
+	}
 	prepared, prepareErr := o.provider.Prepare(ctx, o.providerRequest(job))
 	if prepareErr != nil {
-		if err := abandonPreparation(); err != nil {
+		if err := cleanupIssued(); err != nil {
 			return errors.Join(prepareErr, err)
 		}
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "prepare provider request", prepareErr)
@@ -339,11 +348,10 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 		if errors.As(invocationErr, &outcomeUnknown) {
 			return fmt.Errorf("provider invocation activation outcome is unresolved for attempt %q: %w", attemptID, invocationErr)
 		}
-		discardErr := o.discardProviderRequest(ctx, providerInvocationID)
-		if err := abandonPreparation(); err != nil {
-			return errors.Join(invocationErr, err, discardErr)
+		if err := cleanupIssued(); err != nil {
+			return errors.Join(invocationErr, err)
 		}
-		return errors.Join(o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "create provider invocation", invocationErr), discardErr)
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "create provider invocation", invocationErr)
 	}
 
 	_ = o.emitCommunicationMessage(ctx, communicationMessageRequest{
@@ -368,6 +376,9 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 		if errors.As(err, &outcomeUnknown) {
 			return fmt.Errorf("provider execution start outcome is unresolved for attempt %q: %w", attemptID, err)
 		}
+		if drainErr := o.drainProviderRequest(ctx, providerInvocationID); drainErr != nil {
+			return errors.Join(err, drainErr)
+		}
 		rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		rollbackErr := o.executionStore.InvalidateUnlaunchedProviderInvocation(rollbackCtx, executionstore.InvalidateUnlaunchedProviderInvocationRequest{
 			ProviderInvocationID: providerInvocationID,
@@ -377,7 +388,9 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 			ExpectedLeaseVersion: attempt.LeaseVersion,
 		})
 		cancelRollback()
-		rollbackErr = errors.Join(rollbackErr, o.discardProviderRequest(ctx, providerInvocationID))
+		if rollbackErr == nil {
+			rollbackErr = o.discardProviderRequest(ctx, providerInvocationID)
+		}
 		if rollbackErr != nil {
 			return errors.Join(
 				fmt.Errorf("record provider execution start: %w", err),
@@ -389,7 +402,7 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 	attempt.NodeStatus = "starting"
 
 	if err := o.preparationMayLaunch(ctx, &job); err != nil {
-		return errors.Join(err, o.discardProviderRequest(ctx, providerInvocationID))
+		return errors.Join(err, o.drainProviderRequest(ctx, providerInvocationID))
 	}
 	preparation.transferred = true
 	o.startOwnedAsyncExecution(preparation.ctx, job, preparation.cancel)
@@ -1271,6 +1284,14 @@ func (o *orchestrationLoop) providerRequest(job asyncExecutionResult) opencode.E
 		request.OpenContinuationPrompt = job.openPrompt
 	}
 	return request
+}
+
+// drainProviderRequest closes writers before canonical rollback. Final disposal
+// remains a separate step so a bound request can first record its invalidation.
+func (o *orchestrationLoop) drainProviderRequest(ctx context.Context, invocation string) error {
+	cleanupCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
+	defer cancel()
+	return o.provider.Drain(cleanupCtx, invocation)
 }
 
 // discardProviderRequest releases a prepared request that will not run.

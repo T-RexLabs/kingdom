@@ -92,6 +92,10 @@ func (p *FixtureProvider) Prepare(_ context.Context, req ExecuteRequest) (Prepar
 	return prepared, nil
 }
 
+func (p *FixtureProvider) Drain(ctx context.Context, invocationID string) error {
+	return p.Discard(ctx, invocationID)
+}
+
 func (p *FixtureProvider) Discard(_ context.Context, invocationID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

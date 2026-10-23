@@ -18,8 +18,12 @@ import (
 type ManagedWorker interface {
 	Provision(context.Context, ManagedProvision) (ManagedHandle, error)
 	// CloseInvocation recovers existing ownership after uncertain provisioning.
-	// It must never provision resources. Nil means all existing debt is resolved.
+	// It must never provision resources. Nil proves writer and capability closure;
+	// final export and sandbox deletion remain separate obligations.
 	CloseInvocation(context.Context, string) error
+	// DiscardInvocation performs exact disposal only after canonical settlement
+	// or a proven abandoned preparation. It never creates or exports resources.
+	DiscardInvocation(context.Context, string) error
 }
 
 type ManagedProvision struct {
@@ -57,6 +61,17 @@ type ManagedHandle interface {
 	// RecoverReceipts imports only this request's native effect receipts through
 	// canonical validation. Remote file paths are never accepted as host paths.
 	RecoverReceipts(context.Context, providerexecution.RequestIdentity) error
+
+	// CancelTools fences and joins tools while the server remains available for
+	// terminal log and message verification.
+	CancelTools(context.Context, providerexecution.RequestIdentity) error
+
+	// Export retains a verified immutable output after Close. It never publishes
+	// that output into a trusted project or authorizes successful settlement.
+	Export(context.Context) error
+
+	// Discard performs exact disposal under the canonical disposition gate.
+	Discard(context.Context) error
 
 	// Close fences admission, cancels and joins all managed tools and the server,
 	// and retains complete output and closure receipts. It works before profile

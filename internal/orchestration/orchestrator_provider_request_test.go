@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +26,8 @@ type requestObserver struct {
 
 	prepareErr   error
 	afterPrepare func(context.Context, opencode.ExecuteRequest) error
+	onDrain      func(string) error
+	onDiscard    func(string) error
 
 	mu                   sync.Mutex
 	events               []string
@@ -92,10 +95,27 @@ func (o *requestObserver) Cancel(ctx context.Context, attemptID string) error {
 	return o.Provider.Cancel(ctx, attemptID)
 }
 
+func (o *requestObserver) Drain(ctx context.Context, invocationID string) error {
+	o.mu.Lock()
+	o.record("drain:" + invocationID)
+	o.mu.Unlock()
+	if o.onDrain != nil {
+		if err := o.onDrain(invocationID); err != nil {
+			return err
+		}
+	}
+	return o.Provider.Drain(ctx, invocationID)
+}
+
 func (o *requestObserver) Discard(ctx context.Context, invocationID string) error {
 	o.mu.Lock()
 	o.record("discard:" + invocationID)
 	o.mu.Unlock()
+	if o.onDiscard != nil {
+		if err := o.onDiscard(invocationID); err != nil {
+			return err
+		}
+	}
 	return o.Provider.Discard(ctx, invocationID)
 }
 
@@ -224,10 +244,10 @@ func TestFailedActivationDiscardsPreparedRequestAndFailsNodeSetup(t *testing.T) 
 	dispatch.dispatchAndDrain(t)
 
 	var invocationID string
-	if events := observer.eventsSnapshot(); len(events) == 2 {
+	if events := observer.eventsSnapshot(); len(events) == 3 {
 		invocationID = events[0][len("prepare:"):]
 	}
-	if got, want := observer.eventsSnapshot(), []string{"prepare:" + invocationID, "discard:" + invocationID}; invocationID == "" || fmt.Sprint(got) != fmt.Sprint(want) {
+	if got, want := observer.eventsSnapshot(), []string{"prepare:" + invocationID, "drain:" + invocationID, "discard:" + invocationID}; invocationID == "" || fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("provider calls=%v, want a prepare followed by a discard of the same request", got)
 	}
 	assertSetupFailed(t, db, dispatch.attemptID, "create provider invocation")
@@ -240,12 +260,22 @@ func TestPrepareFailureRetainsAbandonedInvocationWithoutProviderEvidence(t *test
 	applyMigration(t, db)
 	dispatch, observer := newRequestDispatch(t, db, &sequenceExecutionAdapter{outputs: []string{"must not execute"}})
 	observer.prepareErr = errors.New("provider server is unavailable")
+	observer.onDiscard = func(id string) error {
+		var state string
+		if err := db.QueryRow(`SELECT invocation_state FROM provider_invocations WHERE provider_invocation_id=?`, id).Scan(&state); err != nil {
+			return err
+		}
+		if state != "issued" {
+			t.Fatalf("issued preparation invalidated before disposal: %s", state)
+		}
+		return nil
+	}
 
 	dispatch.dispatchAndDrain(t)
 
 	events := observer.eventsSnapshot()
-	if len(events) != 1 || events[0][:len("prepare:")] != "prepare:" {
-		t.Fatalf("provider calls=%v, want a single failed prepare", events)
+	if len(events) != 3 || events[1] != "drain:"+events[0][len("prepare:"):] || events[2] != "discard:"+events[0][len("prepare:"):] {
+		t.Fatalf("provider calls=%v, want prepare, drain, discard", events)
 	}
 	assertSetupFailed(t, db, dispatch.attemptID, "prepare provider request")
 	assertIssuedPreparationAbandoned(t, db, dispatch.attemptID)
@@ -254,7 +284,7 @@ func TestPrepareFailureRetainsAbandonedInvocationWithoutProviderEvidence(t *test
 	}
 }
 
-func TestLostLeaseBetweenPrepareAndLaunchDiscardsPreparedRequest(t *testing.T) {
+func TestLostLeaseBetweenPrepareAndLaunchDrainsPreparedRequest(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 	applyMigration(t, db)
@@ -269,8 +299,8 @@ func TestLostLeaseBetweenPrepareAndLaunchDiscardsPreparedRequest(t *testing.T) {
 	if events := observer.eventsSnapshot(); len(events) == 2 {
 		invocationID = events[0][len("prepare:"):]
 	}
-	if got, want := observer.eventsSnapshot(), []string{"prepare:" + invocationID, "discard:" + invocationID}; invocationID == "" || fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("provider calls=%v, want a prepare followed by a discard and no execute", got)
+	if got, want := observer.eventsSnapshot(), []string{"prepare:" + invocationID, "drain:" + invocationID}; invocationID == "" || fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("provider calls=%v, want a prepare followed by a drain and no disposal or execute", got)
 	}
 	if rows := countTestRows(t, db, `SELECT COUNT(1) FROM provider_requests WHERE dispatch_issued_at IS NOT NULL`); rows != 0 {
 		t.Fatalf("a request was dispatched after its lease was lost: %d", rows)
@@ -425,7 +455,57 @@ func TestCancellationDuringPreparationDiscardsUnactivatedRequest(t *testing.T) {
 	}
 	dispatch.dispatchAndDrain(t)
 	events := observer.eventsSnapshot()
-	if len(events) != 2 || events[1] != "discard:"+events[0][len("prepare:"):] {
+	if len(events) != 3 || events[1] != "drain:"+events[0][len("prepare:"):] || events[2] != "discard:"+events[0][len("prepare:"):] {
 		t.Fatalf("cancellation skipped prepared cleanup: %v", events)
+	}
+}
+
+func TestBoundStartFailureDrainsBeforeInvalidationAndDisposesAfter(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	dispatch, observer := newRequestDispatch(t, db, &sequenceExecutionAdapter{outputs: []string{"must not execute"}})
+	mustExec(t, db, `CREATE TRIGGER fail_start BEFORE UPDATE OF node_status ON node_runs WHEN NEW.node_status='starting' BEGIN SELECT RAISE(FAIL,'start persistence failed'); END`)
+	observer.onDrain = func(id string) error {
+		var state string
+		if e := db.QueryRow(`SELECT invocation_state FROM provider_invocations WHERE provider_invocation_id=?`, id).Scan(&state); e != nil {
+			return e
+		}
+		if state != "open" {
+			t.Fatalf("drain state=%s", state)
+		}
+		return nil
+	}
+	observer.onDiscard = func(id string) error {
+		var state string
+		if e := db.QueryRow(`SELECT invocation_state FROM provider_invocations WHERE provider_invocation_id=?`, id).Scan(&state); e != nil {
+			return e
+		}
+		if state != "invalidated" {
+			t.Fatalf("disposal preceded invalidation: %s", state)
+		}
+		return nil
+	}
+	dispatch.dispatchAndDrain(t)
+	events := observer.eventsSnapshot()
+	if len(events) != 3 || !strings.HasPrefix(events[1], "drain:") || !strings.HasPrefix(events[2], "discard:") {
+		t.Fatal(events)
+	}
+	assertSetupFailed(t, db, dispatch.attemptID, "mark node starting")
+}
+
+func TestUnresolvedPreparationDrainRetainsCanonicalOwner(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	dispatch, observer := newRequestDispatch(t, db, &sequenceExecutionAdapter{outputs: []string{"must not execute"}})
+	observer.prepareErr = errors.New("prepare failed")
+	observer.onDrain = func(string) error { return errors.New("writers unresolved") }
+	dispatch.dispatchAndDrain(t)
+	events := observer.eventsSnapshot()
+	if len(events) != 2 || !strings.HasPrefix(events[1], "drain:") {
+		t.Fatal(events)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT invocation_state FROM provider_invocations WHERE attempt_id=?`, dispatch.attemptID).Scan(&state); err != nil || state != "issued" {
+		t.Fatalf("owner released before drain: %s %v", state, err)
 	}
 }

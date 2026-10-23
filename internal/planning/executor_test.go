@@ -22,6 +22,8 @@ type preparer struct {
 	invocations int
 	prepareErr  error
 	activateErr error
+	drainErr    error
+	discardErr  error
 }
 
 func (p *preparer) Prepare(_ context.Context, req opencode.ExecuteRequest) (opencode.Prepared, error) {
@@ -40,12 +42,14 @@ func (p *preparer) Prepare(_ context.Context, req opencode.ExecuteRequest) (open
 	return prepared, nil
 }
 
+func (p *preparer) Drain(context.Context, string) error { p.record("drain"); return p.drainErr }
+
 func (p *preparer) Discard(_ context.Context, invocationID string) error {
 	p.record("discard")
 	p.mu.Lock()
 	p.discarded = append(p.discarded, invocationID)
 	p.mu.Unlock()
-	return nil
+	return p.discardErr
 }
 
 func (p *preparer) record(call string) {

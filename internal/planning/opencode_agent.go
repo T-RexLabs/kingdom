@@ -40,6 +40,7 @@ func WithRequestLimits(first, inactivity time.Duration) AgentOption {
 type plannerExecutor interface {
 	Prepare(context.Context, opencode.ExecuteRequest) (opencode.Prepared, error)
 	Execute(context.Context, opencode.ExecuteRequest) (opencode.ExecuteResponse, error)
+	Drain(context.Context, string) error
 	Discard(context.Context, string) error
 }
 
@@ -212,23 +213,26 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompts
 			return ProviderExecutionMetadata{}, fmt.Errorf("reserve planner preparation: %w", err)
 		}
 	}
+	cleanupPreparation := func() error {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := a.executor.Drain(cleanupCtx, invocationID); err != nil {
+			return err
+		}
+		if err := a.executor.Discard(cleanupCtx, invocationID); err != nil {
+			return err
+		}
+		if providerInvocation.AbandonPreparation != nil {
+			return providerInvocation.AbandonPreparation(cleanupCtx)
+		}
+		return nil
+	}
 	prepared, err := a.executor.Prepare(ctx, request)
 	if err != nil {
-		if providerInvocation.AbandonPreparation != nil {
-			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-			defer cancel()
-			err = errors.Join(err, providerInvocation.AbandonPreparation(cleanupCtx))
-		}
-		return ProviderExecutionMetadata{}, fmt.Errorf("prepare opencode request: %w", err)
+		return ProviderExecutionMetadata{}, errors.Join(fmt.Errorf("prepare opencode request: %w", err), cleanupPreparation())
 	}
 	if err := providerInvocation.Activate(ctx, prepared); err != nil {
-		discardCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		discardErr := a.executor.Discard(discardCtx, invocationID)
-		if providerInvocation.AbandonPreparation != nil {
-			discardErr = errors.Join(discardErr, providerInvocation.AbandonPreparation(discardCtx))
-		}
-		return ProviderExecutionMetadata{}, errors.Join(fmt.Errorf("activate planner provider invocation: %w", err), discardErr)
+		return ProviderExecutionMetadata{}, errors.Join(fmt.Errorf("activate planner provider invocation: %w", err), cleanupPreparation())
 	}
 	resp, err := a.executor.Execute(ctx, request)
 	metadata := ProviderExecutionMetadata{
