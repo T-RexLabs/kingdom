@@ -79,11 +79,13 @@ Connect GitHub to bring issues into Planning or a new Work Order. Pick a persona
 ## Shared Service
 
 The separate `kingdom-central` command adds login, shared projects, and private
-model connections. Managed workers use the Kingdom profile for OpenShell. Optional local OpenShell can use a
+model connections. Managed workers use the Kingdom profile for OpenShell.
+[Optional local OpenShell](docs/local-openshell.md) can use API keys or a
 [Kingdom-owned ChatGPT connection](docs/chatgpt-local-connection.md).
 Build it with `make build-central`, then follow the
 [central service guide](docs/central-service.md) for HTTPS, identity, and worker
-configuration. Full hosted deployment acceptance is still in progress.
+configuration. Controlled ARM64 checks cover planning and complete workflows;
+real account and production deployment qualification remain separate.
 Add a new project's initial ZIP archive or file in the portal before you first
 open the project. See [initial project files](docs/central-project-input.md).
 An operator can also enable [GitHub repository imports and explicit result publication](docs/central-repositories.md) with a separate repository App.
