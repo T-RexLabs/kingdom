@@ -9,6 +9,7 @@ import (
 	"kingdom/internal/central/connections"
 	"kingdom/internal/central/modelproxy"
 	"kingdom/internal/central/pluginauthority"
+	"kingdom/internal/execution/access"
 	"kingdom/internal/execution/providerrequest"
 )
 
@@ -40,7 +41,7 @@ func (a Plugin) Check(ctx context.Context, b capability.Binding, stage pluginaut
 	return a.Authority.check(ctx, b, providerrequest.RemoteCapabilityStage(stage))
 }
 func (a *Authority) check(ctx context.Context, b capability.Binding, stage providerrequest.RemoteCapabilityStage) error {
-	if a == nil || a.project == nil || a.connections == nil {
+	if a == nil || a.project == nil || a.connections == nil || b.Access.AuthorityDomain() != access.DomainHosted {
 		return capability.ErrDenied
 	}
 	if err := a.project.ValidateRemoteCapability(ctx, b.Preparation, b.Runtime, b.Access, b.Request, stage); err != nil {

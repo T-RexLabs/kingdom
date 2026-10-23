@@ -25,6 +25,13 @@ func BindProjectTx(ctx context.Context, tx *sql.Tx, project string) error {
 	}
 	if existing != "" {
 		if existing == project {
+			domain, _, e := ProjectDomain(ctx, tx)
+			if e != nil {
+				return e
+			}
+			if domain != DomainHosted {
+				return ErrInvalid
+			}
 			return nil
 		}
 		return ErrInvalid
@@ -76,6 +83,9 @@ func CaptureRunTx(ctx context.Context, tx *sql.Tx, runID string, s RunSnapshot) 
 	if err := requireProject(ctx, tx, s.ProjectID); err != nil {
 		return err
 	}
+	if err := requireSnapshotDomain(ctx, tx, s.snapshot(s.Global)); err != nil {
+		return err
+	}
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return err
@@ -91,6 +101,9 @@ func CapturePlanningTx(ctx context.Context, tx *sql.Tx, operationID string, s Sn
 		return err
 	}
 	if err := requireProject(ctx, tx, s.ProjectID); err != nil {
+		return err
+	}
+	if err := requireSnapshotDomain(ctx, tx, s); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(s)
@@ -175,6 +188,9 @@ func CaptureInvocationTx(ctx context.Context, tx *sql.Tx, kind, invocationID str
 	if err = snapshot.Validate(); err != nil {
 		return err
 	}
+	if err := requireSnapshotDomain(ctx, tx, snapshot); err != nil {
+		return err
+	}
 	if snapshot.ProjectID != project {
 		return ErrInvalid
 	}
@@ -208,6 +224,9 @@ func Invocation(ctx context.Context, q Reader, kind, id string) (Snapshot, error
 		return Snapshot{}, err
 	}
 	if err := s.Validate(); err != nil {
+		return Snapshot{}, err
+	}
+	if err := requireSnapshotDomain(ctx, q, s); err != nil {
 		return Snapshot{}, err
 	}
 	if err := requireProject(ctx, q, s.ProjectID); err != nil {

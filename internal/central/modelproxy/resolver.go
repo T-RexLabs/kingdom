@@ -3,6 +3,7 @@ package modelproxy
 import (
 	"context"
 	"kingdom/internal/central/connections"
+	"kingdom/internal/execution/access"
 	"strings"
 )
 
@@ -30,7 +31,7 @@ func (r *APIKeyResolver) route(binding Binding, metadata connections.Metadata) (
 	return Route{Protocol: "openai", Endpoint: endpoint, Model: strings.TrimPrefix(selected.Model, c.Provider+"/")}, nil
 }
 func (r *APIKeyResolver) Pin(ctx context.Context, b Binding) (Route, error) {
-	if r == nil || r.Store == nil {
+	if r == nil || r.Store == nil || b.Access.AuthorityDomain() != access.DomainHosted {
 		return Route{}, ErrDenied
 	}
 	a := b.Access
@@ -42,7 +43,7 @@ func (r *APIKeyResolver) Pin(ctx context.Context, b Binding) (Route, error) {
 	return r.route(b, m)
 }
 func (r *APIKeyResolver) Resolve(ctx context.Context, b Binding, expected Route) (Credential, error) {
-	if r == nil || r.Store == nil {
+	if r == nil || r.Store == nil || b.Access.AuthorityDomain() != access.DomainHosted {
 		return Credential{}, ErrDenied
 	}
 	a := b.Access

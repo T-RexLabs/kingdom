@@ -13,6 +13,13 @@ import (
 
 var ErrInvalid = errors.New("invalid execution access snapshot")
 
+type Domain string
+
+const (
+	DomainHosted     Domain = "hosted"
+	DomainLocalOwner Domain = "local_owner"
+)
+
 type Connection struct {
 	ID       string `json:"id"`
 	Revision int64  `json:"revision"`
@@ -29,6 +36,7 @@ type Selection struct {
 
 type Snapshot struct {
 	Version   int       `json:"version"`
+	Domain    Domain    `json:"domain,omitempty"`
 	ActorID   string    `json:"actor_id"`
 	ProjectID string    `json:"project_id"`
 	Selection Selection `json:"selection"`
@@ -36,6 +44,7 @@ type Snapshot struct {
 
 type RunSnapshot struct {
 	Version   int                  `json:"version"`
+	Domain    Domain               `json:"domain,omitempty"`
 	ActorID   string               `json:"actor_id"`
 	ProjectID string               `json:"project_id"`
 	Global    Selection            `json:"global"`
@@ -50,12 +59,25 @@ func validText(s string, max int) bool {
 	return s != "" && strings.TrimSpace(s) == s && len(s) <= max && utf8.ValidString(s) && strings.IndexFunc(s, unicode.IsControl) < 0
 }
 
+// AuthorityDomain preserves the meaning of retained v1 hosted receipts. New
+// local ownership is always explicit and cannot inherit central membership.
+func (s Snapshot) AuthorityDomain() Domain {
+	if s.Version == 1 && s.Domain == "" {
+		return DomainHosted
+	}
+	return s.Domain
+}
+
 func (s Snapshot) Validate() error {
 	c := s.Selection.Connection
-	if s.Version != 1 || !validID(s.ActorID) || !validID(s.ProjectID) || !validID(c.ID) || !validID(c.OwnerID) || c.Revision < 1 {
+	if !((s.Version == 1 && s.Domain == "") || (s.Version == 2 && (s.Domain == DomainHosted || s.Domain == DomainLocalOwner))) || !validID(s.ActorID) || !validID(s.ProjectID) || !validID(c.ID) || !validID(c.OwnerID) || c.Revision < 1 {
 		return ErrInvalid
 	}
-	if (c.Scope != "personal" && c.Scope != "team") || (c.Scope == "personal" && c.OwnerID != s.ActorID) {
+	if s.AuthorityDomain() == DomainLocalOwner {
+		if c.Scope != "local_owner" || c.OwnerID != s.ActorID {
+			return ErrInvalid
+		}
+	} else if (c.Scope != "personal" && c.Scope != "team") || (c.Scope == "personal" && c.OwnerID != s.ActorID) {
 		return ErrInvalid
 	}
 	if !validText(c.Provider, 256) || !validText(s.Selection.Model, 1024) || !strings.HasPrefix(s.Selection.Model, c.Provider+"/") || len(s.Selection.Model) == len(c.Provider)+1 || (s.Selection.ThinkingEffort != "" && !validText(s.Selection.ThinkingEffort, 128)) {
@@ -87,7 +109,7 @@ func (s RunSnapshot) Validate() error {
 	return nil
 }
 func (s RunSnapshot) snapshot(selection Selection) Snapshot {
-	return Snapshot{Version: s.Version, ActorID: s.ActorID, ProjectID: s.ProjectID, Selection: selection}
+	return Snapshot{Version: s.Version, Domain: s.Domain, ActorID: s.ActorID, ProjectID: s.ProjectID, Selection: selection}
 }
 
 // ForRole resolves the entire selection. A role override never borrows another
