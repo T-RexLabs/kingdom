@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"kingdom/internal/api"
 	"kingdom/internal/central/auth"
 	"kingdom/internal/central/capability"
 	"kingdom/internal/central/catalog"
@@ -35,6 +36,9 @@ type Shared struct {
 	Connections *connections.Store
 	Registry    *capability.Registry
 	Sessions    *auth.Manager
+	// ProjectFactory is callable after application construction. It returns the
+	// same shared runtime used by protected project HTTP requests.
+	ProjectFactory func(context.Context, string, api.Authenticator) (http.Handler, error)
 	// RequestKey derives a dedicated request encryption key for one project.
 	// It never returns the central credential key or another project's key.
 	RequestKey func(string) ([]byte, error)
@@ -139,7 +143,13 @@ func New(ctx context.Context, c Config) (result *Application, err error) {
 		}
 		return derive("project-requests\x00" + id), nil
 	}
-	services, e := c.Projects(Shared{CatalogDB: a.db, Catalog: centralCatalog, Connections: vault, Registry: a.registry, Sessions: a.sessions, RequestKey: requestKey})
+	projectFactory := func(ctx context.Context, id string, authenticator api.Authenticator) (http.Handler, error) {
+		if a.projects == nil {
+			return nil, projects.ErrUnavailable
+		}
+		return a.projects.Factory(ctx, id, authenticator)
+	}
+	services, e := c.Projects(Shared{CatalogDB: a.db, Catalog: centralCatalog, Connections: vault, Registry: a.registry, Sessions: a.sessions, RequestKey: requestKey, ProjectFactory: projectFactory})
 	if e != nil {
 		return nil, e
 	}

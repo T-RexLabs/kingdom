@@ -51,6 +51,7 @@ type Stack struct {
 	Models   *modelproxy.Broker
 	Sources  *workspacesource.Store
 	Callback http.Handler
+	Results  *runtimefs.Store
 }
 
 func New(c Config) (s *Stack, err error) {
@@ -90,6 +91,7 @@ func New(c Config) (s *Stack, err error) {
 	if e != nil {
 		return s, e
 	}
+	s.Results = store
 	output, e := workspaceoutput.New(workspaceoutput.Config{DB: c.DB, Worker: w, Store: store, Sources: sources, SpoolRoot: filepath.Join(c.Root, "spool"), StageRoot: filepath.Join(c.Root, "stage"), Limits: workspacetransfer.DefaultLimits()})
 	if e != nil {
 		return s, e

@@ -8,6 +8,7 @@ import (
 	"kingdom/internal/execution/openshell/workspacesource"
 	runtime "kingdom/internal/projectruntime"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/publishedresult"
 	"kingdom/internal/theme"
 	"net/http"
 	"sync"
@@ -21,12 +22,22 @@ type project struct {
 	models             *modelproxy.Broker
 	gateway            *worker.Gateway
 	sources            *workspacesource.Store
+	results            publishedresult.Reader
 	themes             *theme.Store
 	service            *Service
 	id                 string
 	registered, closed bool
 	closing            bool
 	closeToken         chan struct{}
+}
+
+func (p *project) PublishedResults() publishedresult.Reader {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.closing {
+		return nil
+	}
+	return p.results
 }
 
 func (p *project) ServeHTTP(w http.ResponseWriter, r *http.Request) {
