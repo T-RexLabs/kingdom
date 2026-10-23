@@ -14,6 +14,7 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/execution/access"
 	"kingdom/internal/state"
@@ -309,6 +310,12 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeInternalError(w, "create run failed")
 		return
+	}
+	if pinnedAccess == nil {
+		if err := access.PinSourceBackendTx(r.Context(), tx, "run", runID, providerexecution.BackendLocal); err != nil {
+			s.writeInternalError(w, "capture run execution backend failed")
+			return
+		}
 	}
 	if pinnedAccess != nil {
 		if err := access.CaptureRunTx(r.Context(), tx, runID, *pinnedAccess); err != nil {

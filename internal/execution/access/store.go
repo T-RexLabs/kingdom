@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"kingdom/internal/core/providerexecution"
 )
 
 type Reader interface {
@@ -86,6 +87,9 @@ func CaptureRunTx(ctx context.Context, tx *sql.Tx, runID string, s RunSnapshot) 
 	if err := requireSnapshotDomain(ctx, tx, s.snapshot(s.Global)); err != nil {
 		return err
 	}
+	if err := PinSourceBackendTx(ctx, tx, "run", runID, providerexecution.BackendOpenShell); err != nil {
+		return err
+	}
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return err
@@ -104,6 +108,9 @@ func CapturePlanningTx(ctx context.Context, tx *sql.Tx, operationID string, s Sn
 		return err
 	}
 	if err := requireSnapshotDomain(ctx, tx, s); err != nil {
+		return err
+	}
+	if err := PinSourceBackendTx(ctx, tx, "planning", operationID, providerexecution.BackendOpenShell); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(s)

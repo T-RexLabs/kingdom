@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/access"
 )
 
@@ -22,7 +23,7 @@ func (s *PlanningStore) captureOperationAccess(ctx context.Context, tx *sql.Tx, 
 		return err
 	}
 	if project == "" {
-		return nil
+		return access.PinSourceBackendTx(ctx, tx, "planning", row.OperationID, providerexecution.BackendLocal)
 	}
 	if row.ModelSelectionSourceOperationID != "" {
 		return access.CopyPlanningTx(ctx, tx, row.OperationID, row.ModelSelectionSourceOperationID)
