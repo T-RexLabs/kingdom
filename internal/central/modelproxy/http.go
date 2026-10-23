@@ -162,16 +162,19 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	response, e := b.transport.RoundTrip(upstream)
 	if e != nil {
+		b.reportFailure(Failure{Phase: PhaseTransport, TransportClass: classifyTransport(e)})
 		deny(http.StatusBadGateway)
 		return
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		b.reportFailure(Failure{Phase: PhaseUpstreamStatus, UpstreamStatus: response.StatusCode})
 		deny(http.StatusBadGateway)
 		return
 	}
 	responseType, _, e := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if e != nil || (responseType != "application/json" && responseType != "text/event-stream") || response.Header.Get("Content-Encoding") != "" {
+		b.reportFailure(Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode})
 		deny(http.StatusBadGateway)
 		return
 	}
@@ -202,6 +205,10 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if readErr != nil || ctx.Err() != nil {
+			if ctx.Err() != nil {
+				readErr = ctx.Err()
+			}
+			b.reportFailure(Failure{Phase: PhaseTransport, TransportClass: classifyTransport(readErr)})
 			panic(http.ErrAbortHandler)
 		}
 	}
@@ -209,6 +216,13 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var overflow [1]byte
 	n, readErr := io.ReadFull(response.Body, overflow[:])
 	if n != 0 || readErr != io.EOF || ctx.Err() != nil {
+		if ctx.Err() != nil {
+			b.reportFailure(Failure{Phase: PhaseTransport, TransportClass: classifyTransport(ctx.Err())})
+		} else if n == 0 && readErr != nil && readErr != io.EOF {
+			b.reportFailure(Failure{Phase: PhaseTransport, TransportClass: classifyTransport(readErr)})
+		} else {
+			b.reportFailure(Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode})
+		}
 		panic(http.ErrAbortHandler)
 	}
 }

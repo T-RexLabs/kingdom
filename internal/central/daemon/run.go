@@ -23,6 +23,8 @@ import (
 )
 
 func Run(ctx context.Context, path string, out io.Writer) error {
+	out = synchronizedOutput(out)
+	onModelFailure := modelFailureLogger(out)
 	c, e := load(path)
 	if e != nil {
 		return e
@@ -60,6 +62,7 @@ func Run(ctx context.Context, path string, out io.Writer) error {
 				},
 				HelperSHA256: c.file.Gateway.Helper, FileToolSHA256: c.file.Gateway.FileTool,
 				AllowedIPs: c.file.Gateway.AllowedIPs, ModelOrigins: accounts.origins, ModelTLSRoots: c.roots,
+				OnModelFailure: onModelFailure,
 			})
 			if e != nil {
 				cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)

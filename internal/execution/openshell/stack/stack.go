@@ -39,6 +39,7 @@ type Config struct {
 	PluginAuthorizer             pluginauthority.Authorizer
 	Resolver                     modelproxy.Resolver
 	ModelOrigins                 []modelproxy.OriginPolicy
+	OnModelFailure               func(modelproxy.Failure)
 	ModelTLSRoots                *x509.CertPool
 	TransferTimeout, StopTimeout time.Duration
 }
@@ -64,7 +65,7 @@ func New(c Config) (s *Stack, err error) {
 		return s, e
 	}
 	s.Worker = w
-	models, e := modelproxy.New(modelproxy.Config{Registry: c.Registry, PublicBaseURL: c.Worker.Egress.ModelURL, Authorizer: c.ModelAuthorizer, Resolver: c.Resolver, Origins: c.ModelOrigins, TLSRoots: c.ModelTLSRoots})
+	models, e := modelproxy.New(modelproxy.Config{Registry: c.Registry, PublicBaseURL: c.Worker.Egress.ModelURL, Authorizer: c.ModelAuthorizer, Resolver: c.Resolver, Origins: c.ModelOrigins, TLSRoots: c.ModelTLSRoots, OnFailure: c.OnModelFailure})
 	if e != nil {
 		return s, e
 	}

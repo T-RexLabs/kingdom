@@ -201,3 +201,19 @@ a live repository App, or a production deployment. Real provider consent,
 account entitlements, and remote revocation need checks with the deployed
 provider account. See the [ChatGPT connection guide](chatgpt-local-connection.md)
 for the local owner flow.
+
+## Model Request Diagnostics
+
+The central process writes a private JSON line to its operator output when the
+model proxy has a transport, upstream status, or response contract failure. The
+public response remains generic. For example:
+
+```json
+{"event":"model_proxy_failure","project_id":"<project UUID>","phase":"upstream_status","upstream_status":429}
+```
+
+`phase` is `transport`, `upstream_status`, or `response_contract`. Transport
+failures have `transport_class`: `timeout`, `tls`, `network`, `canceled`, or
+`denied`. Status and response contract failures have `upstream_status`. The
+record excludes upstream errors, bodies, headers, endpoints, and credentials.
+Keep this output in the operator log; do not expose it through project APIs.

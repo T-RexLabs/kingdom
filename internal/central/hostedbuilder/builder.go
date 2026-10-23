@@ -62,6 +62,7 @@ type Config struct {
 	HelperSHA256, FileToolSHA256 string
 	AllowedIPs                   []string
 	ModelOrigins                 []modelproxy.OriginPolicy
+	OnModelFailure               func(string, modelproxy.Failure)
 	ModelTLSRoots                *x509.CertPool
 	TransferTimeout, StopTimeout time.Duration
 }
@@ -286,7 +287,11 @@ func (s *Service) Build(b projects.BuildContext, id string, auth api.Authenticat
 	if e != nil {
 		return nil, e
 	}
-	pipeline, e := stack.New(stack.Config{DB: db, Requests: requests, Gateway: gateway, Registry: s.c.Registry, Authority: authority, Worker: worker.Config{Target: target, Workspace: mapping.Name, Image: s.c.Image, ProfileSHA256: s.c.ProfileSHA256, Egress: worker.Egress{ModelURL: modelURL, CallbackURL: pluginURL, AllowedIPs: s.c.AllowedIPs}}, Server: s.c.Server, Root: root, RuntimeRoot: home, HelperSHA256: s.c.HelperSHA256, FileToolSHA256: s.c.FileToolSHA256, ModelAuthorizer: workerauthority.Model{Authority: authorizer}, PluginAuthorizer: workerauthority.Plugin{Authority: authorizer}, Resolver: modelConfig.Resolver, ModelOrigins: s.c.ModelOrigins, ModelTLSRoots: s.c.ModelTLSRoots, TransferTimeout: s.c.TransferTimeout, StopTimeout: s.c.StopTimeout})
+	var onModelFailure func(modelproxy.Failure)
+	if s.c.OnModelFailure != nil {
+		onModelFailure = func(f modelproxy.Failure) { s.c.OnModelFailure(id, f) }
+	}
+	pipeline, e := stack.New(stack.Config{DB: db, Requests: requests, Gateway: gateway, Registry: s.c.Registry, Authority: authority, Worker: worker.Config{Target: target, Workspace: mapping.Name, Image: s.c.Image, ProfileSHA256: s.c.ProfileSHA256, Egress: worker.Egress{ModelURL: modelURL, CallbackURL: pluginURL, AllowedIPs: s.c.AllowedIPs}}, Server: s.c.Server, Root: root, RuntimeRoot: home, HelperSHA256: s.c.HelperSHA256, FileToolSHA256: s.c.FileToolSHA256, ModelAuthorizer: workerauthority.Model{Authority: authorizer}, PluginAuthorizer: workerauthority.Plugin{Authority: authorizer}, Resolver: modelConfig.Resolver, ModelOrigins: s.c.ModelOrigins, ModelTLSRoots: s.c.ModelTLSRoots, OnModelFailure: onModelFailure, TransferTimeout: s.c.TransferTimeout, StopTimeout: s.c.StopTimeout})
 	owned.models, owned.sources, owned.provider = pipeline.Models, pipeline.Sources, pipeline.Provider
 	owned.results = pipeline.Results
 	if e != nil {

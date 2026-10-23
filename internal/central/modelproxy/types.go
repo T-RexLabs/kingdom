@@ -98,4 +98,7 @@ type Config struct {
 	RequestTimeout   time.Duration
 	MaxRequestBytes  int64
 	MaxResponseBytes int64
+	// OnFailure receives bounded private diagnostics, never upstream content.
+	// The trusted callback runs within admission and must return promptly.
+	OnFailure func(Failure)
 }
