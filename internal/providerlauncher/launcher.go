@@ -41,7 +41,7 @@ func verifyFile(path, expected string) error {
 func environment(j Job) []string {
 	config := map[string]any{"formatter": false, "plugins": []string{PluginPath}, "providers": map[string]any{j.ProviderID: map[string]any{"name": j.ProviderID, "package": "@opencode/ai/providers/openai-compatible", "settings": map[string]any{"baseURL": j.ProxyURL, "apiKey": j.ProxyToken, "encoding": "none"}, "models": map[string]any{j.ModelID: map[string]any{"name": j.ModelID, "capabilities": map[string]any{"tools": true, "input": []string{"text"}, "output": []string{"text"}}, "limit": map[string]int{"context": j.ContextLimit, "output": j.OutputLimit}}}}}}
 	raw, _ := json.Marshal(config)
-	return []string{"PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "HOME=" + RuntimePath + "/home", "TMPDIR=" + RuntimePath + "/tmp", "XDG_CONFIG_HOME=" + RuntimePath + "/config", "XDG_CACHE_HOME=" + RuntimePath + "/cache", "XDG_DATA_HOME=" + RuntimePath + "/data", "XDG_STATE_HOME=" + RuntimePath + "/state", "OPENCODE_CONFIG_DIR=" + RuntimePath + "/config", "OPENCODE_DB=" + RuntimePath + "/opencode.db", "OPENCODE_CONFIG_PROJECT_DISABLE=1", "OPENCODE_DISABLE_CLAUDE_CODE=1", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1", "OPENCODE_DISABLE_MODELS_FETCH=1", "OPENCODE_DISABLE_FFF=1", "OPENCODE_CONFIG_CONTENT=" + string(raw), "OPENCODE_PASSWORD=" + j.ServerPassword, "OPENCODE_SERVER_PASSWORD=" + j.ServerPassword, "KINGDOM_AUTHORITY_URL=" + j.CallbackURL, "KINGDOM_AUTHORITY_TOKEN=" + j.CallbackToken, "KINGDOM_INSTANCE_ID=" + j.InstanceID, "KINGDOM_OUTBOX_DIR=" + RuntimePath + "/outbox", "KINGDOM_NATIVE_MODE=managed"}
+	return []string{"NODE_EXTRA_CA_CERTS=" + trustedCA, "SSL_CERT_FILE=" + trustedBundle, "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "HOME=" + RuntimePath + "/home", "TMPDIR=" + RuntimePath + "/tmp", "XDG_CONFIG_HOME=" + RuntimePath + "/config", "XDG_CACHE_HOME=" + RuntimePath + "/cache", "XDG_DATA_HOME=" + RuntimePath + "/data", "XDG_STATE_HOME=" + RuntimePath + "/state", "OPENCODE_CONFIG_DIR=" + RuntimePath + "/config", "OPENCODE_DB=" + RuntimePath + "/opencode.db", "OPENCODE_CONFIG_PROJECT_DISABLE=1", "OPENCODE_DISABLE_CLAUDE_CODE=1", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1", "OPENCODE_DISABLE_MODELS_FETCH=1", "OPENCODE_DISABLE_FFF=1", "OPENCODE_CONFIG_CONTENT=" + string(raw), "OPENCODE_PASSWORD=" + j.ServerPassword, "OPENCODE_SERVER_PASSWORD=" + j.ServerPassword, "KINGDOM_AUTHORITY_URL=" + j.CallbackURL, "KINGDOM_AUTHORITY_TOKEN=" + j.CallbackToken, "KINGDOM_INSTANCE_ID=" + j.InstanceID, "KINGDOM_OUTBOX_DIR=" + RuntimePath + "/outbox", "KINGDOM_NATIVE_MODE=managed"}
 }
 
 // Run never sends process signals or creates a process group. The trusted
@@ -55,6 +55,9 @@ func Run(ctx context.Context, j Job, stdout io.Writer) error {
 		return e
 	}
 	if e := verifyFile(OpenCodePath, j.OpenCodeSHA256); e != nil {
+		return e
+	}
+	if e := checkProviderTrust(); e != nil {
 		return e
 	}
 	// A fresh runtime directory prevents inherited account/configuration state.
