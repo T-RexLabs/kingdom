@@ -155,6 +155,7 @@ func TestPublishedResultDeltaRetainsBaselineAndExcludesUnchangedFiles(t *testing
 	if _, err := s.db.Exec(`UPDATE run_execution_targets SET source_snapshot_id='delta-source',trusted_snapshot_id='delta-result',published_snapshot_id='delta-result'`); err != nil {
 		t.Fatal(err)
 	}
+	recordPublishedDelta(t, s, "delta-source", "delta-result")
 	result, err := s.Resolve(ctx, "published-run")
 	if err != nil {
 		t.Fatal(err)
@@ -209,5 +210,63 @@ func TestPublishedResultRejectsForeignRunAncestor(t *testing.T) {
 	if reader, err := s.Open(context.Background(), "published-run", "published-snapshot", "src/input.txt"); err == nil {
 		reader.Close()
 		t.Fatal("foreign-run lineage opened")
+	}
+}
+
+func recordPublishedDelta(t *testing.T, s *Store, source, result string) {
+	t.Helper()
+	ctx := context.Background()
+	after, err := s.OpenSnapshotManifest(ctx, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer after.Close()
+	err = s.VisitSnapshotDiff(ctx, source, result, func(diff SnapshotDiffEntry) error {
+		entry, exists, err := after.Lookup(ctx, diff.Path)
+		if err != nil {
+			return err
+		}
+		action, blob := "delete", ""
+		var mode any
+		if exists {
+			action, blob, mode = "write", entry.BlobID, entry.ModeBits
+		}
+		_, err = s.db.Exec(`INSERT INTO run_publication_paths(run_id,path,artifact_action,blob_id,sha256,mode_bits,updated_at)VALUES('published-run',?,?,?,?,?,'2026-10-23T00:00:00Z')`, diff.Path, action, blob, blob, mode)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+func TestPublishedResultRequiresExactDeliveredFileChanges(t *testing.T) {
+	s, root := publishedResultFixture(t)
+	ctx := context.Background()
+	writeTestFile(t, root, "result.txt", "delivered")
+	_, err := s.CaptureSnapshot(ctx, CaptureSnapshotRequest{SnapshotID: "delivered-result", RunID: "published-run", ParentSnapshotID: "published-snapshot", SnapshotKind: "attempt_result", RootPath: root, CreatedAt: "2026-10-23T00:00:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Production advances trusted_snapshot_id while the whole-snapshot marker
+	// remains at the baseline. Per-file publication records own delivery proof.
+	if err = s.UpdateExecutionTargetState(ctx, "published-run", "trusted", "delivered-result", "", "2026-10-23T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Resolve(ctx, "published-run"); err == nil {
+		t.Fatal("trusted unpublished result accepted")
+	}
+	if r, err := s.Open(ctx, "published-run", "delivered-result", "result.txt"); err == nil {
+		r.Close()
+		t.Fatal("unpublished result bytes opened")
+	}
+	recordPublishedDelta(t, s, "published-snapshot", "delivered-result")
+	result, err := s.Resolve(ctx, "published-run")
+	if err != nil || result.SnapshotID != "delivered-result" || len(result.Changes) != 1 {
+		t.Fatalf("delivered result not accepted %+v %v", result, err)
+	}
+	if _, err = s.db.Exec(`UPDATE run_publication_paths SET sha256='' WHERE path='result.txt'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Resolve(ctx, "published-run"); err == nil {
+		t.Fatal("mismatched publication proof accepted")
 	}
 }

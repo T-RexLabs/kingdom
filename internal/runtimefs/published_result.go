@@ -15,21 +15,22 @@ import (
 	"kingdom/internal/trackedfs"
 )
 
-type publicationSnapshots struct{ source, published string }
+type publicationSnapshots struct{ source, result string }
 
-// publicationSelection accepts only a completed run whose trusted result has
-// reached its publication target. Partial or dirty attempts grant no access.
+// publicationSelection selects a trusted result of a completed run. Each changed
+// path must separately have canonical publication proof. Dirty attempts grant no access.
 func (s *Store) publicationSelection(ctx context.Context, run string) (publicationSnapshots, error) {
 	if s == nil || s.db == nil || run == "" || strings.TrimSpace(run) != run {
 		return publicationSnapshots{}, publishedresult.ErrUnavailable
 	}
 	var selection publicationSnapshots
-	err := s.db.QueryRowContext(ctx, `SELECT t.source_snapshot_id,t.published_snapshot_id FROM workflow_runs r
+	err := s.db.QueryRowContext(ctx, `SELECT t.source_snapshot_id,t.trusted_snapshot_id FROM workflow_runs r
  JOIN run_execution_targets t ON t.run_id=r.run_id
- JOIN filesystem_snapshots f ON f.snapshot_id=t.published_snapshot_id AND f.run_id=r.run_id
+ JOIN filesystem_snapshots f ON f.snapshot_id=t.trusted_snapshot_id AND f.run_id=r.run_id
+ JOIN filesystem_snapshots p ON p.snapshot_id=t.published_snapshot_id AND p.run_id=r.run_id
  JOIN filesystem_snapshots b ON b.snapshot_id=t.source_snapshot_id AND b.run_id=r.run_id
  WHERE r.run_id=? AND r.run_status='succeeded' AND t.state='trusted'
- AND t.published_snapshot_id!='' AND t.published_snapshot_id=t.trusted_snapshot_id`, run).Scan(&selection.source, &selection.published)
+ AND t.published_snapshot_id!=''`, run).Scan(&selection.source, &selection.result)
 	if err != nil {
 		return publicationSnapshots{}, publishedresult.ErrUnavailable
 	}
@@ -43,7 +44,7 @@ func (s *Store) Resolve(ctx context.Context, run string) (publishedresult.Result
 	if _, err = s.publicationLineage(ctx, run, selection.source); err != nil {
 		return publishedresult.ResultSnapshot{}, err
 	}
-	if _, err = s.publicationLineage(ctx, run, selection.published); err != nil {
+	if _, err = s.publicationLineage(ctx, run, selection.result); err != nil {
 		return publishedresult.ResultSnapshot{}, err
 	}
 	before, err := s.OpenSnapshotManifest(ctx, selection.source)
@@ -51,12 +52,12 @@ func (s *Store) Resolve(ctx context.Context, run string) (publishedresult.Result
 		return publishedresult.ResultSnapshot{}, publishedresult.ErrUnavailable
 	}
 	defer before.Close()
-	after, err := s.OpenSnapshotManifest(ctx, selection.published)
+	after, err := s.OpenSnapshotManifest(ctx, selection.result)
 	if err != nil {
 		return publishedresult.ResultSnapshot{}, publishedresult.ErrUnavailable
 	}
 	defer after.Close()
-	result := publishedresult.ResultSnapshot{RunID: run, SnapshotID: selection.published, SourceSnapshotID: selection.source, Files: []publishedresult.ResultFile{}, Changes: []publishedresult.ResultChange{}}
+	result := publishedresult.ResultSnapshot{RunID: run, SnapshotID: selection.result, SourceSnapshotID: selection.source, Files: []publishedresult.ResultFile{}, Changes: []publishedresult.ResultChange{}}
 	validate := func(manifest *SnapshotManifest, collect bool) error {
 		var total int64
 		count := 0
@@ -80,7 +81,7 @@ func (s *Store) Resolve(ctx context.Context, run string) (publishedresult.Result
 	}
 	// The canonical diff includes timestamp changes. Git tracks content and the
 	// executable bit, so omit changes to timestamps or other permission bits.
-	err = s.VisitSnapshotDiff(ctx, selection.source, selection.published, func(diff SnapshotDiffEntry) error {
+	err = s.VisitSnapshotDiff(ctx, selection.source, selection.result, func(diff SnapshotDiffEntry) error {
 		old, oldFound, e := before.Lookup(ctx, diff.Path)
 		if e != nil {
 			return e
@@ -91,6 +92,9 @@ func (s *Store) Resolve(ctx context.Context, run string) (publishedresult.Result
 		}
 		if oldFound && nextFound && old.BlobID == next.BlobID && old.SizeBytes == next.SizeBytes && (old.ModeBits&0111 != 0) == (next.ModeBits&0111 != 0) {
 			return nil
+		}
+		if err := s.requirePublishedChange(ctx, run, diff.Path, next, nextFound); err != nil {
+			return err
 		}
 		change := publishedresult.ResultChange{Path: diff.Path}
 		if oldFound {
@@ -127,30 +131,23 @@ func (s *Store) Resolve(ctx context.Context, run string) (publishedresult.Result
 }
 func (s *Store) Open(ctx context.Context, run, snapshot, path string) (io.ReadCloser, error) {
 	selection, err := s.publicationSelection(ctx, run)
-	if err != nil || (snapshot != selection.published && snapshot != selection.source) || !fs.ValidPath(path) || path == "." {
+	if err != nil || (snapshot != selection.result && snapshot != selection.source) || !fs.ValidPath(path) || path == "." {
 		return nil, publishedresult.ErrUnavailable
 	}
-	lineage, err := s.publicationLineage(ctx, run, snapshot)
-	if err != nil {
+	entry, found, err := s.publicationEntry(ctx, run, snapshot, path)
+	if err != nil || !found || !validPublishedEntry(entry) {
 		return nil, publishedresult.ErrUnavailable
 	}
-	var entry SnapshotEntry
-	found := false
-	// Resolve one path along bounded lineage instead of rebuilding the entire
-	// manifest for each file in a repository publication.
-	for _, id := range lineage {
-		candidate, e := scanSnapshotEntry(s.db.QueryRowContext(ctx, `SELECT `+entryColumns+` FROM filesystem_snapshot_entries WHERE snapshot_id=? AND path=?`, id, path))
-		if e == sql.ErrNoRows {
-			continue
+	if snapshot != selection.source {
+		old, oldFound, err := s.publicationEntry(ctx, run, selection.source, path)
+		if err != nil {
+			return nil, err
 		}
-		if e != nil {
-			return nil, publishedresult.ErrUnavailable
+		if !oldFound || !samePublishedFile(old, entry) {
+			if err := s.requirePublishedChange(ctx, run, path, entry, true); err != nil {
+				return nil, err
+			}
 		}
-		entry, found = candidate, true
-		break
-	}
-	if !found || !validPublishedEntry(entry) {
-		return nil, publishedresult.ErrUnavailable
 	}
 	current, err := s.publicationSelection(ctx, run)
 	if err != nil || current != selection {
@@ -166,6 +163,49 @@ func (s *Store) Open(ctx context.Context, run, snapshot, path string) (io.ReadCl
 		}
 		return nil
 	}), nil
+}
+
+func samePublishedFile(a, b SnapshotEntry) bool {
+	return a.BlobID == b.BlobID && a.SizeBytes == b.SizeBytes && (a.ModeBits&0111 != 0) == (b.ModeBits&0111 != 0)
+}
+
+// run_publication_paths advances only with a successful canonical publication
+// entry. A trusted attempt snapshot alone is not proof that its changes were
+// published; the whole-snapshot marker can remain at the original baseline.
+func (s *Store) requirePublishedChange(ctx context.Context, run, path string, after SnapshotEntry, exists bool) error {
+	var action, blob, digest string
+	var mode sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT artifact_action,blob_id,sha256,mode_bits FROM run_publication_paths WHERE run_id=? AND path=?`, run, path).Scan(&action, &blob, &digest, &mode); err != nil {
+		return publishedresult.ErrUnavailable
+	}
+	if exists {
+		if action != "write" || blob != after.BlobID || digest != after.BlobID || !mode.Valid || mode.Int64 != after.ModeBits {
+			return publishedresult.ErrUnavailable
+		}
+	} else if action != "delete" || blob != "" || digest != "" || mode.Valid {
+		return publishedresult.ErrUnavailable
+	}
+	return nil
+}
+
+// Resolve one path along bounded lineage instead of rebuilding the entire
+// manifest for each file in a repository publication.
+func (s *Store) publicationEntry(ctx context.Context, run, snapshot, path string) (SnapshotEntry, bool, error) {
+	lineage, err := s.publicationLineage(ctx, run, snapshot)
+	if err != nil {
+		return SnapshotEntry{}, false, err
+	}
+	for _, id := range lineage {
+		entry, err := scanSnapshotEntry(s.db.QueryRowContext(ctx, `SELECT `+entryColumns+` FROM filesystem_snapshot_entries WHERE snapshot_id=? AND path=?`, id, path))
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return SnapshotEntry{}, false, publishedresult.ErrUnavailable
+		}
+		return entry, entry.EntryType == "file", nil
+	}
+	return SnapshotEntry{}, false, nil
 }
 
 func (s *Store) publicationLineage(ctx context.Context, run, snapshot string) ([]string, error) {
