@@ -111,9 +111,18 @@ func readChatGPTKey(path, owner string) ([]byte, error) {
 	return localstack.OwnerCredentialKey(master, owner), nil
 }
 func runChatGPTCommand(ctx context.Context, out io.Writer, args []string) (resultErr error) {
+	if len(args) > 0 && args[0] == "attach" {
+		if len(args) == 2 && (args[1] == "--help" || args[1] == "help") {
+			fmt.Fprintln(out, "Usage: kd chatgpt attach --service HTTPS_ORIGIN [--ca-file PATH] [--state-root PATH]")
+			fmt.Fprintln(out, "Enter the pairing code from Kingdom Connections when prompted.")
+			return nil
+		}
+		return runChatGPTAttach(ctx, out, args[1:])
+	}
 	if len(args) > 0 && (args[0] == "--help" || args[0] == "help" || (len(args) > 1 && args[1] == "--help")) {
 		fmt.Fprintln(out, "Usage: kd chatgpt sign-in|status|disconnect --state-root PATH --owner-id UUID --master-key-file PATH [--registration-id UUID]")
-		fmt.Fprintln(out, "Connect your own ChatGPT account for local OpenShell execution. A shared hosted service requires a separately approved client.")
+		fmt.Fprintln(out, "       kd chatgpt attach --service HTTPS_ORIGIN [--ca-file PATH] [--state-root PATH]")
+		fmt.Fprintln(out, "Connect your own ChatGPT account locally, or attach one selected session to your Kingdom service. Personal sessions cannot be shared with the team.")
 		return nil
 	}
 	if len(args) == 0 {
