@@ -75,8 +75,14 @@ func TestPlanningPreparationRemoteDebtCannotBeAbandoned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = providerrequest.ReserveRemoteRuntimeTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: inv.PlanningProviderInvocationID}, providerrequest.Lease{Owner: a.LeaseOwner, Version: int64(a.LeaseVersion)}, "remote-binding", remote.Target{WorkerID: "worker", GatewayID: "gateway", WorkspaceID: "workspace"}, uuid.NewString(), strings.Repeat("a", 64), s.leaseNow())
+	reservation, err := providerrequest.ReserveRemoteRuntimeTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: inv.PlanningProviderInvocationID}, providerrequest.Lease{Owner: a.LeaseOwner, Version: int64(a.LeaseVersion)}, "remote-binding", remote.Target{WorkerID: "worker", GatewayID: "gateway", WorkspaceID: "workspace"}, uuid.NewString(), strings.Repeat("a", 64), s.leaseNow())
 	if err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	// A claimed creation can have reached the gateway. A merely prepared
+	// creation is safely abandoned by the canonical NeverCreated proof.
+	if _, err = remote.ClaimDispatchTx(ctx, tx, reservation.Owner, reservation.Reference, reservation.Reference.CreationID); err != nil {
 		tx.Rollback()
 		t.Fatal(err)
 	}
