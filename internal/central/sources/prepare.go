@@ -91,6 +91,15 @@ func (s *Service) PrepareInitial(ctx context.Context, project, destination strin
 	if err = root.SyncDir("."); err != nil {
 		return err
 	}
+	current, err := securefs.OpenRoot(destination)
+	if err != nil {
+		return err
+	}
+	currentIdentity, err := current.DirectoryIdentity()
+	current.Close()
+	if err != nil || currentIdentity.Device != identity.Device || currentIdentity.Inode != identity.Inode {
+		return ErrConflict
+	}
 	tx, err = s.write(ctx)
 	if err != nil {
 		return err
