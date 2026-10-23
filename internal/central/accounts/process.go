@@ -235,3 +235,29 @@ func (p *Process) Close(ctx context.Context) error {
 	}
 	return os.RemoveAll(p.config.RuntimeRoot)
 }
+
+// RecoverAndPurge removes a prior temporary store only after the retained exact
+// guardian receipt proves its complete process tree stopped. A missing receipt
+// retains the store for retry; process-name or PID absence is not a substitute.
+func RecoverAndPurge(root string) error {
+	info, err := os.Lstat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("private account runtime is invalid")
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "ownership.json"))
+	if err != nil || len(raw) > 65536 {
+		return errors.New("private account process ownership is unavailable")
+	}
+	var own processguardian.Ownership
+	if json.Unmarshal(raw, &own) != nil || own.GuardID == "" {
+		return errors.New("private account process ownership is invalid")
+	}
+	result, _, _, err := processguardian.ReadQuiescenceEvidence(filepath.Join(root, "guardian"), own.GuardID)
+	if err != nil || !result.Quiescent || result.ChildPID != own.ChildPID || result.ChildIdentityToken != own.ChildIdentityToken || result.TreeID != own.TreeID || result.TreeIdentityToken != own.TreeIdentityToken || result.GuardianPID != own.GuardianPID {
+		return errors.New("private account process stop is unproven")
+	}
+	return os.RemoveAll(root)
+}

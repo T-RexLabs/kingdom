@@ -60,7 +60,18 @@ func TestNativeAccountProcess(t *testing.T) {
 	if _, err = c.Resolve(ctx, CopilotProvider, "foreign-credential"); err == nil {
 		t.Fatal("resolved foreign native connection")
 	}
-	if err = p.Close(ctx); err != nil {
+	if err = RecoverAndPurge(root); err == nil {
+		t.Fatal("removed a live native credential store")
+	}
+	if err = p.handle.Stdin().Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-p.done:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if err = RecoverAndPurge(root); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = os.Stat(root); !os.IsNotExist(err) {
