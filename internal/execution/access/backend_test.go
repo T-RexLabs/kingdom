@@ -100,3 +100,53 @@ func TestSourceBackendMigrationPreservesFactsAndRejectsConflicts(t *testing.T) {
 		t.Fatal("failed migration did not roll back", n, e)
 	}
 }
+
+func TestSourceBackendOwnershipMigrationPreservesPinsAndCanonicalDeletion(t *testing.T) {
+	db := backendFixture(t)
+	if _, e := db.Exec(`PRAGMA foreign_keys=ON`); e != nil {
+		t.Fatal(e)
+	}
+	if e := installBackendPins(t, db); e != nil {
+		t.Fatal(e)
+	}
+	raw, e := dbmigrations.Read("0031_execution_backend_source_ownership.up.sql")
+	if e != nil {
+		t.Fatal(e)
+	}
+	tx, e := db.Begin()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = tx.Exec(string(raw)); e != nil {
+		tx.Rollback()
+		t.Fatal(e)
+	}
+	if e = tx.Commit(); e != nil {
+		t.Fatal(e)
+	}
+	for _, kind := range []string{"run", "planning"} {
+		if got, e := SourceBackend(context.Background(), db, kind, "old-remote"); e != nil || got != providerexecution.BackendOpenShell {
+			t.Fatal(got, e)
+		}
+		table, key, _ := backendTable(kind)
+		if _, e = db.Exec(`DELETE FROM ` + table + ` WHERE ` + key + `='old-remote'`); e == nil {
+			t.Fatal("direct pin deletion accepted")
+		}
+	}
+	if _, e = db.Exec(`DELETE FROM workflow_runs WHERE run_id='old-remote';DELETE FROM planning_operations WHERE operation_id='old-remote'`); e != nil {
+		t.Fatal("canonical source deletion blocked", e)
+	}
+	for _, kind := range []string{"run", "planning"} {
+		if _, e = SourceBackend(context.Background(), db, kind, "old-remote"); e != sql.ErrNoRows {
+			t.Fatal("deleted source retained pin", e)
+		}
+	}
+	rows, e := db.Query(`PRAGMA foreign_key_check`)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("foreign key violation")
+	}
+}
