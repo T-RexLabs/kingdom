@@ -162,3 +162,47 @@ func TestOutputWorkspaceRequiresCurrentUnpublishedTarget(t *testing.T) {
 		t.Fatal("expired output accepted")
 	}
 }
+
+func TestSourceOnlyOutputRequiresCurrentOwnerWithoutWriteAuthority(t *testing.T) {
+	db, b, now := fixture(t, OwnerRun)
+	ctx := context.Background()
+	setInvocationState(t, db, OwnerRun, "issued")
+	dir := t.TempDir()
+	pin, err := PinWorkspace(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = transaction(t, db, func(tx *sql.Tx) error {
+		if err := ReservePreparationTx(ctx, tx, b.Owner, b.Lease, now); err != nil {
+			return err
+		}
+		return RecordPreparationWorkspaceTx(ctx, tx, b.Owner, b.Lease, pin)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewAuthority(db, func() time.Time { return now }).Preparation(ctx, b.Owner.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execSQL(t, db, `INSERT INTO run_execution_targets(run_id,target_mode,source_root,execution_root,publish_root,state,created_at,updated_at) VALUES('run','direct',?,?,?,'attempt_dirty','now','now')`, t.TempDir(), t.TempDir(), t.TempDir())
+	setInvocationState(t, db, OwnerRun, "open")
+	execSQL(t, db, `UPDATE provider_preparations SET admission_closed=1`)
+	if err = ValidateReadOnlyOutputTx(ctx, db, p, now); err != nil {
+		t.Fatal("unchanged advisor export denied", err)
+	}
+	if err = ValidateOutputTx(ctx, db, p, now); err == nil {
+		t.Fatal("advisor gained write authority")
+	}
+	if err = ValidateReadOnlyOutputTx(ctx, db, p, now.Add(2*time.Hour)); err == nil {
+		t.Fatal("expired owner accepted")
+	}
+	bad := p
+	bad.Lease.Version++
+	if err = ValidateReadOnlyOutputTx(ctx, db, bad, now); err == nil {
+		t.Fatal("foreign lease accepted")
+	}
+	setInvocationState(t, db, OwnerRun, "settled_success")
+	if err = ValidateReadOnlyOutputTx(ctx, db, p, now); err == nil {
+		t.Fatal("settled owner accepted")
+	}
+}

@@ -60,37 +60,36 @@ func (o *Output) Apply(ctx context.Context, p providerrequest.Preparation, r rem
 	defer d.Staged.Close()
 	runID := ""
 	snapshot := "managed-output-" + id
-	if p.Owner.Kind == "planning" {
-		a, e := o.c.Sources.Open(ctx, m.Source)
-		if e != nil {
-			return e
-		}
-		defer a.Close()
-		s, e := workspacearchive.ImportZIP(ctx, o.c.StageRoot, a, a.Size(), o.c.Limits)
-		if e != nil {
-			return e
-		}
-		defer s.Close()
-		var importedSHA, importedManifest string
-		var importedBytes int64
-		if e = o.c.DB.QueryRowContext(ctx, `SELECT archive_sha256,archive_bytes,manifest_sha256 FROM remote_workspace_imports WHERE operation_id=?`, m.ImportID).Scan(&importedSHA, &importedBytes, &importedManifest); e != nil {
-			return e
-		}
-		if importedSHA != m.Source.SHA256 || importedBytes != m.Source.Bytes || importedManifest != s.Digest {
-			return remote.ErrConflict
-		}
-		if s.Manifest.ArchiveSHA256 != m.Source.SHA256 || a.Size() != m.Source.Bytes || !sameContents(s.Manifest, d.Staged.Manifest) {
-			return remote.ErrConflict
-		}
-	} else {
-		w, e := providerrequest.ReadPreparationWorkspace(ctx, o.c.DB, p)
-		if e != nil {
-			return e
+	readOnly := p.Owner.Kind == "planning"
+	if p.Owner.Kind != "planning" {
+		w, err := providerrequest.ReadPreparationWorkspace(ctx, o.c.DB, p)
+		if err != nil {
+			return err
 		}
 		runID = w.RunID
-		if e = providerrequest.ValidateOutputTx(ctx, o.c.DB, p, o.c.Now()); e != nil {
+		readOnly = w.Purpose == "source_only"
+	}
+	validate := func(q providerrequest.Reader) error {
+		if p.Owner.Kind == "planning" {
+			return nil
+		}
+		if readOnly {
+			return providerrequest.ValidateReadOnlyOutputTx(ctx, q, p, o.c.Now())
+		}
+		return providerrequest.ValidateOutputTx(ctx, q, p, o.c.Now())
+	}
+	if e = validate(o.c.DB); e != nil {
+		return e
+	}
+	if readOnly {
+		if e = o.verifyUnchanged(ctx, m, d.Staged.Manifest); e != nil {
 			return e
 		}
+		root, err := providerrequest.OpenPreparationWorkspace(ctx, o.c.DB, p)
+		if err != nil {
+			return err
+		}
+		defer root.Close()
 	}
 	tx, e := o.c.DB.BeginTx(ctx, nil)
 	if e != nil {
@@ -98,7 +97,7 @@ func (o *Output) Apply(ctx context.Context, p providerrequest.Preparation, r rem
 	}
 	defer tx.Rollback()
 	if p.Owner.Kind != "planning" {
-		if e = providerrequest.ValidateOutputTx(ctx, tx, p, o.c.Now()); e != nil {
+		if e = validate(tx); e != nil {
 			return e
 		}
 	}
@@ -117,7 +116,7 @@ func (o *Output) Apply(ctx context.Context, p providerrequest.Preparation, r rem
 	if e = tx.Commit(); e != nil {
 		return e
 	}
-	if p.Owner.Kind != "planning" {
+	if !readOnly {
 		var savedRun, kind string
 		var parent sql.NullString
 		e = o.c.DB.QueryRowContext(ctx, `SELECT run_id,snapshot_kind,parent_snapshot_id FROM filesystem_snapshots WHERE snapshot_id=?`, snapshot).Scan(&savedRun, &kind, &parent)
@@ -150,6 +149,13 @@ func (o *Output) Apply(ctx context.Context, p providerrequest.Preparation, r rem
 		}
 		checked.Close()
 	}
+	if readOnly {
+		checked, err := providerrequest.OpenPreparationWorkspace(ctx, o.c.DB, p)
+		if err != nil {
+			return err
+		}
+		checked.Close()
+	}
 	tx, e = o.c.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return e
@@ -157,10 +163,12 @@ func (o *Output) Apply(ctx context.Context, p providerrequest.Preparation, r rem
 	defer tx.Rollback()
 	var applied any
 	if p.Owner.Kind != "planning" {
-		if e = providerrequest.ValidateOutputTx(ctx, tx, p, o.c.Now()); e != nil {
+		if e = validate(tx); e != nil {
 			return e
 		}
-		applied = snapshot
+		if !readOnly {
+			applied = snapshot
+		}
 	}
 	_, e = tx.ExecContext(ctx, `INSERT OR IGNORE INTO remote_workspace_output_applications(operation_id,snapshot_id,applied_at) VALUES(?,?,?)`, id, applied, o.c.Now().UTC().Format(time.RFC3339Nano))
 	if e != nil {
@@ -192,5 +200,31 @@ func (o *Output) verifySnapshot(ctx context.Context, id string, m workspacearchi
 	if len(files) != 0 {
 		return remote.ErrConflict
 	}
+	return nil
+}
+
+func (o *Output) verifyUnchanged(ctx context.Context, m remote.WorkerManifest, exported workspacearchive.Manifest) error {
+	a, e := o.c.Sources.Open(ctx, m.Source)
+	if e != nil {
+		return e
+	}
+	defer a.Close()
+	s, e := workspacearchive.ImportZIP(ctx, o.c.StageRoot, a, a.Size(), o.c.Limits)
+	if e != nil {
+		return e
+	}
+	defer s.Close()
+	var importedSHA, importedManifest string
+	var importedBytes int64
+	if e = o.c.DB.QueryRowContext(ctx, `SELECT archive_sha256,archive_bytes,manifest_sha256 FROM remote_workspace_imports WHERE operation_id=?`, m.ImportID).Scan(&importedSHA, &importedBytes, &importedManifest); e != nil {
+		return e
+	}
+	if importedSHA != m.Source.SHA256 || importedBytes != m.Source.Bytes || importedManifest != s.Digest {
+		return remote.ErrConflict
+	}
+	if s.Manifest.ArchiveSHA256 != m.Source.SHA256 || a.Size() != m.Source.Bytes || !sameContents(s.Manifest, exported) {
+		return remote.ErrConflict
+	}
+
 	return nil
 }

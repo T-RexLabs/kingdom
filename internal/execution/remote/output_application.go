@@ -3,10 +3,11 @@ package remote
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 )
 
 // RequireWorkspaceOutputApplied accepts only the exact sealed export whose
-// private run workspace was restored, or whose planning contents were verified
+// private run workspace was restored, or whose read-only contents were verified
 // unchanged. An intent alone is unresolved filesystem application debt.
 func RequireWorkspaceOutputApplied(ctx context.Context, q Reader, owner Owner, ref Reference) error {
 	if e := RequireWorkspaceExport(ctx, q, owner, ref); e != nil {
@@ -33,7 +34,7 @@ func RequireWorkspaceOutputApplied(ctx context.Context, q Reader, owner Owner, r
 			return ErrConflict
 		}
 	} else {
-		if !applied.Valid || applied.String != snapshot || runID == "" {
+		if runID == "" {
 			return ErrConflict
 		}
 		var canonicalRun, attempt string
@@ -43,12 +44,21 @@ func RequireWorkspaceOutputApplied(ctx context.Context, q Reader, owner Owner, r
 		if canonicalRun != runID || attempt != m.ResourceID {
 			return ErrConflict
 		}
-		var matches int
-		if e = q.QueryRowContext(ctx, `SELECT count(*) FROM filesystem_snapshots WHERE snapshot_id=? AND run_id=? AND snapshot_kind='attempt_result' AND parent_snapshot_id IS NULL`, snapshot, runID).Scan(&matches); e != nil {
-			return e
-		}
-		if matches != 1 {
-			return ErrConflict
+		if !applied.Valid {
+			if e = requireReadOnlyRunOutput(ctx, q, owner, m); e != nil {
+				return e
+			}
+		} else {
+			if applied.String != snapshot {
+				return ErrConflict
+			}
+			var matches int
+			if e = q.QueryRowContext(ctx, `SELECT count(*) FROM filesystem_snapshots WHERE snapshot_id=? AND run_id=? AND snapshot_kind='attempt_result' AND parent_snapshot_id IS NULL`, snapshot, runID).Scan(&matches); e != nil {
+				return e
+			}
+			if matches != 1 {
+				return ErrConflict
+			}
 		}
 	}
 	closure, e := ReadProcessClosure(ctx, q, owner, ref, id)
@@ -56,6 +66,23 @@ func RequireWorkspaceOutputApplied(ctx context.Context, q Reader, owner Owner, r
 		return e
 	}
 	if closure.Purpose != WorkspaceExport || !closure.Successful {
+		return ErrConflict
+	}
+	return nil
+}
+
+// A run without an applied snapshot must have a canonical response-only owner,
+// its exact retained workspace pin, and an existing distinct execution target.
+func requireReadOnlyRunOutput(ctx context.Context, q Reader, owner Owner, m WorkerManifest) error {
+	var path, mode, execution, source, publish, completion string
+	e := q.QueryRowContext(ctx, `SELECT w.workspace_path,t.target_mode,t.execution_root,t.source_root,t.publish_root,i.completion_mode FROM provider_preparation_workspaces w JOIN provider_invocations i ON i.provider_invocation_id=w.invocation_id AND i.attempt_id=w.resource_id JOIN run_execution_targets t ON t.run_id=i.run_id WHERE w.owner_kind='run' AND w.invocation_id=? AND w.lease_owner=? AND w.lease_version=? AND w.resource_id=?`, owner.InvocationID, owner.LeaseOwner, owner.LeaseVersion, m.ResourceID).Scan(&path, &mode, &execution, &source, &publish, &completion)
+	if e != nil {
+		return e
+	}
+	if completion != "server_response" || path == "" {
+		return ErrConflict
+	}
+	if mode == "direct" && filepath.Clean(execution) == path && filepath.Clean(source) != path && filepath.Clean(publish) != path {
 		return ErrConflict
 	}
 	return nil

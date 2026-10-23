@@ -137,13 +137,8 @@ func ValidateOutputTx(ctx context.Context, q Reader, p Preparation, now time.Tim
 	if p.Owner.Kind != OwnerRun || ref.Purpose != "private_execution" {
 		return fmt.Errorf("unpublished execution workspace required")
 	}
-	c, err := loadOwner(ctx, q, p.Owner)
-	if err != nil {
+	if err := validateCurrentOutputOwner(ctx, q, p, now); err != nil {
 		return err
-	}
-	expiry, e := time.Parse(time.RFC3339Nano, c.expiry)
-	if now.IsZero() || e != nil || !now.Before(expiry) || c.invocationState != "open" || c.activeInvocation != p.Owner.InvocationID || c.leaseOwner != p.Lease.Owner || c.leaseVersion != p.Lease.Version || c.settlement != "" || c.state != "running" || c.runStatus != "running" || c.mode != "provider_backed" {
-		return fmt.Errorf("output workspace owner is not current")
 	}
 	var state string
 	if err = q.QueryRowContext(ctx, `SELECT state FROM run_execution_targets WHERE run_id=?`, ref.RunID).Scan(&state); err != nil {
@@ -196,4 +191,35 @@ func OpenOutputWorkspace(ctx context.Context, q Reader, p Preparation) (*securef
 		}
 	}
 	return root, nil
+}
+
+// ValidateReadOnlyOutputTx checks current ownership without granting host writes.
+func ValidateReadOnlyOutputTx(ctx context.Context, q Reader, p Preparation, now time.Time) error {
+	ref, err := ReadPreparationWorkspace(ctx, q, p)
+	if err != nil {
+		return err
+	}
+	if p.Owner.Kind != OwnerRun || ref.Purpose != "source_only" {
+		return fmt.Errorf("read-only source workspace required")
+	}
+	var count int
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_invocations i JOIN run_execution_targets t ON t.run_id=i.run_id WHERE i.provider_invocation_id=? AND i.attempt_id=? AND i.completion_mode='server_response'`, p.Owner.InvocationID, p.ResourceID).Scan(&count); err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("canonical response-only execution target required")
+	}
+	return validateCurrentOutputOwner(ctx, q, p, now)
+}
+
+func validateCurrentOutputOwner(ctx context.Context, q Reader, p Preparation, now time.Time) error {
+	c, err := loadOwner(ctx, q, p.Owner)
+	if err != nil {
+		return err
+	}
+	expiry, e := time.Parse(time.RFC3339Nano, c.expiry)
+	if now.IsZero() || e != nil || !now.Before(expiry) || c.invocationState != "open" || c.activeInvocation != p.Owner.InvocationID || c.leaseOwner != p.Lease.Owner || c.leaseVersion != p.Lease.Version || c.settlement != "" || c.state != "running" || c.runStatus != "running" || c.mode != "provider_backed" {
+		return fmt.Errorf("output workspace owner is not current")
+	}
+	return nil
 }

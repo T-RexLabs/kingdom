@@ -1,8 +1,11 @@
 package workspaceoutput
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"kingdom/internal/execution/openshell/worker"
+	"kingdom/internal/execution/remote"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/securefs"
 	"kingdom/internal/workspacearchive"
@@ -104,5 +107,70 @@ func TestSnapshotMatchesVerifiedArchiveAndRestoresDeletesAndModes(t *testing.T) 
 	}
 	if e = o.verifySnapshot(ctx, "snapshot", staged.Manifest); e == nil {
 		t.Fatal("foreign snapshot accepted")
+	}
+}
+
+type testArchive struct{ *bytes.Reader }
+
+func (testArchive) Close() error { return nil }
+
+type testSources struct{ data []byte }
+
+func (s testSources) Open(context.Context, remote.SourceArchive) (worker.Archive, error) {
+	return testArchive{bytes.NewReader(s.data)}, nil
+}
+
+func TestSourceOnlyRunExportRejectsChangedImportedContents(t *testing.T) {
+	ctx := context.Background()
+	db, e := sql.Open("sqlite", ":memory:")
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer db.Close()
+	if _, e = db.Exec(`CREATE TABLE remote_workspace_imports(operation_id TEXT,archive_sha256 TEXT,archive_bytes INTEGER,manifest_sha256 TEXT)`); e != nil {
+		t.Fatal(e)
+	}
+	source := t.TempDir()
+	if e = os.WriteFile(filepath.Join(source, "source.txt"), []byte("original"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	root, e := securefs.OpenRoot(source)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer root.Close()
+	limits := workspacearchive.Limits{ArchiveBytes: 1 << 20, ExpandedBytes: 1 << 20, FileBytes: 1 << 20, Entries: 100, Depth: 10, PathBytes: 1000}
+	var data bytes.Buffer
+	if _, e = workspacearchive.ExportZIP(ctx, root, &data, limits); e != nil {
+		t.Fatal(e)
+	}
+	stage, e := workspacearchive.ImportZIP(ctx, t.TempDir(), bytes.NewReader(data.Bytes()), int64(data.Len()), limits)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer stage.Close()
+	m := remote.WorkerManifest{Owner: remote.Owner{Kind: "run"}, ImportID: "import", Source: remote.SourceArchive{SHA256: stage.Manifest.ArchiveSHA256, Bytes: int64(data.Len())}}
+	if _, e = db.Exec(`INSERT INTO remote_workspace_imports VALUES(?,?,?,?)`, m.ImportID, m.Source.SHA256, m.Source.Bytes, stage.Digest); e != nil {
+		t.Fatal(e)
+	}
+	out := Output{Config{DB: db, Sources: testSources{data.Bytes()}, StageRoot: t.TempDir(), Limits: limits}}
+	if e = out.verifyUnchanged(ctx, m, stage.Manifest); e != nil {
+		t.Fatal(e)
+	}
+	changed := stage.Manifest
+	changed.Entries = append([]workspacearchive.Entry(nil), stage.Manifest.Entries...)
+	changed.Entries[0].SHA256 = "different"
+	if e = out.verifyUnchanged(ctx, m, changed); e == nil {
+		t.Fatal("changed source-only run accepted")
+	}
+	saved, e := os.ReadFile(filepath.Join(source, "source.txt"))
+	if e != nil || string(saved) != "original" {
+		t.Fatal("read-only verification changed source", e)
+	}
+	if _, e = db.Exec(`UPDATE remote_workspace_imports SET manifest_sha256='foreign'`); e != nil {
+		t.Fatal(e)
+	}
+	if e = out.verifyUnchanged(ctx, m, stage.Manifest); e == nil {
+		t.Fatal("foreign imported manifest accepted")
 	}
 }
