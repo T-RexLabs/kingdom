@@ -565,6 +565,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 	defer themeStore.Close()
 	project, err := projectruntime.New(startupCtx, projectruntime.Config{
 		Mode:                    projectruntime.Local,
+		LifetimeContext:         ctx,
 		DB:                      db,
 		ThemeStore:              themeStore,
 		Paths:                   bootstrapPaths,

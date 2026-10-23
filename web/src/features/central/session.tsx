@@ -11,10 +11,22 @@ export function HostedSessionBoundary({ children }: { children: ReactNode }) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [attempt, setAttempt] = useState(0);
   const heading = useRef<HTMLHeadingElement>(null);
+  const activeSession = useRef("");
+  const recheckedSession = useRef("");
   useEffect(() => subscribeToUnauthorized(() => {
+    const rejectedSession = activeSession.current;
+    if (!rejectedSession) return;
+    activeSession.current = "";
     setCSRFToken("");
     void queryClient.cancelQueries();
     queryClient.clear();
+    // Rechecking the same valid session cannot repair a persistent project
+    // rejection. Stop instead of remounting its requests without a bound.
+    if (recheckedSession.current === rejectedSession) {
+      setState({ kind: "failed" });
+      return;
+    }
+    recheckedSession.current = rejectedSession;
     setState({ kind: "loading" });
     setAttempt(value => value + 1);
   }), [queryClient]);
@@ -34,6 +46,8 @@ export function HostedSessionBoundary({ children }: { children: ReactNode }) {
         const session = await response.json() as CentralSession;
         if (!session.session_id || !session.csrf_token || !session.user?.id) throw new Error("Session is invalid.");
         if (!controller.signal.aborted) {
+          activeSession.current = session.session_id;
+          if (recheckedSession.current !== session.session_id) recheckedSession.current = "";
           setCSRFToken(session.csrf_token, session.session_id);
           setState({ kind: "ready", session });
         }
@@ -51,8 +65,8 @@ export function HostedSessionBoundary({ children }: { children: ReactNode }) {
       <p className="mb-8 font-display text-2xl text-accent">Kingdom</p>
       {state.kind === "loading" ? <p role="status" className="text-sm text-foreground-muted">Checking your session…</p> : <>
         <h1 ref={heading} tabIndex={-1} className="text-xl font-medium">{state.kind === "failed" ? "Connection Unavailable" : "Sign In"}</h1>
-        <p className="mb-6 mt-2 text-sm leading-relaxed text-foreground-muted">{state.kind === "failed" ? "Kingdom could not check your session. Check your connection and try again." : "Sign in to open your projects and use your team’s model connections."}</p>
-        {state.kind === "failed" ? <Button onClick={() => { setState({ kind: "loading" }); setAttempt(value => value + 1); }}>Try Again</Button> : <div className="space-y-3">
+        <p className="mb-6 mt-2 text-sm leading-relaxed text-foreground-muted">{state.kind === "failed" ? "Kingdom could not verify access. Check your connection and try again." : "Sign in to open your projects and use your team’s model connections."}</p>
+        {state.kind === "failed" ? <Button onClick={() => { recheckedSession.current = ""; setState({ kind: "loading" }); setAttempt(value => value + 1); }}>Try Again</Button> : <div className="space-y-3">
           {state.providers.map(provider => <a key={provider} href={`/auth/${provider}/start`} className="ui-button ui-button--primary block rounded-md border border-accent bg-accent px-4 py-2 text-center text-sm font-medium text-background">{provider === "github" ? "Continue with GitHub" : "Continue with Your Organization"}</a>)}
           {state.providers.length === 0 && <p role="alert" className="text-sm">No sign-in provider is available. Contact your Kingdom operator.</p>}
         </div>}

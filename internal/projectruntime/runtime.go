@@ -31,7 +31,9 @@ const (
 var ErrHostedProviderUnavailable = errors.New("hosted project execution requires a managed provider backend")
 
 type Config struct {
-	Mode                                           Mode
+	Mode Mode
+	// LifetimeContext remains live after bounded construction has completed.
+	LifetimeContext                                context.Context
 	DB                                             *sql.DB
 	ThemeStore                                     *theme.Store
 	Paths                                          kingdom.BootstrapPaths
@@ -187,6 +189,7 @@ func New(ctx context.Context, cfg Config) (instance *Instance, err error) {
 		DB:                         cfg.DB,
 		ThemeStore:                 cfg.ThemeStore,
 		StartupContext:             ctx,
+		LifetimeContext:            cfg.LifetimeContext,
 		BasePath:                   cfg.BasePath,
 		PublicAPIBase:              cfg.PublicAPIBase,
 		AutonomousApprovalsDefault: cfg.AutonomousApprovals,

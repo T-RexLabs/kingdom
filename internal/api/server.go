@@ -56,9 +56,12 @@ type ServerConfig struct {
 	HostedSelection *HostedSelectionConfig
 	LocalSelection  *LocalSelectionConfig
 	// ThemeStore is owned by the runtime that constructs the API server.
-	ThemeStore                 *theme.Store
-	DB                         *sql.DB
-	StartupContext             context.Context
+	ThemeStore     *theme.Store
+	DB             *sql.DB
+	StartupContext context.Context
+	// LifetimeContext owns serving and background work after construction.
+	// A completed startup context must not revoke an admitted browser session.
+	LifetimeContext            context.Context
 	BasePath                   string
 	PublicAPIBase              string
 	AutonomousApprovalsDefault *bool
@@ -217,8 +220,17 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	if startupCtx == nil {
 		startupCtx = context.Background()
 	}
-	lifecycleCtx, lifecycleCancel := context.WithCancel(startupCtx)
-	startupCtx = lifecycleCtx
+	lifetimeCtx := cfg.LifetimeContext
+	if lifetimeCtx == nil {
+		lifetimeCtx = context.Background()
+	}
+	if err := startupCtx.Err(); err != nil {
+		return nil, err
+	}
+	if err := lifetimeCtx.Err(); err != nil {
+		return nil, err
+	}
+	lifecycleCtx, lifecycleCancel := context.WithCancel(lifetimeCtx)
 	lifecycleTransferred := false
 	defer func() {
 		if !lifecycleTransferred {
