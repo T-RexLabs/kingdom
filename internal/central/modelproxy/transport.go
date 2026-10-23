@@ -3,6 +3,7 @@ package modelproxy
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"net"
 	"net/http"
 	"net/netip"
@@ -122,3 +123,25 @@ func publicAddress(ip netip.Addr) bool {
 	}
 	return true
 }
+
+// DiscoveryClient shares the proxy's operator-approved HTTPS and address policy.
+// Callers must use fixed discovery paths; redirects never inherit credentials.
+func DiscoveryClient(origins []OriginPolicy, roots *x509.CertPool) (*http.Client, error) {
+	transport, err := newTransport(Config{Origins: origins, TLSRoots: roots})
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return ErrDenied }}, nil
+}
+
+func DiscoveryEndpoint(endpoint string) (string, error) {
+	u, err := parseEndpoint(endpoint)
+	if err != nil {
+		return "", err
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/") + "/models"
+	return u.String(), nil
+}
+
+// ValidDiscoveryJSON rejects ambiguous duplicate fields and excessive nesting.
+func ValidDiscoveryJSON(raw []byte) bool { _, err := uniqueObject(raw); return err == nil }

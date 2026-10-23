@@ -20,3 +20,5 @@ Planning model selections and each run model selection entry can include an exac
 This field requires a project-bound hosted API with a trusted selection resolver. The example model is illustrative; the exact model and thinking effort must exist in the cached catalog for that connection revision. The API derives the actor from authentication and records only credential references. A new planning action must use a connection available to the requesting user. Automatic titles keep their causal reply's selection. A saved snapshot does not bypass later access checks.
 
 Local API requests reject the `connection` field. The hosted execution backend is not yet enabled; this contract does not provide a hosted startup command or a working remote execution path.
+
+[central-models.yaml](central-models.yaml) defines the separate central connection model discovery routes. See [Central Model Catalog](../../docs/central-model-catalog.md) for authorization, cache lifetime, and operator profile requirements.

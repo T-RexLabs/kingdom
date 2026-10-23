@@ -398,3 +398,7 @@ func browserSessionCookieMaxAge(now, expiresAt time.Time) int {
 	}
 	return int(remaining / time.Second)
 }
+
+// AuthenticatedActorID returns only the actor established by API authentication.
+// An absent authenticated request context returns an empty identity.
+func AuthenticatedActorID(ctx context.Context) string { return authenticatedActorID(ctx) }

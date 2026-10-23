@@ -28,6 +28,7 @@ type Config struct {
 	Catalog        *catalog.Store
 	Connections    *connections.Store
 	ProjectFactory ProjectFactory
+	Models         ModelDiscovery
 }
 type Server struct {
 	cfg     Config
@@ -60,6 +61,8 @@ func New(cfg Config) (*Server, error) {
 	central.HandleFunc("PUT "+BasePath+"/projects/{project}/memberships/{user}", s.setMembership)
 	central.HandleFunc("DELETE "+BasePath+"/projects/{project}/memberships/{user}", s.revokeMembership)
 	central.HandleFunc("GET "+BasePath+"/connections", s.listConnections)
+	central.HandleFunc("GET "+BasePath+"/projects/{project}/connections/{connection}/revisions/{revision}/models", s.connectionModels)
+	central.HandleFunc("POST "+BasePath+"/projects/{project}/connections/{connection}/revisions/{revision}/models/refresh", s.connectionModels)
 	central.HandleFunc("POST "+BasePath+"/connections", s.createConnection)
 	central.HandleFunc("PUT "+BasePath+"/connections/{connection}", s.reviseConnection)
 	central.HandleFunc("DELETE "+BasePath+"/connections/{connection}", s.disableConnection)
