@@ -203,16 +203,23 @@ func IssueDispatchTx(ctx context.Context, tx *sql.Tx, id string, identity provid
 	if err != nil {
 		return err
 	}
-	// Remote binding records identity only until verified managed execution and
-	// closure are integrated. A successful binding cannot authorize dispatch.
-	if b.Backend != providerexecution.BackendLocal {
-		return ErrDispatchClosed
-	}
 	if b.AdmissionClosedAt != "" || b.DispatchIssuedAt != "" {
 		return ErrDispatchClosed
 	}
 	if err := RequireOwnerTx(ctx, tx, id, lease, now); err != nil {
+		if b.Backend == providerexecution.BackendOpenShell {
+			return fmt.Errorf("%w: remote owner unavailable: %v", ErrDispatchClosed, err)
+		}
 		return err
+	}
+	switch b.Backend {
+	case providerexecution.BackendLocal:
+	case providerexecution.BackendOpenShell:
+		if err := requireRemoteDispatchTx(ctx, tx, b); err != nil {
+			return err
+		}
+	default:
+		return ErrDispatchClosed
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE provider_requests SET dispatch_issued_at=? WHERE binding_id=?`, now.UTC().Format(time.RFC3339Nano), id)
 	return err

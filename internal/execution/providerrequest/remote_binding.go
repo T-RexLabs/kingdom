@@ -12,8 +12,8 @@ import (
 
 // BindRemoteTx records identity in the canonical invocation activation
 // transaction. Creation admission is not readiness or closure evidence, and
-// IssueDispatchTx continues to reject this backend until verified execution is
-// integrated. No local guardian facts can satisfy this binding's resource debt.
+// dispatch additionally requires retained workspace and server provisioning.
+// No local guardian facts can satisfy this binding's resource debt.
 func BindRemoteTx(ctx context.Context, tx *sql.Tx, b Binding, ref remote.Reference, now time.Time) error {
 	if b.Backend != providerexecution.BackendOpenShell || b.RemoteAllocation <= 0 || b.RemoteAllocation != ref.Allocation {
 		return fmt.Errorf("complete remote provider runtime binding is required")
