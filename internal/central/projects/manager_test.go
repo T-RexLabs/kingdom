@@ -57,7 +57,7 @@ func manager(t *testing.T, build Builder) *Manager {
 func TestConcurrentRequestsShareRuntimeButKeepActorIdentity(t *testing.T) {
 	var calls atomic.Int32
 	runtime := &runtimeFixture{}
-	m := manager(t, func(ctx context.Context, id string, a api.Authenticator) (Runtime, error) {
+	m := manager(t, func(ctx BuildContext, id string, a api.Authenticator) (Runtime, error) {
 		calls.Add(1)
 		runtime.auth = a
 		return runtime, nil
@@ -99,8 +99,8 @@ func TestConcurrentRequestsShareRuntimeButKeepActorIdentity(t *testing.T) {
 func TestClientCancellationDoesNotCancelOwnedStartup(t *testing.T) {
 	entered, release := make(chan context.Context, 1), make(chan struct{})
 	runtime := &runtimeFixture{}
-	m := manager(t, func(ctx context.Context, _ string, a api.Authenticator) (Runtime, error) {
-		entered <- ctx
+	m := manager(t, func(ctx BuildContext, _ string, a api.Authenticator) (Runtime, error) {
+		entered <- ctx.Lifetime
 		<-release
 		runtime.auth = a
 		return runtime, nil
@@ -121,11 +121,14 @@ func TestClientCancellationDoesNotCancelOwnedStartup(t *testing.T) {
 	if _, e := m.Factory(context.Background(), id, authenticator{}); e != nil {
 		t.Fatal(e)
 	}
+	if owned.Err() != nil {
+		t.Fatal("successful startup ended runtime lifetime")
+	}
 }
 func TestCloseJoinsLateStartupAndRetainsFailedCleanup(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	runtime := &runtimeFixture{}
-	m := manager(t, func(ctx context.Context, _ string, a api.Authenticator) (Runtime, error) {
+	m := manager(t, func(ctx BuildContext, _ string, a api.Authenticator) (Runtime, error) {
 		close(entered)
 		<-release
 		runtime.auth = a
@@ -162,7 +165,7 @@ func TestCloseJoinsLateStartupAndRetainsFailedCleanup(t *testing.T) {
 }
 func TestFailedUnownedStartupCanRetryAndInvalidInputCannotBuild(t *testing.T) {
 	var calls atomic.Int32
-	m := manager(t, func(_ context.Context, _ string, a api.Authenticator) (Runtime, error) {
+	m := manager(t, func(_ BuildContext, _ string, a api.Authenticator) (Runtime, error) {
 		if calls.Add(1) == 1 {
 			return nil, errors.New("database busy")
 		}
@@ -191,7 +194,7 @@ func TestFailedUnownedStartupCanRetryAndInvalidInputCannotBuild(t *testing.T) {
 
 func TestCapacityIncludesStartupAndNilRuntimeCannotPublish(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
-	m, e := New(Config{MaxProjects: 1, Build: func(context.Context, string, api.Authenticator) (Runtime, error) {
+	m, e := New(Config{MaxProjects: 1, Build: func(BuildContext, string, api.Authenticator) (Runtime, error) {
 		close(entered)
 		<-release
 		var runtime *runtimeFixture

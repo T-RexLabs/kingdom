@@ -23,9 +23,16 @@ type Runtime interface {
 	Close(context.Context) error
 }
 
-// Builder owns partial startup, including cleanup on failure. Its context is
-// owned by Manager, so an HTTP client disconnect cannot orphan a runtime.
-type Builder func(context.Context, string, api.Authenticator) (Runtime, error)
+// BuildContext separates bounded startup work from the runtime lifetime. Start
+// background consumers with Lifetime; Startup ends when construction returns.
+// Both contexts belong to Manager and are independent of an HTTP request.
+type BuildContext struct {
+	Startup  context.Context
+	Lifetime context.Context
+}
+
+// Builder owns partial startup, including cleanup on failure.
+type Builder func(BuildContext, string, api.Authenticator) (Runtime, error)
 
 type Config struct {
 	Build          Builder
@@ -108,7 +115,7 @@ func (m *Manager) Factory(ctx context.Context, id string, authenticator api.Auth
 func (m *Manager) build(id string, authenticator api.Authenticator, e *entry) {
 	ctx, cancel := context.WithTimeout(m.lifetime, m.cfg.StartupTimeout)
 	defer cancel()
-	runtime, err := m.cfg.Build(ctx, id, authenticator)
+	runtime, err := m.cfg.Build(BuildContext{Startup: ctx, Lifetime: m.lifetime}, id, authenticator)
 	if nilInterface(runtime) {
 		runtime = nil
 		if err == nil {
