@@ -12,6 +12,7 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
+	"kingdom/internal/core/providerexecution"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/state"
 )
@@ -188,13 +189,35 @@ func resumePlanResponse(runID string, plan state.RunResumePlan) gen.RunResumePla
 	return response
 }
 
+// Only the local backend can adopt a retained provider conversation. Missing
+// declarations on an injected backend must not grant this capability.
+func providerResumeUnavailableReason(cfg ServerConfig) string {
+	if cfg.ProviderService == nil && cfg.HostedSelection == nil && cfg.LocalSelection == nil {
+		return ""
+	}
+	if backend, ok := cfg.ProviderService.(interface {
+		ExecutionBackend() providerexecution.Backend
+	}); ok && backend.ExecutionBackend() == providerexecution.BackendLocal {
+		return ""
+	}
+	return "Resume is unavailable with this execution backend. Use Rerun to start new work. Saved checkpoints are kept."
+}
+
+func (s *Server) loadResumePlan(ctx context.Context, runID string) (state.RunResumePlan, error) {
+	plan, err := state.LoadRunResumePlan(ctx, s.db, runID)
+	if err == nil && s.resumeUnavailableReason != "" {
+		plan.UnavailableReason = s.resumeUnavailableReason
+	}
+	return plan, err
+}
+
 func (s *Server) handleGetRunResumePlan(w http.ResponseWriter, r *http.Request) {
 	runID := strings.TrimSpace(r.PathValue("id"))
 	if !s.runExists(r.Context(), runID) {
 		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run not found", "api.get_run_resume_plan", map[string]any{"run_id": runID})
 		return
 	}
-	plan, err := state.LoadRunResumePlan(r.Context(), s.db, runID)
+	plan, err := s.loadResumePlan(r.Context(), runID)
 	if err != nil {
 		s.writeInternalError(w, "derive resume plan failed")
 		return
@@ -224,7 +247,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	plan, err := state.LoadRunResumePlan(r.Context(), s.db, runID)
+	plan, err := s.loadResumePlan(r.Context(), runID)
 	if err != nil {
 		s.writeInternalError(w, "derive resume plan failed")
 		return
