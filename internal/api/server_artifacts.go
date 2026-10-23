@@ -117,7 +117,7 @@ func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) 
 	for _, record := range page.Items {
 		downloadURL := ""
 		if record.ArtifactAction != "delete" {
-			downloadURL = s.basePath + "/artifacts/" + url.PathEscape(record.ArtifactID) + "/content"
+			downloadURL = s.publicAPIBase + "/artifacts/" + url.PathEscape(record.ArtifactID) + "/content"
 		}
 		items = append(items, runArtifactItem{
 			NodeID:          record.NodeID,
@@ -602,7 +602,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	if record.ArtifactAction != "delete" {
 		sha256 := record.SHA256
-		downloadURL := s.artifactDownloadURL + "/" + url.PathEscape(response.ArtifactId) + "/content"
+		downloadURL := s.publicAPIBase + "/artifacts" + "/" + url.PathEscape(response.ArtifactId) + "/content"
 		mode := int(*record.ModeBits)
 		response.ModeBits = &mode
 		response.Sha256 = &sha256

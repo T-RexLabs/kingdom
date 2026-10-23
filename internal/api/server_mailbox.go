@@ -414,7 +414,7 @@ func detailMailboxMessage(message state.MailboxMessage, agentNames map[string]st
 }
 
 func (s *Server) mailboxContentURL(runID, messageID string) string {
-	return s.basePath + "/runs/" + url.PathEscape(runID) + "/mailbox/messages/" + url.PathEscape(messageID) + "/content"
+	return s.publicAPIBase + "/runs/" + url.PathEscape(runID) + "/mailbox/messages/" + url.PathEscape(messageID) + "/content"
 }
 
 func (s *Server) handleGetRunMailboxMessageContent(w http.ResponseWriter, r *http.Request) {

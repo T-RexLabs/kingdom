@@ -60,7 +60,7 @@ type ServerConfig struct {
 	DB                         *sql.DB
 	StartupContext             context.Context
 	BasePath                   string
-	ArtifactDownloadURL        string
+	PublicAPIBase              string
 	AutonomousApprovalsDefault *bool
 	ProviderEngine             string
 	// ProviderService runs planner requests and is shared with run execution.
@@ -101,7 +101,7 @@ type Server struct {
 	now                        func() time.Time
 	idGenerator                func(prefix string) string
 	basePath                   string
-	artifactDownloadURL        string
+	publicAPIBase              string
 	autonomousApprovalsDefault bool
 	providerEngine             string
 	providerModelCatalog       ProviderModelCatalog
@@ -243,11 +243,13 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		}
 	}
 
-	artifactDownloadURL := strings.TrimSpace(cfg.ArtifactDownloadURL)
-	if artifactDownloadURL == "" {
-		artifactDownloadURL = basePath + "/artifacts"
+	publicAPIBase := basePath
+	if cfg.PublicAPIBase != "" {
+		publicAPIBase, err = ValidateBasePath(cfg.PublicAPIBase)
+		if err != nil || publicAPIBase != cfg.PublicAPIBase {
+			return nil, fmt.Errorf("public API base must be an exact canonical same-origin path")
+		}
 	}
-	artifactDownloadURL = strings.TrimSuffix(artifactDownloadURL, "/")
 
 	autonomousApprovalsDefault := true
 	if cfg.AutonomousApprovalsDefault != nil {
@@ -395,7 +397,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		now:                        now,
 		idGenerator:                idGenerator,
 		basePath:                   basePath,
-		artifactDownloadURL:        artifactDownloadURL,
+		publicAPIBase:              publicAPIBase,
 		eventIngestor:              state.NewAttemptEventIngestor(cfg.DB, schemaSet).WithRoleCommunicationPolicy(roleCommPolicy),
 		transitionService:          state.NewTransitionService(cfg.DB, schemaSet).WithRoleCommunicationPolicy(roleCommPolicy),
 		artifactService:            state.NewArtifactService(cfg.DB),

@@ -35,6 +35,7 @@ type Config struct {
 	ThemeStore                                     *theme.Store
 	Paths                                          kingdom.BootstrapPaths
 	ProjectRoot, RuntimeRoot, BasePath             string
+	PublicAPIBase                                  string
 	ProviderEngine, ProviderBinary, GovernanceMode string
 	AutonomousApprovals                            *bool
 	PublishMode, YoloOutputRoot                    string
@@ -173,6 +174,7 @@ func New(ctx context.Context, cfg Config) (instance *Instance, err error) {
 		ThemeStore:                 cfg.ThemeStore,
 		StartupContext:             ctx,
 		BasePath:                   cfg.BasePath,
+		PublicAPIBase:              cfg.PublicAPIBase,
 		AutonomousApprovalsDefault: cfg.AutonomousApprovals,
 		ProviderEngine:             cfg.ProviderEngine,
 		ProviderService:            p,
