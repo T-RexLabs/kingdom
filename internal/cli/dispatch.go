@@ -75,6 +75,11 @@ func Execute(ctx context.Context, stdout io.Writer, stderr io.Writer, args []str
 		return ExitSuccess
 	}
 	switch args[0] {
+	case "chatgpt":
+		if err := runChatGPTCommand(ctx, stdout, args[1:]); err != nil {
+			return (&Runtime{config: Config{}, stdout: stdout, stderr: stderr}).writeError(err)
+		}
+		return ExitSuccess
 	case "init":
 		if hasHelpToken(args[1:]) {
 			writeCommandHelp(stdout, []string{"init"})

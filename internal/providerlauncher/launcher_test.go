@@ -19,7 +19,7 @@ import (
 )
 
 func job() Job {
-	return Job{Version: 1, LauncherSHA256: strings.Repeat("a", 64), OpenCodeSHA256: strings.Repeat("b", 64), ControlToken: strings.Repeat("c", 64), ServerPassword: strings.Repeat("d", 64), ProxyURL: "https://worker.example/v1", ProxyToken: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)), ProviderID: "openai", ModelID: "fixture", CallbackURL: "https://worker.example/callback", CallbackToken: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32)), InstanceID: "main:0", ContextLimit: 32000, OutputLimit: 4096, LifetimeSeconds: 300}
+	return Job{Version: JobVersion, ModelAPI: ChatCompletionsAPI, LauncherSHA256: strings.Repeat("a", 64), OpenCodeSHA256: strings.Repeat("b", 64), ControlToken: strings.Repeat("c", 64), ServerPassword: strings.Repeat("d", 64), ProxyURL: "https://worker.example/v1", ProxyToken: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)), ProviderID: "openai", ModelID: "fixture", CallbackURL: "https://worker.example/callback", CallbackToken: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32)), InstanceID: "main:0", ContextLimit: 32000, OutputLimit: 4096, LifetimeSeconds: 300}
 }
 func TestStrictJobAndNoInheritedCredentials(t *testing.T) {
 	j := job()
@@ -27,7 +27,7 @@ func TestStrictJobAndNoInheritedCredentials(t *testing.T) {
 	if _, e := DecodeJob(bytes.NewReader(raw)); e != nil {
 		t.Fatal(e)
 	}
-	for _, bad := range []string{string(raw) + " {}", strings.Replace(string(raw), `"version":1`, `"version":1,"api_key":"real"`, 1), strings.Repeat("x", MaxJobBytes+1)} {
+	for _, bad := range []string{string(raw) + " {}", strings.Replace(string(raw), `"version":2`, `"version":2,"api_key":"real"`, 1), strings.Repeat("x", MaxJobBytes+1)} {
 		if _, e := DecodeJob(strings.NewReader(bad)); e == nil {
 			t.Fatal("invalid job accepted")
 		}
@@ -191,7 +191,7 @@ func TestDuplicateStopRejected(t *testing.T) {
 
 func TestJobRejectsDuplicateFields(t *testing.T) {
 	raw, _ := json.Marshal(job())
-	duplicate := strings.Replace(string(raw), `"version":1`, `"version":1,"version":1`, 1)
+	duplicate := strings.Replace(string(raw), `"version":2`, `"version":1,"version":1`, 1)
 	if _, e := DecodeJob(strings.NewReader(duplicate)); e == nil {
 		t.Fatal("duplicate field accepted")
 	}
@@ -311,5 +311,29 @@ func TestControlShutdownFailureCannotEmitCleanCompletion(t *testing.T) {
 	}
 	if h.out.Len() != 0 {
 		t.Fatal("clean completion emitted")
+	}
+}
+
+func TestResponsesJobSelectsNativeResponsesProvider(t *testing.T) {
+	j := job()
+	j.ModelAPI = "responses"
+	if err := j.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	for _, entry := range environment(j) {
+		if strings.HasPrefix(entry, "OPENCODE_CONFIG_CONTENT=") {
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(entry, "OPENCODE_CONFIG_CONTENT=")), &config); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	provider := config["providers"].(map[string]any)[j.ProviderID].(map[string]any)
+	if provider["package"] != "@opencode/ai/providers/openai/responses" {
+		t.Fatalf("Responses connection uses %v", provider["package"])
+	}
+	j.ModelAPI = "arbitrary-provider"
+	if j.Validate() == nil {
+		t.Fatal("untrusted provider API accepted")
 	}
 }

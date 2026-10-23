@@ -63,7 +63,7 @@ func (b *Broker) Issue(ctx context.Context, binding Binding) (Lease, error) {
 		return Lease{}, ErrDenied
 	}
 	b.ids[lease.ID] = struct{}{}
-	return Lease{Lease: lease, BaseURL: b.cfg.PublicBaseURL}, nil
+	return Lease{Lease: lease, BaseURL: b.cfg.PublicBaseURL, Protocol: route.Protocol}, nil
 }
 func (b *Broker) Activate(ctx context.Context, id string, identity providerexecution.RequestIdentity) error {
 	pins, _, err := b.cfg.Registry.Lookup(ctx, id)

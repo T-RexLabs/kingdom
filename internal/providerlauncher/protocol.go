@@ -15,6 +15,11 @@ import (
 	"time"
 )
 
+const JobVersion = 2
+const CommandName = "serve-v2"
+const ChatCompletionsAPI = "chat_completions"
+const ResponsesAPI = "responses"
+
 const LauncherPath = "/usr/local/libexec/kingdom-provider-launcher"
 const OpenCodePath = "/usr/local/bin/opencode"
 const PluginPath = "/usr/local/lib/kingdom-plugin"
@@ -39,6 +44,7 @@ type Job struct {
 	ProxyToken      string `json:"proxy_token"`
 	ProviderID      string `json:"provider_id"`
 	ModelID         string `json:"model_id"`
+	ModelAPI        string `json:"model_api"`
 	CallbackURL     string `json:"callback_url"`
 	CallbackToken   string `json:"callback_token"`
 	InstanceID      string `json:"instance_id"`
@@ -73,8 +79,11 @@ func endpoint(s string) bool {
 	return e == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && u.Opaque == "" && len(s) <= 2048
 }
 func (j Job) Validate() error {
-	if j.Version != 1 || !hex256(j.LauncherSHA256) || !hex256(j.OpenCodeSHA256) || !hex256(j.ControlToken) || !hex256(j.ServerPassword) || !modelCapability(j.ProxyToken) || !modelCapability(j.CallbackToken) || !endpoint(j.ProxyURL) || !endpoint(j.CallbackURL) || !identifier(j.ProviderID) || strings.Contains(j.ProviderID, "/") || !identifier(j.ModelID) || !identifier(j.InstanceID) || j.ContextLimit < 1 || j.ContextLimit > 2000000 || j.OutputLimit < 1 || j.OutputLimit > 200000 || j.OutputLimit > j.ContextLimit || j.LifetimeSeconds < 1 || j.LifetimeSeconds > 86400 {
+	if j.Version != JobVersion || !hex256(j.LauncherSHA256) || !hex256(j.OpenCodeSHA256) || !hex256(j.ControlToken) || !hex256(j.ServerPassword) || !modelCapability(j.ProxyToken) || !modelCapability(j.CallbackToken) || !endpoint(j.ProxyURL) || !endpoint(j.CallbackURL) || !identifier(j.ProviderID) || strings.Contains(j.ProviderID, "/") || !identifier(j.ModelID) || !identifier(j.InstanceID) || j.ContextLimit < 1 || j.ContextLimit > 2000000 || j.OutputLimit < 1 || j.OutputLimit > 200000 || j.OutputLimit > j.ContextLimit || j.LifetimeSeconds < 1 || j.LifetimeSeconds > 86400 {
 		return errors.New("invalid provider launcher job")
+	}
+	if j.ModelAPI != ChatCompletionsAPI && j.ModelAPI != ResponsesAPI {
+		return errors.New("invalid provider model API")
 	}
 	return nil
 }
@@ -124,5 +133,5 @@ func Command(j Job) (*pb.CommandSpec, error) {
 	if e != nil {
 		return nil, e
 	}
-	return &pb.CommandSpec{Argv: []string{LauncherPath, "serve-v1"}, Workdir: WorkspacePath, Stdin: append(b, '\n'), ExecutionTimeout: durationpb.New(time.Duration(j.LifetimeSeconds) * time.Second), OutputLimitBytes: MaxOutputBytes}, nil
+	return &pb.CommandSpec{Argv: []string{LauncherPath, CommandName}, Workdir: WorkspacePath, Stdin: append(b, '\n'), ExecutionTimeout: durationpb.New(time.Duration(j.LifetimeSeconds) * time.Second), OutputLimitBytes: MaxOutputBytes}, nil
 }

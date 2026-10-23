@@ -63,6 +63,8 @@ The callback certificate must match its advertised hostname and configured CA. T
 
 The local owner vault stores encrypted credential revisions. It does not read OpenCode accounts or grant central membership. Model credentials stay in the local proxy. Each sandbox receives a scoped capability that is revoked before export. Changes to model metadata or credentials create a new revision; already queued work retains its exact selection.
 
+For a Kingdom-owned local ChatGPT registration, use the [ChatGPT connection guide](chatgpt-local-connection.md) and replace the model section with its registration reference. Personal ChatGPT credentials cannot become shared central credentials.
+
 ## Return to Local Execution
 
 Wait for managed work and typed resource cleanup to finish, stop Kingdom, then set `execution.backend: local` and remove `execution.managed_config`. A restart refuses the switch if active managed work or unresolved remote resources remain. Keep the managed configuration available to complete that cleanup. Completed historical runs do not prevent the switch.

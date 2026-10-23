@@ -28,7 +28,10 @@ func parseEndpoint(raw string) (*url.URL, error) {
 	return u, nil
 }
 func (b *Broker) validateRoute(r Route) error {
-	if r.Protocol != "openai" || r.Model == "" || len(r.Model) > 1024 {
+	if (r.Protocol != "openai" && r.Protocol != "openai_chatgpt") || r.Model == "" || len(r.Model) > 1024 {
+		return ErrDenied
+	}
+	if r.Protocol == "openai_chatgpt" && r.Endpoint != "https://api.openai.com/v1" {
 		return ErrDenied
 	}
 	u, e := parseEndpoint(r.Endpoint)

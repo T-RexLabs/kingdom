@@ -121,6 +121,13 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusForbidden)
 		return
 	}
+	if route.Protocol == "openai_chatgpt" {
+		body, e = chatGPTRequest(r.URL.Path, object)
+		if e != nil || int64(len(body)) > b.cfg.MaxRequestBytes {
+			deny(http.StatusBadRequest)
+			return
+		}
+	}
 	credential, e := b.cfg.Resolver.Resolve(ctx, binding, route)
 	if e != nil || credential.token == "" || ctx.Err() != nil {
 		deny(http.StatusForbidden)

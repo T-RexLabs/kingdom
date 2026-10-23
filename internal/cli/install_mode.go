@@ -594,7 +594,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		if e != nil {
 			return fmt.Errorf("load local OpenShell configuration: %w", e)
 		}
-		managed, e := localstack.New(startupCtx, ctx, db, cfg.KingdomHome, filepath.Dir(cfg.KingdomHome), cfg.Provider.BinaryPath, operator)
+		managed, e := localstack.NewWithCredentials(startupCtx, ctx, db, cfg.KingdomHome, filepath.Dir(cfg.KingdomHome), cfg.Provider.BinaryPath, operator, credentialsFactory(operator))
 		defer func() {
 			closeCtx, cancel := context.WithTimeout(context.Background(), summonGracefulShutdownTimeout)
 			defer cancel()

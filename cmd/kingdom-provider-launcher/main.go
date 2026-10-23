@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 2 || os.Args[1] != "serve-v1" {
+	if len(os.Args) != 2 || os.Args[1] != providerlauncher.CommandName {
 		fmt.Fprintln(os.Stderr, "unsupported provider launcher command")
 		os.Exit(2)
 	}

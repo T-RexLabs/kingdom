@@ -420,7 +420,7 @@ func decodeStrict(raw []byte, dst any) error {
 	return nil
 }
 func encodePins(p Pins) ([]byte, error) {
-	if !validBinding(p.Binding) || (p.Purpose != Model && p.Purpose != Plugin) || p.Purpose == Model && (p.Route.Protocol != "openai" || p.Route.Endpoint == "" || p.Route.Model == "") || p.Purpose == Plugin && p.Route != (Route{}) {
+	if !validBinding(p.Binding) || (p.Purpose != Model && p.Purpose != Plugin) || p.Purpose == Model && ((p.Route.Protocol != "openai" && p.Route.Protocol != "openai_chatgpt") || p.Route.Endpoint == "" || p.Route.Model == "") || p.Purpose == Plugin && p.Route != (Route{}) {
 		return nil, ErrDenied
 	}
 	raw, e := json.Marshal(p)

@@ -55,6 +55,8 @@ func NewBearerCredential(token string) (Credential, error) {
 type Lease struct {
 	capability.Lease
 	BaseURL string
+	// Protocol is pinned by the trusted resolver before capability issuance.
+	Protocol string
 }
 
 // OriginPolicy permits one exact HTTPS origin. Non-public addresses require an

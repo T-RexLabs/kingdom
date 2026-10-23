@@ -42,6 +42,7 @@ var rootHelpSections = []rootHelpSection{
 			{"summon"},
 			{"summon", "status"},
 			{"summon", "stop"},
+			{"chatgpt"},
 			{"connections", "github", "key", "provision"},
 			{"connections", "github", "key", "rotate"},
 		},
@@ -80,6 +81,7 @@ var globalHelpFlags = []globalFlagHelp{
 }
 
 var helpTopics = []*helpTopic{
+	{path: []string{"chatgpt"}, summary: "Connect a local ChatGPT account.", usage: []string{"kd chatgpt sign-in|status|disconnect --state-root <path> --owner-id <uuid> --master-key-file <path> [--registration-id <uuid>]"}, notes: []string{"Uses Kingdom's own local registration. Shared hosted connections require an approved client."}},
 	{
 		path: []string{"connections"}, summary: "Manage local integration credentials.", usage: []string{"kd connections github key provision --connection-id <id> --from <pem>", "kd connections github key rotate --connection-id <id> --from <pem>"}, subcommands: [][]string{{"connections", "github", "key", "provision"}, {"connections", "github", "key", "rotate"}}, includeGlobalFlags: true,
 	},

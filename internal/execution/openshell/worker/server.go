@@ -165,7 +165,16 @@ func (w *Worker) LaunchServer(ctx, lifetime context.Context, p providerrequest.P
 		if e != nil {
 			return nil, e
 		}
-		job := providerlauncher.Job{Version: 1, LauncherSHA256: profile.LauncherSHA256, OpenCodeSHA256: profile.OpenCodeSHA256, ControlToken: control, ServerPassword: password, ProxyURL: model.BaseURL, ProxyToken: model.Token(), ProviderID: providerID, ModelID: modelID, CallbackURL: plugin.BaseURL, CallbackToken: plugin.Token(), InstanceID: r.Reference.MainInstanceID, ContextLimit: profile.ContextLimit, OutputLimit: profile.OutputLimit, LifetimeSeconds: int64(profile.Lifetime / time.Second)}
+		modelAPI := ""
+		switch model.Protocol {
+		case "openai":
+			modelAPI = providerlauncher.ChatCompletionsAPI
+		case "openai_chatgpt":
+			modelAPI = providerlauncher.ResponsesAPI
+		default:
+			return nil, remote.ErrConflict
+		}
+		job := providerlauncher.Job{Version: providerlauncher.JobVersion, ModelAPI: modelAPI, LauncherSHA256: profile.LauncherSHA256, OpenCodeSHA256: profile.OpenCodeSHA256, ControlToken: control, ServerPassword: password, ProxyURL: model.BaseURL, ProxyToken: model.Token(), ProviderID: providerID, ModelID: modelID, CallbackURL: plugin.BaseURL, CallbackToken: plugin.Token(), InstanceID: r.Reference.MainInstanceID, ContextLimit: profile.ContextLimit, OutputLimit: profile.OutputLimit, LifetimeSeconds: int64(profile.Lifetime / time.Second)}
 		spec, e := providerlauncher.Command(job)
 		if e != nil {
 			return nil, e
