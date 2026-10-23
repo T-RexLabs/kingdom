@@ -72,17 +72,18 @@ func RequireWorkspaceOutputApplied(ctx context.Context, q Reader, owner Owner, r
 }
 
 // A run without an applied snapshot must have a canonical response-only owner,
-// its exact retained workspace pin, and an existing distinct execution target.
+// its exact retained workspace pin, and no matching writable execution target.
 func requireReadOnlyRunOutput(ctx context.Context, q Reader, owner Owner, m WorkerManifest) error {
-	var path, mode, execution, source, publish, completion string
-	e := q.QueryRowContext(ctx, `SELECT w.workspace_path,t.target_mode,t.execution_root,t.source_root,t.publish_root,i.completion_mode FROM provider_preparation_workspaces w JOIN provider_invocations i ON i.provider_invocation_id=w.invocation_id AND i.attempt_id=w.resource_id JOIN run_execution_targets t ON t.run_id=i.run_id WHERE w.owner_kind='run' AND w.invocation_id=? AND w.lease_owner=? AND w.lease_version=? AND w.resource_id=?`, owner.InvocationID, owner.LeaseOwner, owner.LeaseVersion, m.ResourceID).Scan(&path, &mode, &execution, &source, &publish, &completion)
+	var path, completion string
+	var execution sql.NullString
+	e := q.QueryRowContext(ctx, `SELECT w.workspace_path,t.execution_root,i.completion_mode FROM provider_preparation_workspaces w JOIN provider_invocations i ON i.provider_invocation_id=w.invocation_id AND i.attempt_id=w.resource_id LEFT JOIN run_execution_targets t ON t.run_id=i.run_id WHERE w.owner_kind='run' AND w.invocation_id=? AND w.lease_owner=? AND w.lease_version=? AND w.resource_id=?`, owner.InvocationID, owner.LeaseOwner, owner.LeaseVersion, m.ResourceID).Scan(&path, &execution, &completion)
 	if e != nil {
 		return e
 	}
 	if completion != "server_response" || path == "" {
 		return ErrConflict
 	}
-	if mode == "direct" && filepath.Clean(execution) == path && filepath.Clean(source) != path && filepath.Clean(publish) != path {
+	if execution.Valid && filepath.Clean(execution.String) == path {
 		return ErrConflict
 	}
 	return nil

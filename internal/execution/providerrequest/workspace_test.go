@@ -184,7 +184,6 @@ func TestSourceOnlyOutputRequiresCurrentOwnerWithoutWriteAuthority(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	execSQL(t, db, `INSERT INTO run_execution_targets(run_id,target_mode,source_root,execution_root,publish_root,state,created_at,updated_at) VALUES('run','direct',?,?,?,'attempt_dirty','now','now')`, t.TempDir(), t.TempDir(), t.TempDir())
 	setInvocationState(t, db, OwnerRun, "open")
 	execSQL(t, db, `UPDATE provider_preparations SET admission_closed=1`)
 	if err = ValidateReadOnlyOutputTx(ctx, db, p, now); err != nil {

@@ -34,12 +34,21 @@ func TestReadOnlyRunOutputRequiresExactCanonicalTarget(t *testing.T) {
 	if e = requireReadOnlyRunOutput(ctx, db, owner, m); e != nil {
 		t.Fatal(e)
 	}
+	if _, e = db.Exec(`DELETE FROM run_execution_targets`); e != nil {
+		t.Fatal(e)
+	}
+	if e = requireReadOnlyRunOutput(ctx, db, owner, m); e != nil {
+		t.Fatal("canonical no-target advisor denied", e)
+	}
+	if _, e = db.Exec(`INSERT INTO run_execution_targets VALUES('run','direct','/execution','/source','/publish')`); e != nil {
+		t.Fatal(e)
+	}
 	for _, statement := range []string{
 		`UPDATE provider_preparation_workspaces SET lease_version=2`,
 		`UPDATE provider_preparation_workspaces SET workspace_path='/execution'`,
 		`UPDATE provider_invocations SET attempt_id='foreign'`,
 		`UPDATE provider_invocations SET completion_mode='agent_protocol'`,
-		`DELETE FROM run_execution_targets`,
+
 		`DELETE FROM provider_invocations`,
 	} {
 		tx, e := db.Begin()
