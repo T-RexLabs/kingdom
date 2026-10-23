@@ -1,6 +1,6 @@
 # OpenShell Managed Execution Profile
 
-This opt-in profile extends NVIDIA OpenShell v0.1.5, revision `bdb956f2cd65`. It is a Kingdom extension, not an upstream stable API. Stock OpenShell does not advertise the managed capability. Product workflow execution remains disabled until worker, settlement, workspace transfer, and live acceptance are complete. Default local Kingdom does not require OpenShell.
+This opt-in profile extends NVIDIA OpenShell v0.1.5, revision `bdb956f2cd65`. It is a Kingdom extension, not an upstream stable API. Stock OpenShell does not advertise the managed capability. The central service and explicit local OpenShell mode use this contract for worker execution, settlement, and workspace transfer. Controlled ARM64 checks cover planning and complete workflows; they do not qualify a production deployment or another architecture. Default local Kingdom does not require OpenShell.
 
 Before extending this profile, check NVIDIA's latest stable release with `gh api repos/NVIDIA/OpenShell/releases/latest --jq .tag_name`. Compare it with `upstream_version` in `manifest.json`. Check the installed CLI separately with `openshell --version`. Port and verify against a newer stable release before continuing; do not use moving `latest` image tags.
 
