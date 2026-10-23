@@ -6,7 +6,9 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -63,6 +65,7 @@ type Vault struct {
 	host          string
 	locks         [64]sync.Mutex
 	operationLock func(context.Context, string) (func(), error)
+	transferKey   []byte
 }
 
 func textID(s string) bool {
@@ -87,6 +90,9 @@ func NewVault(ctx context.Context, db *sql.DB, key []byte) (*Vault, error) {
 		return nil, e
 	}
 	v := &Vault{db: db, aead: a}
+	derive := hmac.New(sha256.New, key)
+	_, _ = derive.Write([]byte("kingdom-chatgpt-transfer-fingerprint/v1"))
+	v.transferKey = derive.Sum(nil)
 	tx, e := db.BeginTx(ctx, nil)
 	if e != nil {
 		return nil, e
@@ -99,11 +105,21 @@ func NewVault(ctx context.Context, db *sql.DB, key []byte) (*Vault, error) {
  revision INTEGER NOT NULL DEFAULT 0, token_version INTEGER NOT NULL DEFAULT 0,
  state TEXT NOT NULL CHECK(state IN ('pending','exchanging','ready','refreshing','reauth','revoking','revoking_uncertain','signed_out','signed_out_uncertain')), credential BLOB,
  UNIQUE(owner_id,client_id,id));
- CREATE UNIQUE INDEX IF NOT EXISTS chatgpt_client_unique ON chatgpt_registrations(client_id) WHERE client_id<>'';
+ DROP INDEX IF EXISTS chatgpt_client_unique;
+ CREATE INDEX IF NOT EXISTS chatgpt_client_owner ON chatgpt_registrations(client_id,owner_id);
+ CREATE TRIGGER IF NOT EXISTS chatgpt_client_binding_insert BEFORE INSERT ON chatgpt_registrations WHEN NEW.client_id<>'' AND EXISTS(SELECT 1 FROM chatgpt_registrations WHERE client_id=NEW.client_id AND (owner_id<>NEW.owner_id OR (subject<>'' AND NEW.subject<>'' AND subject<>NEW.subject))) BEGIN SELECT RAISE(ABORT,'client account binding is immutable'); END;
+ CREATE TRIGGER IF NOT EXISTS chatgpt_client_binding_update BEFORE UPDATE OF client_id,owner_id,subject ON chatgpt_registrations WHEN NEW.client_id<>'' AND EXISTS(SELECT 1 FROM chatgpt_registrations WHERE id<>NEW.id AND client_id=NEW.client_id AND (owner_id<>NEW.owner_id OR (subject<>'' AND NEW.subject<>'' AND subject<>NEW.subject))) BEGIN SELECT RAISE(ABORT,'client account binding is immutable'); END;
  CREATE TRIGGER IF NOT EXISTS chatgpt_owner_immutable BEFORE UPDATE OF id,owner_id ON chatgpt_registrations BEGIN SELECT RAISE(ABORT,'registration owner is immutable'); END;
  CREATE TRIGGER IF NOT EXISTS chatgpt_client_immutable BEFORE UPDATE OF client_id ON chatgpt_registrations WHEN OLD.client_id<>'' AND NEW.client_id<>OLD.client_id BEGIN SELECT RAISE(ABORT,'registration client is immutable'); END;
  CREATE TRIGGER IF NOT EXISTS chatgpt_subject_immutable BEFORE UPDATE OF subject ON chatgpt_registrations WHEN OLD.subject<>'' AND NEW.subject<>OLD.subject BEGIN SELECT RAISE(ABORT,'registration subject is immutable'); END;
- CREATE TRIGGER IF NOT EXISTS chatgpt_registration_retained BEFORE DELETE ON chatgpt_registrations BEGIN SELECT RAISE(ABORT,'registration mapping is retained'); END;`)
+ CREATE TRIGGER IF NOT EXISTS chatgpt_registration_retained BEFORE DELETE ON chatgpt_registrations BEGIN SELECT RAISE(ABORT,'registration mapping is retained'); END;
+ CREATE TABLE IF NOT EXISTS chatgpt_exports(registration_id TEXT NOT NULL REFERENCES chatgpt_registrations(id),revision INTEGER NOT NULL,transfer_id TEXT NOT NULL UNIQUE,target_host TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('pending','accepted')),payload BLOB,PRIMARY KEY(registration_id,revision),CHECK((state='pending')=(payload IS NOT NULL)));
+ CREATE TRIGGER IF NOT EXISTS chatgpt_export_identity_immutable BEFORE UPDATE OF registration_id,revision,transfer_id,target_host ON chatgpt_exports BEGIN SELECT RAISE(ABORT,'transfer identity is immutable'); END;
+ CREATE TRIGGER IF NOT EXISTS chatgpt_export_fence_retained BEFORE DELETE ON chatgpt_exports BEGIN SELECT RAISE(ABORT,'transfer fence is retained'); END;
+ CREATE TRIGGER IF NOT EXISTS chatgpt_export_accepted_final BEFORE UPDATE ON chatgpt_exports WHEN OLD.state='accepted' BEGIN SELECT RAISE(ABORT,'accepted transfer cannot reopen'); END;
+ CREATE TABLE IF NOT EXISTS chatgpt_imports(transfer_id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,registration_id TEXT NOT NULL UNIQUE REFERENCES chatgpt_registrations(id),fingerprint BLOB NOT NULL CHECK(length(fingerprint)=32));
+ CREATE TRIGGER IF NOT EXISTS chatgpt_import_immutable BEFORE UPDATE ON chatgpt_imports BEGIN SELECT RAISE(ABORT,'import identity is immutable'); END;
+ CREATE TRIGGER IF NOT EXISTS chatgpt_import_retained BEFORE DELETE ON chatgpt_imports BEGIN SELECT RAISE(ABORT,'import identity is retained'); END;`)
 	if e != nil {
 		return nil, e
 	}

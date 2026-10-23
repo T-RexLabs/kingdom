@@ -252,6 +252,11 @@ func (s *Service) Disconnect(ctx context.Context, owner, id string) (confirmed b
 	if e != nil {
 		return false, e
 	}
+	// Export moves this renewable session to its target host. The source must
+	// not revoke a refresh token now owned by that host, even after a lost reply.
+	if exported, e := s.vault.exported(ctx, r); e != nil || exported {
+		return false, ErrDenied
+	}
 	if r.State == "signed_out_uncertain" {
 		return false, ErrReauthenticate
 	}
