@@ -87,12 +87,8 @@ func PrepareManagedExecutionTx(ctx context.Context, tx *sql.Tx, owner Owner, ref
 		return Operation{}, ErrAdmissionClosed
 	}
 	if purpose == WorkspaceImport {
-		var count int
-		if e = tx.QueryRowContext(ctx, `SELECT count(*) FROM remote_operations WHERE allocation=? AND kind='execute'`, ref.Allocation).Scan(&count); e != nil {
+		if e = requireExclusiveImport(ctx, tx, ref.Allocation, id); e != nil {
 			return Operation{}, e
-		}
-		if count != 0 {
-			return Operation{}, ErrConflict
 		}
 	}
 	if purpose == ProviderServer {

@@ -254,6 +254,15 @@ func ClaimDispatchTx(ctx context.Context, tx *sql.Tx, owner Owner, ref Reference
 		}
 	}
 	if op.Kind == Execute {
+		var purpose string
+		if err = tx.QueryRowContext(ctx, `SELECT purpose FROM managed_executions WHERE operation_id=?`, id).Scan(&purpose); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+		if purpose == string(WorkspaceImport) {
+			if err = requireExclusiveImport(ctx, tx, ref.Allocation, id); err != nil {
+				return false, err
+			}
+		}
 		var tool int
 		if err = tx.QueryRowContext(ctx, `SELECT (EXISTS(SELECT 1 FROM managed_executions WHERE operation_id=? AND purpose IN ('tool','native_tool')) OR EXISTS(SELECT 1 FROM remote_commands WHERE command_id=?) OR EXISTS(SELECT 1 FROM remote_native_tools WHERE operation_id=?))`, id, id, id).Scan(&tool); err != nil {
 			return false, err
