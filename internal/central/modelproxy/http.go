@@ -151,6 +151,9 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	upstream.Header.Set("Content-Type", "application/json")
 	upstream.Header.Set("Accept", "application/json, text/event-stream")
+	// Encoded responses are rejected below. Request the same representation that
+	// the trusted response contract can relay without decoding upstream content.
+	upstream.Header.Set("Accept-Encoding", "identity")
 	upstream.Header.Set("Authorization", "Bearer "+credential.token)
 	if route.Protocol == ProtocolAnthropic {
 		// Protocol headers come from this trusted adapter. Workload headers cannot
@@ -173,8 +176,17 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	responseType, _, e := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if e != nil || (responseType != "application/json" && responseType != "text/event-stream") || response.Header.Get("Content-Encoding") != "" {
-		b.reportFailure(Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode})
+	if e != nil || (responseType != "application/json" && responseType != "text/event-stream") {
+		b.reportFailure(Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode, ContractReason: ContractMediaType})
+		deny(http.StatusBadGateway)
+		return
+	}
+	if values := response.Header.Values("Content-Encoding"); len(values) != 0 {
+		encoding := EncodingOther
+		if len(values) == 1 {
+			encoding = classifyEncoding(values[0])
+		}
+		b.reportFailure(Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode, ContractReason: ContractContentEncoding, ContentEncoding: encoding})
 		deny(http.StatusBadGateway)
 		return
 	}
@@ -221,7 +233,7 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else if n == 0 && readErr != nil && readErr != io.EOF {
 			b.reportFailure(Failure{Phase: PhaseTransport, TransportClass: classifyTransport(readErr)})
 		} else {
-			b.reportFailure(Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode})
+			b.reportFailure(Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode, ContractReason: ContractSizeLimit})
 		}
 		panic(http.ErrAbortHandler)
 	}

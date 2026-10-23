@@ -23,7 +23,7 @@ func TestPrivateFailureDiagnostics(t *testing.T) {
 		want        *Failure
 	}{
 		{"upstream_status", 429, "application/json", false, &Failure{Phase: PhaseUpstreamStatus, UpstreamStatus: 429}},
-		{"response_contract", 200, "text/plain", false, &Failure{Phase: PhaseResponseContract, UpstreamStatus: 200}},
+		{"response_contract", 200, "text/plain", false, &Failure{Phase: PhaseResponseContract, UpstreamStatus: 200, ContractReason: ContractMediaType}},
 		{"timeout", 200, "application/json", true, &Failure{Phase: PhaseTransport, TransportClass: TransportTimeout}},
 		{"success", 200, "application/json", false, nil},
 	} {

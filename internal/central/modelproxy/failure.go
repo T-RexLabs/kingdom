@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"net"
+	"strings"
 )
 
 // FailurePhase identifies a fixed model proxy failure boundary.
@@ -27,18 +28,39 @@ const (
 	TransportDenied   TransportClass = "denied"
 )
 
+type ContractReason string
+
+const (
+	ContractMediaType       ContractReason = "media_type"
+	ContractContentEncoding ContractReason = "content_encoding"
+	ContractSizeLimit       ContractReason = "size_limit"
+)
+
+type ContentEncoding string
+
+const (
+	EncodingGzip     ContentEncoding = "gzip"
+	EncodingBrotli   ContentEncoding = "br"
+	EncodingDeflate  ContentEncoding = "deflate"
+	EncodingZstd     ContentEncoding = "zstd"
+	EncodingIdentity ContentEncoding = "identity"
+	EncodingOther    ContentEncoding = "other"
+)
+
 // Failure excludes errors, bodies, headers, endpoints, and credential material.
 type Failure struct {
-	Phase          FailurePhase   `json:"phase"`
-	UpstreamStatus int            `json:"upstream_status,omitempty"`
-	TransportClass TransportClass `json:"transport_class,omitempty"`
+	Phase           FailurePhase    `json:"phase"`
+	UpstreamStatus  int             `json:"upstream_status,omitempty"`
+	TransportClass  TransportClass  `json:"transport_class,omitempty"`
+	ContractReason  ContractReason  `json:"contract_reason,omitempty"`
+	ContentEncoding ContentEncoding `json:"content_encoding,omitempty"`
 }
 
 // Valid also bounds data at an operator sink, including explicit enum casts.
 func (f Failure) Valid() bool {
 	switch f.Phase {
 	case PhaseTransport:
-		if f.UpstreamStatus != 0 {
+		if f.UpstreamStatus != 0 || f.ContractReason != "" || f.ContentEncoding != "" {
 			return false
 		}
 		switch f.TransportClass {
@@ -46,9 +68,20 @@ func (f Failure) Valid() bool {
 			return true
 		}
 	case PhaseUpstreamStatus:
-		return f.TransportClass == "" && f.UpstreamStatus >= 100 && f.UpstreamStatus <= 599 && (f.UpstreamStatus < 200 || f.UpstreamStatus >= 300)
+		return f.TransportClass == "" && f.ContractReason == "" && f.ContentEncoding == "" && f.UpstreamStatus >= 100 && f.UpstreamStatus <= 599 && (f.UpstreamStatus < 200 || f.UpstreamStatus >= 300)
 	case PhaseResponseContract:
-		return f.TransportClass == "" && f.UpstreamStatus >= 200 && f.UpstreamStatus <= 299
+		if f.TransportClass != "" || f.UpstreamStatus < 200 || f.UpstreamStatus > 299 {
+			return false
+		}
+		switch f.ContractReason {
+		case ContractMediaType, ContractSizeLimit:
+			return f.ContentEncoding == ""
+		case ContractContentEncoding:
+			switch f.ContentEncoding {
+			case EncodingGzip, EncodingBrotli, EncodingDeflate, EncodingZstd, EncodingIdentity, EncodingOther:
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -82,5 +115,22 @@ func classifyTransport(err error) TransportClass {
 func (b *Broker) reportFailure(f Failure) {
 	if b.cfg.OnFailure != nil && f.Valid() {
 		b.cfg.OnFailure(f)
+	}
+}
+
+func classifyEncoding(value string) ContentEncoding {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "gzip":
+		return EncodingGzip
+	case "br":
+		return EncodingBrotli
+	case "deflate":
+		return EncodingDeflate
+	case "zstd":
+		return EncodingZstd
+	case "identity":
+		return EncodingIdentity
+	default:
+		return EncodingOther
 	}
 }

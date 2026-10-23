@@ -216,4 +216,8 @@ public response remains generic. For example:
 failures have `transport_class`: `timeout`, `tls`, `network`, `canceled`, or
 `denied`. Status and response contract failures have `upstream_status`. The
 record excludes upstream errors, bodies, headers, endpoints, and credentials.
+Response contract failures have `contract_reason`: `media_type`,
+`content_encoding`, or `size_limit`. An encoding failure also has a bounded
+`content_encoding`: `gzip`, `br`, `deflate`, `zstd`, `identity`, or `other`.
+The proxy requests `Accept-Encoding: identity` and rejects encoded responses.
 Keep this output in the operator log; do not expose it through project APIs.
