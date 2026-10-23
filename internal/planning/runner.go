@@ -501,7 +501,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	forceNewSession := request.ForceNewSession || operation.AutomaticRetry || requiresFreshProviderSession(r.deps.planner)
+	forceNewSession := request.ForceNewSession || operation.AutomaticRetry || requiresFreshProviderSession(ctx, r.deps.planner, operation.OperationID)
 	providerSessionID := ""
 	if !forceNewSession {
 		providerSessionID, err = providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, true)
@@ -764,7 +764,7 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	forceNewSession := operation.AutomaticRetry || requiresFreshProviderSession(r.deps.planner)
+	forceNewSession := operation.AutomaticRetry || requiresFreshProviderSession(ctx, r.deps.planner, operation.OperationID)
 	providerSessionID := ""
 	if !forceNewSession {
 		providerSessionID, err = providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, true)
@@ -1546,7 +1546,13 @@ func nowTime(now string) time.Time {
 	return time.Now().UTC()
 }
 
-func requiresFreshProviderSession(agent Agent) bool {
+func requiresFreshProviderSession(ctx context.Context, agent Agent, operationID string) bool {
+	if policy, ok := agent.(interface {
+		RequiresFreshSessionForOperation(context.Context, string) (bool, error)
+	}); ok {
+		fresh, err := policy.RequiresFreshSessionForOperation(ctx, operationID)
+		return err != nil || fresh
+	}
 	policy, ok := agent.(interface{ RequiresFreshSession() bool })
 	return ok && policy.RequiresFreshSession()
 }

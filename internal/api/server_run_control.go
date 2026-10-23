@@ -205,8 +205,19 @@ func providerResumeUnavailableReason(cfg ServerConfig) string {
 
 func (s *Server) loadResumePlan(ctx context.Context, runID string) (state.RunResumePlan, error) {
 	plan, err := state.LoadRunResumePlan(ctx, s.db, runID)
-	if err == nil && s.resumeUnavailableReason != "" {
-		plan.UnavailableReason = s.resumeUnavailableReason
+	if err == nil {
+		reason := s.resumeUnavailableReason
+		if s.resumeSourceBackend != nil {
+			backend, e := s.resumeSourceBackend(ctx, "run", runID)
+			if e != nil || backend != providerexecution.BackendLocal {
+				reason = "Resume is unavailable with this execution backend. Use Rerun to start new work. Saved checkpoints are kept."
+			} else {
+				reason = ""
+			}
+		}
+		if reason != "" {
+			plan.UnavailableReason = reason
+		}
 	}
 	return plan, err
 }
@@ -787,4 +798,13 @@ func (s *Server) runStatusForRun(ctx context.Context, runID string) (string, err
 		return "", err
 	}
 	return strings.TrimSpace(runStatus), nil
+}
+
+func providerResumeSourceBackend(cfg ServerConfig) func(context.Context, string, string) (providerexecution.Backend, error) {
+	if routed, ok := cfg.ProviderService.(interface {
+		SourceBackend(context.Context, string, string) (providerexecution.Backend, error)
+	}); ok {
+		return routed.SourceBackend
+	}
+	return nil
 }

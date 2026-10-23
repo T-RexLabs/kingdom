@@ -161,6 +161,19 @@ func CaptureInvocationTx(ctx context.Context, tx *sql.Tx, kind, invocationID str
 	if project == "" {
 		return nil
 	}
+	domain, _, err := ProjectDomain(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if domain == DomainLocalOwner {
+		backend, err := InvocationBackend(ctx, tx, invocationID)
+		if err != nil {
+			return err
+		}
+		if backend == providerexecution.BackendLocal {
+			return nil
+		}
+	}
 	var source, raw string
 	var snapshot Snapshot
 	var runID, operationID any

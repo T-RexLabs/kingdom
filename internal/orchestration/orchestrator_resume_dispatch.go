@@ -21,10 +21,26 @@ func (o *orchestrationLoop) loadDispatchResume(ctx context.Context, nodeRunID st
 	if err != nil {
 		return nil, fmt.Errorf("load resume checkpoint: %w", err)
 	}
-	if backend, ok := o.provider.(interface {
-		ExecutionBackend() providerexecution.Backend
-	}); ok && backend.ExecutionBackend() == providerexecution.BackendOpenShell {
-		return nil, fmt.Errorf("Resume is unavailable for managed execution; use Rerun to start fresh. The saved checkpoint remains retained")
+	if routed, ok := o.provider.(interface {
+		SourceBackend(context.Context, string, string) (providerexecution.Backend, error)
+	}); ok {
+		var runID string
+		if e := o.db.QueryRowContext(ctx, `SELECT run_id FROM node_runs WHERE node_run_id=?`, nodeRunID).Scan(&runID); e != nil {
+			return nil, e
+		}
+		backend, e := routed.SourceBackend(ctx, "run", runID)
+		if e != nil {
+			return nil, e
+		}
+		if backend != providerexecution.BackendLocal {
+			return nil, fmt.Errorf("Resume is unavailable for managed execution; use Rerun to start fresh")
+		}
+	} else {
+		if backend, ok := o.provider.(interface {
+			ExecutionBackend() providerexecution.Backend
+		}); ok && backend.ExecutionBackend() == providerexecution.BackendOpenShell {
+			return nil, fmt.Errorf("Resume is unavailable for managed execution; use Rerun to start fresh. The saved checkpoint remains retained")
+		}
 	}
 	return &input, nil
 }

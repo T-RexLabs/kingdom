@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/access"
+	"kingdom/internal/execution/providerrequest"
 	"time"
 )
 
@@ -29,7 +31,13 @@ func validateLocalSelectionConfig(ctx context.Context, db *sql.DB, cfg ServerCon
 	}
 	if cfg.LocalSelection == nil {
 		if domain == access.DomainLocalOwner {
-			return errLocalSelection
+			backend, ok := cfg.ProviderService.(interface {
+				ExecutionBackend() providerexecution.Backend
+			})
+			if !ok || backend.ExecutionBackend() != providerexecution.BackendLocal || cfg.Authenticator != nil {
+				return errLocalSelection
+			}
+			return providerrequest.RequireHostLocalMode(ctx, db)
 		}
 		return nil
 	}

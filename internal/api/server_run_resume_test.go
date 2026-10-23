@@ -189,3 +189,26 @@ func TestServerManagedResumeRetainsCheckpointWithoutEnqueue(t *testing.T) {
 		})
 	}
 }
+
+type scopedResumeBackend struct {
+	resumeBackendProvider
+	source providerexecution.Backend
+}
+
+func (p scopedResumeBackend) SourceBackend(context.Context, string, string) (providerexecution.Backend, error) {
+	return p.source, nil
+}
+func TestResumeUsesRetainedRunBackendAfterDefaultSwitch(t *testing.T) {
+	for _, source := range []providerexecution.Backend{providerexecution.BackendLocal, providerexecution.BackendOpenShell} {
+		selected := providerexecution.BackendLocal
+		if source == selected {
+			selected = providerexecution.BackendOpenShell
+		}
+		handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProviderService: scopedResumeBackend{resumeBackendProvider: resumeBackendProvider{backend: selected}, source: source}})
+		runID, _ := seedResumableRun(t, handler, db)
+		plan := getResumePlan(t, handler, runID)
+		if plan.Available != (source == providerexecution.BackendLocal) {
+			t.Fatalf("default %s overrode source %s: %+v", selected, source, plan)
+		}
+	}
+}

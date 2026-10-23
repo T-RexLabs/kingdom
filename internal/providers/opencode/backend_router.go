@@ -119,3 +119,22 @@ func (r *BackendRouter) ForceClose() error {
 	}
 	return errors.Join(failures...)
 }
+
+// ValidateManagedConfiguration is used only by the explicit local assembly gate.
+func (r *BackendRouter) ValidateManagedConfiguration() error {
+	managed, ok := r.managed.(*ManagedService)
+	if !ok || managed == nil || r.selected != providerexecution.BackendOpenShell {
+		return fmt.Errorf("managed provider is not initialized")
+	}
+	return managed.ValidateConfiguration()
+}
+func (r *BackendRouter) SourceBackend(ctx context.Context, kind, id string) (providerexecution.Backend, error) {
+	backend, e := access.SourceBackend(ctx, r.db, kind, id)
+	if e != nil {
+		return "", e
+	}
+	if _, e = r.backend(backend); e != nil {
+		return "", e
+	}
+	return backend, nil
+}

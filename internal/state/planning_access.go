@@ -25,6 +25,22 @@ func (s *PlanningStore) captureOperationAccess(ctx context.Context, tx *sql.Tx, 
 	if project == "" {
 		return access.PinSourceBackendTx(ctx, tx, "planning", row.OperationID, providerexecution.BackendLocal)
 	}
+	domain, _, err := access.ProjectDomain(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if domain == access.DomainLocalOwner && s.resolveAccess == nil {
+		if row.ModelSelectionSourceOperationID != "" {
+			backend, err := access.SourceBackend(ctx, tx, "planning", row.ModelSelectionSourceOperationID)
+			if err != nil {
+				return err
+			}
+			if backend == providerexecution.BackendOpenShell {
+				return access.CopyPlanningTx(ctx, tx, row.OperationID, row.ModelSelectionSourceOperationID)
+			}
+		}
+		return access.PinSourceBackendTx(ctx, tx, "planning", row.OperationID, providerexecution.BackendLocal)
+	}
 	if row.ModelSelectionSourceOperationID != "" {
 		return access.CopyPlanningTx(ctx, tx, row.OperationID, row.ModelSelectionSourceOperationID)
 	}

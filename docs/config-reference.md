@@ -94,3 +94,7 @@ Do not put secrets in this file. GitHub private keys, OAuth tokens, installation
 For commands and the operator workflow, see the [README](../README.md). For GitHub setup and credential handling, see the [GitHub connections guide](github-connections-runbook.md). The [system architecture](system-architecture.md) explains behavior that configuration does not change.
 
 Implementation defaults and validation live in `internal/cli/install_mode.go`.
+
+### Execution Backend
+
+`execution.backend` defaults to `local`. It requires no OpenShell installation. Set it to `openshell` with an absolute `execution.managed_config` path to enable the separate local owner vault, authenticated gateway, and TLS callback listener. See [Optional Local OpenShell](local-openshell.md). A local backend configuration must omit `managed_config`. Existing work retains its original backend; switching back requires all managed work and cleanup to finish.

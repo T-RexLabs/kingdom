@@ -19,10 +19,12 @@ import (
 )
 
 type Model struct {
+	Name    string   `json:"name,omitempty"`
 	ID      string   `json:"id"`
 	Efforts []string `json:"efforts"`
 }
 type Definition struct {
+	Name     string  `json:"name,omitempty"`
 	Provider string  `json:"provider"`
 	Endpoint string  `json:"endpoint"`
 	Models   []Model `json:"models"`

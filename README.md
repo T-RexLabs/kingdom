@@ -79,7 +79,8 @@ Connect GitHub to bring issues into Planning or a new Work Order. Pick a persona
 ## Shared Service
 
 The separate `kingdom-central` command adds login, shared projects, and private
-model connections. Managed workers use the Kingdom profile for OpenShell.
+model connections. Managed workers use the Kingdom profile for OpenShell. Optional local OpenShell can use a
+[Kingdom-owned ChatGPT connection](docs/chatgpt-local-connection.md).
 Build it with `make build-central`, then follow the
 [central service guide](docs/central-service.md) for HTTPS, identity, and worker
 configuration. Full hosted deployment acceptance is still in progress.
@@ -134,6 +135,7 @@ The Go runtime serves the embedded web app and the `kd` command. SQLite stores w
 ## Keep Exploring
 
 * Learn how Planning, Work Orders, and Runs fit together: [How Runs Work](docs/how%2Druns%2Dwork.md)
+* Run local projects in an optional sandbox: [Local OpenShell](docs/local-openshell.md)
 * Configure your local runtime: [Config Reference](docs/config%2Dreference.md)
 * Connect a GitHub App: [GitHub Connections](docs/github%2Dconnections%2Drunbook.md)
 * Build or verify Kingdom locally: [Local Setup and Verification](docs/local%2Dsetup%2Dand%2Dverification.md)

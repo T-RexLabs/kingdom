@@ -176,7 +176,17 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompts
 		return ProviderExecutionMetadata{}, fmt.Errorf("external planner context requires matching immutable snapshot bindings")
 	}
 	reusable := strings.TrimSpace(providerInvocation.ReusableProviderSessionID)
-	if forceNew || a.RequiresFreshSession() {
+	fresh := a.RequiresFreshSession()
+	if routed, ok := a.executor.(interface {
+		InvocationBackend(context.Context, string) (providerexecution.Backend, error)
+	}); ok {
+		backend, e := routed.InvocationBackend(ctx, invocationID)
+		if e != nil {
+			return ProviderExecutionMetadata{}, e
+		}
+		fresh = backend == providerexecution.BackendOpenShell
+	}
+	if forceNew || fresh {
 		reusable = ""
 	}
 	// Complete and verify immutable inputs before provider dispatch. Prompt
@@ -728,4 +738,14 @@ func appendCurrentMessage(sb *plannerPromptWriter, input AgentContext) {
 	if sb.err == nil && found != 1 {
 		sb.err = fmt.Errorf("the current planner message was found %d times in the transcript", found)
 	}
+}
+
+func (a *OpenCodeAgent) RequiresFreshSessionForOperation(ctx context.Context, id string) (bool, error) {
+	if routed, ok := a.executor.(interface {
+		SourceBackend(context.Context, string, string) (providerexecution.Backend, error)
+	}); ok {
+		backend, e := routed.SourceBackend(ctx, "planning", id)
+		return backend == providerexecution.BackendOpenShell, e
+	}
+	return a.RequiresFreshSession(), nil
 }

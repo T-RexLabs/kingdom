@@ -98,6 +98,7 @@ type ServerConfig struct {
 
 type Server struct {
 	resumeUnavailableReason    string
+	resumeSourceBackend        func(context.Context, string, string) (providerexecution.Backend, error)
 	hostedSelection            *HostedSelectionConfig
 	localSelection             *LocalSelectionConfig
 	themes                     *theme.Store
@@ -404,6 +405,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 
 	s := &Server{
 		resumeUnavailableReason:    providerResumeUnavailableReason(cfg),
+		resumeSourceBackend:        providerResumeSourceBackend(cfg),
 		hostedSelection:            cfg.HostedSelection,
 		localSelection:             cfg.LocalSelection,
 		themes:                     cfg.ThemeStore,

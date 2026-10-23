@@ -34,7 +34,13 @@ func validateHostedSelectionConfig(ctx context.Context, db *sql.DB, cfg ServerCo
 	}
 	if cfg.HostedSelection == nil {
 		if project != "" && cfg.LocalSelection == nil {
-			return errors.New("hosted project requires a selection resolver")
+			domain, _, e := access.ProjectDomain(ctx, db)
+			if e != nil {
+				return e
+			}
+			if domain != access.DomainLocalOwner {
+				return errors.New("hosted project requires a selection resolver")
+			}
 		}
 		return nil
 	}

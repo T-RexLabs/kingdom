@@ -26,6 +26,7 @@ import (
 	"kingdom/internal/api"
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/execution/openshell/localstack"
 	"kingdom/internal/external"
 	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/localauth"
@@ -121,6 +122,10 @@ type installConfig struct {
 		Listen   string `yaml:"listen"`
 		BasePath string `yaml:"base_path"`
 	} `yaml:"server"`
+	Execution struct {
+		Backend       string `yaml:"backend"`
+		ManagedConfig string `yaml:"managed_config"`
+	} `yaml:"execution"`
 	Provider struct {
 		Engine         string `yaml:"engine"`
 		GovernanceMode string `yaml:"governance_mode"`
@@ -563,7 +568,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		return fmt.Errorf("open theme store: %w", err)
 	}
 	defer themeStore.Close()
-	project, err := projectruntime.New(startupCtx, projectruntime.Config{
+	projectConfig := projectruntime.Config{
 		Mode:                    projectruntime.Local,
 		LifetimeContext:         ctx,
 		DB:                      db,
@@ -583,7 +588,30 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		ExternalAdapter:         deps.externalAdapter,
 		GitHubSharedAppSlug:     cfg.GitHub.SharedApp.Slug,
 		GitHubSharedAppClientID: cfg.GitHub.SharedApp.ClientID,
-	})
+	}
+	if cfg.Execution.Backend == "openshell" {
+		operator, e := localstack.Load(cfg.Execution.ManagedConfig)
+		if e != nil {
+			return fmt.Errorf("load local OpenShell configuration: %w", e)
+		}
+		managed, e := localstack.New(startupCtx, ctx, db, cfg.KingdomHome, filepath.Dir(cfg.KingdomHome), cfg.Provider.BinaryPath, operator)
+		defer func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), summonGracefulShutdownTimeout)
+			defer cancel()
+			if closeErr := managed.Close(closeCtx); closeErr != nil {
+				skipDBClose = true
+				err = errors.Join(err, fmt.Errorf("local OpenShell closure remains unresolved: %w", closeErr))
+			}
+		}()
+		if e != nil {
+			return fmt.Errorf("prepare local OpenShell: %w", e)
+		}
+		projectConfig.Mode = projectruntime.LocalManaged
+		projectConfig.ProviderService = managed.Provider
+		projectConfig.ProviderModelCatalog = managed.Catalog
+		projectConfig.LocalSelection = managed.Selection
+	}
+	project, err := projectruntime.New(startupCtx, projectConfig)
 	if err != nil {
 		if startupStopWasRequested() {
 			return nil
@@ -1975,6 +2003,22 @@ func readInstallConfig(path string) (installConfig, error) {
 }
 
 func readInstallConfigFromStruct(cfg installConfig) (installConfig, error) {
+	cfg.Execution.Backend = strings.TrimSpace(cfg.Execution.Backend)
+	if cfg.Execution.Backend == "" {
+		cfg.Execution.Backend = "local"
+	}
+	switch cfg.Execution.Backend {
+	case "local":
+		if cfg.Execution.ManagedConfig != "" {
+			return cfg, fmt.Errorf("execution.managed_config requires execution.backend openshell")
+		}
+	case "openshell":
+		if !filepath.IsAbs(cfg.Execution.ManagedConfig) {
+			return cfg, fmt.Errorf("execution.managed_config must be an absolute private operator configuration path")
+		}
+	default:
+		return cfg, fmt.Errorf("execution.backend must be local or openshell")
+	}
 	if strings.TrimSpace(cfg.KingdomHome) == "" {
 		return installConfig{}, fmt.Errorf("config missing kingdom_home")
 	}

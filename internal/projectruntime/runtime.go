@@ -13,6 +13,7 @@ import (
 
 	"kingdom/internal/api"
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/execution/access"
 	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/external"
 	kingdom "kingdom/internal/orchestration"
@@ -106,8 +107,16 @@ func validate(cfg Config) error {
 		if cfg.Authenticator != nil || cfg.HostedSelection != nil || cfg.LocalSelection == nil || cfg.ProviderService == nil || cfg.ProviderModelCatalog == nil || len(cfg.OperatorCredential) == 0 {
 			return errors.New("local managed project requires explicit local ownership, catalog, provider and operator credential")
 		}
-		managed, ok := cfg.ProviderService.(*opencode.ManagedService)
-		if !ok || managed.ValidateConfiguration() != nil {
+		switch managed := cfg.ProviderService.(type) {
+		case *opencode.ManagedService:
+			if managed.ValidateConfiguration() != nil {
+				return errors.New("local managed provider is not initialized")
+			}
+		case *opencode.BackendRouter:
+			if managed.ValidateManagedConfiguration() != nil {
+				return errors.New("local managed provider is not initialized")
+			}
+		default:
 			return errors.New("local managed provider is not initialized")
 		}
 	}
@@ -153,6 +162,7 @@ func New(ctx context.Context, cfg Config) (instance *Instance, err error) {
 			return nil, fmt.Errorf("configure OpenCode service: %w", err)
 		}
 	}
+	catalogProvider := p
 	instance = &Instance{ProviderService: p, provider: p}
 	// Never leave partially constructed consumers running after a failed New.
 	defer func() {
@@ -164,9 +174,27 @@ func New(ctx context.Context, cfg Config) (instance *Instance, err error) {
 			}
 		}
 	}()
+	if cfg.Mode == Local {
+		domain, _, e := access.ProjectDomain(ctx, cfg.DB)
+		if e != nil {
+			return instance, e
+		}
+		if domain == access.DomainLocalOwner {
+			if e = providerrequest.RequireHostLocalMode(ctx, cfg.DB); e != nil {
+				return instance, e
+			}
+			routed, e := opencode.NewBackendRouter(cfg.DB, providerexecution.BackendLocal, p, nil)
+			if e != nil {
+				return instance, e
+			}
+			p = routed
+			instance.ProviderService = p
+			instance.provider = p
+		}
+	}
 	catalog := cfg.ProviderModelCatalog
 	if catalog == nil {
-		source, ok := p.(api.OpenCodeModelSource)
+		source, ok := catalogProvider.(api.OpenCodeModelSource)
 		if !ok {
 			return instance, errors.New("provider requires an explicit model catalog")
 		}
