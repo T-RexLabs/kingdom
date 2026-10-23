@@ -58,10 +58,11 @@ type record struct {
 	encrypted []byte
 }
 type Vault struct {
-	db    *sql.DB
-	aead  cipher.AEAD
-	host  string
-	locks [64]sync.Mutex
+	db            *sql.DB
+	aead          cipher.AEAD
+	host          string
+	locks         [64]sync.Mutex
+	operationLock func(context.Context, string) (func(), error)
 }
 
 func textID(s string) bool {
@@ -135,12 +136,20 @@ func NewVault(ctx context.Context, db *sql.DB, key []byte) (*Vault, error) {
 	return v, nil
 }
 func (v *Vault) HostID() string { return v.host }
-func (v *Vault) lock(id string) func() {
+func (v *Vault) lock(ctx context.Context, id string) (func(), error) {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(id))
 	m := &v.locks[h.Sum64()%uint64(len(v.locks))]
 	m.Lock()
-	return m.Unlock
+	if v.operationLock != nil {
+		unlock, e := v.operationLock(ctx, id)
+		if e != nil {
+			m.Unlock()
+			return nil, e
+		}
+		return func() { unlock(); m.Unlock() }, nil
+	}
+	return m.Unlock, nil
 }
 func (v *Vault) seal(b []byte, aad string) ([]byte, error) {
 	n := make([]byte, v.aead.NonceSize())

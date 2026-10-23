@@ -61,6 +61,19 @@ func (f *Flow) Wait(ctx context.Context) (Registration, error) {
 // Empty registrationID requests Kingdom's own dynamic registration; subsequent
 // attempts reuse only this owner's retained issued client and validated account.
 func (s *Service) Begin(ctx context.Context, owner, registrationID string) (*Flow, error) {
+	ctx, operationDone, enterErr := s.enter(ctx)
+	if enterErr != nil {
+		return nil, enterErr
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			operationDone()
+		}
+	}()
+	if e := s.discover(ctx); e != nil {
+		return nil, e
+	}
 	select {
 	case s.slots <- struct{}{}:
 	default:
@@ -106,11 +119,17 @@ func (s *Service) Begin(ctx context.Context, owner, registrationID string) (*Flo
 	limited := &limitedListener{Listener: l, slots: make(chan struct{}, 4)}
 	go func() {
 		defer func() { <-s.slots }()
-		go func() { <-lifetime.Done(); f.finish(Registration{}, ErrUnavailable); _ = f.server.Close() }()
+		go func() {
+			<-lifetime.Done()
+			f.finish(Registration{}, ErrUnavailable)
+			_ = f.server.Shutdown(context.Background())
+			operationDone()
+		}()
 		_ = f.server.Serve(limited)
 		f.finish(Registration{}, ErrUnavailable)
 	}()
 	release = false
+	handedOff = true
 	return f, nil
 }
 func (f *Flow) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -127,16 +146,25 @@ func (f *Flow) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, values := range q {
-		if len(values) != 1 || (k != "state" && k != "code" && k != "client_id" && k != "scope" && k != "error" && k != "error_description") {
+		if len(values) != 1 || (k != "iss" && k != "state" && k != "code" && k != "client_id" && k != "scope" && k != "error" && k != "error_description") {
 			http.Error(w, "Invalid sign-in callback.", 400)
 			return
 		}
+	}
+	if q.Has("iss") && q.Get("iss") != issuer {
+		http.Error(w, "Invalid sign-in callback.", 400)
+		return
 	}
 	if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(f.state)) != 1 {
 		http.Error(w, "Invalid sign-in callback.", 400)
 		return
 	}
-	unlock := f.service.vault.lock(f.id)
+	unlock, lockErr := f.service.vault.lock(f.ctx, f.id)
+	if lockErr != nil {
+		http.Error(w, "Registration is unavailable.", 503)
+		f.finish(Registration{}, lockErr)
+		return
+	}
 	defer unlock()
 	select {
 	case <-f.done:

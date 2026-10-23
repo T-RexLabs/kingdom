@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,16 +19,33 @@ const tokenURL = issuer + "/api/accounts/oauth/token"
 const maxBody = 1 << 20
 
 type Service struct {
+	lifetime  context.Context
+	cancel    context.CancelFunc
+	mu        sync.Mutex
+	closed    bool
+	active    sync.WaitGroup
+	closeOnce sync.Once
+	joined    chan struct{}
 	vault     *Vault
 	client    *http.Client
+	discovery sync.Mutex
 	provider  *oidc.Provider
 	revokeURL string
 	slots     chan struct{}
 	now       func() time.Time
 }
-type boundedTransport struct{ inner http.RoundTripper }
+type boundedTransport struct {
+	inner http.RoundTripper
+	owner *Service
+}
 
 func (t boundedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	ctx, done, e := t.owner.enter(r.Context())
+	if e != nil {
+		return nil, e
+	}
+	defer done()
+	r = r.Clone(ctx)
 	if r.URL.Scheme != "https" || r.URL.Host != "auth.openai.com" || r.URL.User != nil || r.URL.Fragment != "" {
 		return nil, ErrDenied
 	}
@@ -44,20 +62,37 @@ func (t boundedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return res, nil
 }
 
-// NewService pins the documented OpenAI issuer and endpoints. The optional
-// client supplies trusted transport configuration only; it cannot change URLs.
+// NewService creates a local service without network access. Discovery is lazy:
+// disconnect must fence local credentials before any remote request can fail.
+// The optional client supplies trusted transport configuration only.
 func NewService(ctx context.Context, v *Vault, base *http.Client) (*Service, error) {
 	if v == nil {
 		return nil, ErrInvalid
 	}
-	tr := http.DefaultTransport
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = nil
+	var transport http.RoundTripper = tr
 	if base != nil && base.Transport != nil {
-		tr = base.Transport
+		transport = base.Transport
 	}
-	client := &http.Client{Transport: boundedTransport{tr}, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	provider, e := oidc.NewProvider(oidc.ClientContext(ctx, client), issuer)
+	lifetime, cancel := context.WithCancel(context.Background())
+	s := &Service{lifetime: lifetime, cancel: cancel, joined: make(chan struct{}), vault: v, slots: make(chan struct{}, 8), now: time.Now}
+	client := &http.Client{Transport: boundedTransport{transport, s}, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	s.client = client
+	return s, nil
+}
+
+// discover pins the documented issuer and endpoint metadata. Failed discovery
+// can be retried because no rotating token request has been sent.
+func (s *Service) discover(ctx context.Context) error {
+	s.discovery.Lock()
+	defer s.discovery.Unlock()
+	if s.provider != nil {
+		return nil
+	}
+	provider, e := oidc.NewProvider(oidc.ClientContext(ctx, s.client), issuer)
 	if e != nil {
-		return nil, ErrUnavailable
+		return ErrUnavailable
 	}
 	var metadata struct {
 		Authorization string `json:"authorization_endpoint"`
@@ -66,15 +101,17 @@ func NewService(ctx context.Context, v *Vault, base *http.Client) (*Service, err
 		Revocation    string `json:"revocation_endpoint"`
 	}
 	if provider.Claims(&metadata) != nil || metadata.Authorization != authorizeURL || metadata.Token != tokenURL {
-		return nil, ErrDenied
+		return ErrDenied
 	}
 	for _, raw := range []string{metadata.JWKS, metadata.Revocation} {
 		u, e := url.Parse(raw)
 		if e != nil || u.Scheme != "https" || u.Host != "auth.openai.com" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path == "" {
-			return nil, ErrDenied
+			return ErrDenied
 		}
 	}
-	return &Service{vault: v, client: client, provider: provider, revokeURL: metadata.Revocation, slots: make(chan struct{}, 8), now: time.Now}, nil
+	s.provider = provider
+	s.revokeURL = metadata.Revocation
+	return nil
 }
 
 type tokenResponse struct {
@@ -111,7 +148,7 @@ func (s *Service) tokens(ctx context.Context, form url.Values, r record, nonce s
 		return credentials{}, Registration{}, ErrReauthenticate
 	}
 	var tr tokenResponse
-	if json.Unmarshal(b, &tr) != nil || !validToken(tr.Access) || !validToken(tr.Refresh) || tr.Type != "Bearer" || tr.Expires < 1 || tr.Expires > 3600 || len(tr.Scope) > 4096 || !hasScope(tr.Scope, "chatgpt.tokens.use.direct") || !hasScope(tr.Scope, "resource.invoke") || !hasScope(tr.Scope, "offline_access") {
+	if json.Unmarshal(b, &tr) != nil || !validToken(tr.Access) || !validToken(tr.Refresh) || !strings.EqualFold(tr.Type, "Bearer") || tr.Expires < 1 || tr.Expires > 3600 || len(tr.Scope) > 4096 || !hasScope(tr.Scope, "chatgpt.tokens.use.direct") || !hasScope(tr.Scope, "resource.invoke") || !hasScope(tr.Scope, "offline_access") {
 		return credentials{}, Registration{}, ErrDenied
 	}
 	identity := r.Registration
@@ -148,7 +185,15 @@ func (s *Service) tokens(ctx context.Context, form url.Values, r record, nonce s
 // Access never retries a rotating refresh request. The durable marker prevents
 // replay after a lost response or process crash; that registration needs sign-in.
 func (s *Service) Access(ctx context.Context, owner, id string) (Token, Registration, error) {
-	unlock := s.vault.lock(id)
+	ctx, done, err := s.enter(ctx)
+	if err != nil {
+		return Token{}, Registration{}, err
+	}
+	defer done()
+	unlock, lockErr := s.vault.lock(ctx, id)
+	if lockErr != nil {
+		return Token{}, Registration{}, lockErr
+	}
 	defer unlock()
 	r, e := s.vault.read(ctx, owner, id)
 	if e != nil {
@@ -164,6 +209,9 @@ func (s *Service) Access(ctx context.Context, owner, id string) (Token, Registra
 	now := s.now().Unix()
 	if c.Expires > now+60 || c.Earliest > now && c.Expires > now {
 		return Token{c.Access}, r.Registration, nil
+	}
+	if e = s.discover(ctx); e != nil {
+		return Token{}, r.Registration, e
 	}
 	if e = s.vault.transition(ctx, r, "refreshing", false); e != nil {
 		return Token{}, r.Registration, e
@@ -190,7 +238,15 @@ func (s *Service) Access(ctx context.Context, owner, id string) (Token, Registra
 // the encrypted refresh token remains available only for another revocation
 // attempt; Access cannot use it. The caller must display this uncertainty.
 func (s *Service) Disconnect(ctx context.Context, owner, id string) (confirmed bool, err error) {
-	unlock := s.vault.lock(id)
+	ctx, done, e := s.enter(ctx)
+	if e != nil {
+		return false, e
+	}
+	defer done()
+	unlock, lockErr := s.vault.lock(ctx, id)
+	if lockErr != nil {
+		return false, lockErr
+	}
 	defer unlock()
 	r, e := s.vault.read(ctx, owner, id)
 	if e != nil {
@@ -231,6 +287,9 @@ func (s *Service) Disconnect(ctx context.Context, owner, id string) (confirmed b
 		}
 		r.State = revoking
 	}
+	if e = s.discover(ctx); e != nil {
+		return false, e
+	}
 	_, status, e := s.post(ctx, s.revokeURL, url.Values{"token": {c.Refresh}, "token_type_hint": {"refresh_token"}, "client_id": {r.ClientID}})
 	if e != nil || status != 200 {
 		return false, ErrUnavailable
@@ -246,4 +305,10 @@ func (s *Service) Disconnect(ctx context.Context, owner, id string) (confirmed b
 		return false, ErrReauthenticate
 	}
 	return true, nil
+}
+
+func (t boundedTransport) CloseIdleConnections() {
+	if closer, ok := t.inner.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
 }

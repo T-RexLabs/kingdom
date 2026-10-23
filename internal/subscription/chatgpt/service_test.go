@@ -98,7 +98,7 @@ func newFixture(t *testing.T) *fixture {
 			b, _ := json.Marshal(claims)
 			signed, _ := signer.Sign(b)
 			id, _ := signed.CompactSerialize()
-			body = map[string]any{"access_token": "access-token", "refresh_token": "refresh-token", "id_token": id, "expires_in": 3600, "token_type": "Bearer", "scope": scopes}
+			body = map[string]any{"access_token": "access-token", "refresh_token": "refresh-token", "id_token": id, "expires_in": 3600, "token_type": "bEaReR", "scope": scopes}
 		case "/revoke":
 			if f.lost {
 				return nil, io.ErrUnexpectedEOF
@@ -114,6 +114,13 @@ func newFixture(t *testing.T) *fixture {
 	if e != nil {
 		t.Fatal(e)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if e := f.s.Close(ctx); e != nil {
+			t.Error(e)
+		}
+	})
 	return f
 }
 func (f *fixture) flow(id string) *Flow {
@@ -273,6 +280,36 @@ func TestDisconnectFencesUseBeforeRemoteConfirmation(t *testing.T) {
 	}
 }
 
+func TestDisconnectFencesUseBeforeOfflineDiscovery(t *testing.T) {
+	f := newFixture(t)
+	reg, e := f.callback(f.flow(""))
+	if e != nil {
+		t.Fatal(e)
+	}
+	calls := 0
+	offline, e := NewService(context.Background(), f.v, &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		current, err := f.v.Get(r.Context(), "owner", reg.ID)
+		if err != nil || current.State != "revoking" {
+			t.Error("remote discovery started before durable local disconnect")
+		}
+		return nil, io.ErrUnexpectedEOF
+	})})
+	if e != nil {
+		t.Fatal("offline service cannot disconnect local credentials:", e)
+	}
+	defer offline.Close(context.Background())
+	if confirmed, e := offline.Disconnect(context.Background(), "owner", reg.ID); confirmed || e == nil || calls != 1 {
+		t.Fatal("offline revocation was not reported as uncertain", e)
+	}
+	if _, _, e := f.s.Access(context.Background(), "owner", reg.ID); !errors.Is(e, ErrReauthenticate) {
+		t.Fatal("another runtime can still use the disconnected credential")
+	}
+	if confirmed, e := f.s.Disconnect(context.Background(), "owner", reg.ID); !confirmed || e != nil {
+		t.Fatal("remote revocation cannot resume after discovery recovers", e)
+	}
+}
+
 func TestDisconnectAfterLostRefreshCannotConfirmRemoteRevocation(t *testing.T) {
 	f := newFixture(t)
 	reg, e := f.callback(f.flow(""))
@@ -328,5 +365,95 @@ func TestLostCodeExchangeRetainsDisconnectUncertainty(t *testing.T) {
 	f.lost = false
 	if confirmed, e := f.s.Disconnect(context.Background(), "owner", fl.id); confirmed || !errors.Is(e, ErrReauthenticate) {
 		t.Fatal("lost exchange remote grant assumed absent")
+	}
+}
+
+func TestCallbackIssuerIdentification(t *testing.T) {
+	f := newFixture(t)
+	fl := f.flow("")
+	for _, value := range []string{"https://wrong.example", issuer} {
+		r := httptest.NewRequest("GET", fl.redirect+"?state="+fl.state+"&code=x&client_id=oaiapp_kingdom&iss="+url.QueryEscape(value), nil)
+		w := httptest.NewRecorder()
+		fl.ServeHTTP(w, r)
+		if value != issuer {
+			if w.Code != 400 || f.calls.Load() != 0 {
+				t.Fatal("wrong callback issuer accepted")
+			}
+		} else if w.Code != 200 {
+			t.Fatal("exact callback issuer rejected")
+		}
+	}
+}
+func TestCloseCancelsAndJoinsPendingFlow(t *testing.T) {
+	f := newFixture(t)
+	fl := f.flow("")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if e := f.s.Close(ctx); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := fl.Wait(ctx); e == nil {
+		t.Fatal("closed flow succeeded")
+	}
+	if _, e := f.s.Begin(ctx, "owner", ""); !errors.Is(e, ErrUnavailable) {
+		t.Fatal("closed service admitted flow")
+	}
+}
+func TestFileVaultSerializesIndependentOwnersAndRetainsHost(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "vault")
+	a, e := OpenFileVault(ctx, root, bytes.Repeat([]byte{1}, 32))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	b, e := OpenFileVault(ctx, root, bytes.Repeat([]byte{1}, 32))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer b.Close()
+	if a.HostID() != b.HostID() {
+		t.Fatal("host changed")
+	}
+	r, e := a.newRegistration(ctx, "owner")
+	if e != nil {
+		t.Fatal(e)
+	}
+	unlock, e := a.lock(ctx, r.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer unlock()
+	bounded, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if release, e := b.lock(bounded, r.ID); e == nil {
+		release()
+		t.Fatal("independent vault bypassed refresh serialization")
+	}
+}
+func TestModelsUseOnlyPublicAccountCatalogAndNoRedirect(t *testing.T) {
+	f := newFixture(t)
+	reg, e := f.callback(f.flow(""))
+	if e != nil {
+		t.Fatal(e)
+	}
+	calls := 0
+	tr := transportFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.URL.String() != resource+"/models" || r.Header.Get("Authorization") != "Bearer access-token" {
+			t.Fatal("catalog not bound to account and public endpoint")
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(bytes.NewBufferString(`{"models":[{"slug":"visible","display_name":"Visible","visibility":"list"},{"slug":"hidden","display_name":"Hidden","visibility":"hidden"}]}`))}, nil
+	})
+	models, _, e := f.s.Models(context.Background(), "owner", reg.ID, tr)
+	if e != nil || len(models) != 1 || models[0].Slug != "visible" || calls != 1 {
+		t.Fatal("account catalog failed", e)
+	}
+	tr = transportFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: 302, Header: http.Header{"Location": []string{"https://attacker.example"}}, Body: io.NopCloser(bytes.NewReader(nil))}, nil
+	})
+	if _, _, e = f.s.Models(context.Background(), "owner", reg.ID, tr); e == nil || calls != 2 {
+		t.Fatal("catalog redirect followed")
 	}
 }
