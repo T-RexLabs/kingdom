@@ -9,10 +9,14 @@ import (
 	"syscall"
 
 	"kingdom/internal/central/daemon"
+	"kingdom/internal/processguardian"
 )
 
 func main() { os.Exit(run()) }
 func run() int {
+	if exitCode, handled := processguardian.DispatchHiddenMode(os.Args); handled {
+		return exitCode
+	}
 	path := flag.String("config", "", "central service configuration file")
 	flag.Parse()
 	if *path == "" || flag.NArg() != 0 {

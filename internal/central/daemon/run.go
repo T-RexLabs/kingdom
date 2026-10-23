@@ -14,8 +14,6 @@ import (
 
 	"kingdom/internal/central/application"
 	"kingdom/internal/central/hostedbuilder"
-	"kingdom/internal/central/modelcatalog"
-	"kingdom/internal/central/modelproxy"
 	"kingdom/internal/central/repositories"
 	"kingdom/internal/central/resultsource"
 	centralserver "kingdom/internal/central/server"
@@ -39,15 +37,11 @@ func Run(ctx context.Context, path string, out io.Writer) error {
 			if e != nil {
 				return application.ProjectServices{}, e
 			}
-			models, e := modelcatalog.New(modelcatalog.Config{Connections: shared.Connections, Origins: c.origins, TLSRoots: c.roots, Profiles: c.file.ModelProfiles})
+			accounts, e := newAccountServices(ctx, c, shared)
 			if e != nil {
 				return application.ProjectServices{}, errors.Join(e, inputs.Close())
 			}
-			providers := map[string]string{"openai": "openai"}
-			for _, p := range c.file.ModelProfiles {
-				providers[p.Provider] = "openai"
-			}
-			resolver := &modelproxy.APIKeyResolver{Store: shared.Connections, Providers: providers}
+			models, resolver := accounts.models, accounts.resolver
 			builder, e := hostedbuilder.New(ctx, hostedbuilder.Config{
 				RootDir:        filepath.Join(c.file.DataRoot, "projects"),
 				PrepareInitial: inputs.PrepareInitial,
@@ -65,12 +59,12 @@ func Run(ctx context.Context, path string, out io.Writer) error {
 					ContextLimit: c.contextLimit, OutputLimit: c.outputLimit, Lifetime: c.lifetime,
 				},
 				HelperSHA256: c.file.Gateway.Helper, FileToolSHA256: c.file.Gateway.FileTool,
-				AllowedIPs: c.file.Gateway.AllowedIPs, ModelOrigins: c.origins, ModelTLSRoots: c.roots,
+				AllowedIPs: c.file.Gateway.AllowedIPs, ModelOrigins: accounts.origins, ModelTLSRoots: c.roots,
 			})
 			if e != nil {
 				cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				return application.ProjectServices{}, errors.Join(e, models.Close(cleanup), inputs.Close())
+				return application.ProjectServices{}, errors.Join(e, accounts.Close(cleanup), inputs.Close())
 			}
 			var repositoryService *repositories.Service
 			var repositoryClient *repositories.Client
@@ -89,11 +83,11 @@ func Run(ctx context.Context, path string, out io.Writer) error {
 					}
 					cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
-					return application.ProjectServices{}, errors.Join(e, models.Close(cleanup), inputs.Close())
+					return application.ProjectServices{}, errors.Join(e, accounts.Close(cleanup), inputs.Close())
 				}
 			}
-			return application.ProjectServices{Build: builder.Build, Workers: http.HandlerFunc(builder.Workers), Models: models, Sources: inputs, Repositories: repositoryHTTP(repositoryService), Close: func(ctx context.Context) error {
-				if e := models.Close(ctx); e != nil {
+			return application.ProjectServices{Build: builder.Build, Workers: http.HandlerFunc(builder.Workers), Models: models, PersonalAccounts: accounts.portal, Sources: inputs, Repositories: repositoryHTTP(repositoryService), Close: func(ctx context.Context) error {
+				if e := accounts.Close(ctx); e != nil {
 					return e
 				}
 				if repositoryClient != nil {

@@ -17,20 +17,22 @@ import (
 	"kingdom/internal/central/catalog"
 	"kingdom/internal/central/connections"
 	"kingdom/internal/central/mutation"
+	"kingdom/internal/central/personal"
 )
 
 const BasePath = "/api/central/v1"
 
 type ProjectFactory func(context.Context, string, api.Authenticator) (http.Handler, error)
 type Config struct {
-	Sessions       *auth.Manager
-	Login          *auth.Login
-	Catalog        *catalog.Store
-	Connections    *connections.Store
-	ProjectFactory ProjectFactory
-	Models         ModelDiscovery
-	Sources        ProjectSources
-	Repositories   ProjectRepositories
+	Sessions         *auth.Manager
+	Login            *auth.Login
+	Catalog          *catalog.Store
+	Connections      *connections.Store
+	ProjectFactory   ProjectFactory
+	Models           ModelDiscovery
+	Sources          ProjectSources
+	Repositories     ProjectRepositories
+	PersonalAccounts PersonalAccounts
 }
 type Server struct {
 	cfg     Config
@@ -54,6 +56,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	mux.HandleFunc("GET "+BasePath+"/session", cfg.Sessions.Current)
 	mux.HandleFunc("POST "+BasePath+"/logout", cfg.Sessions.Logout)
+	mux.HandleFunc("POST "+BasePath+"/personal-accounts/handoff", s.accountHandoff)
 	central := http.NewServeMux()
 	central.HandleFunc("GET "+BasePath+"/projects", s.projects)
 	central.HandleFunc("POST "+BasePath+"/projects", s.createProject)
@@ -63,6 +66,10 @@ func New(cfg Config) (*Server, error) {
 	central.HandleFunc("PUT "+BasePath+"/projects/{project}/memberships/{user}", s.setMembership)
 	central.HandleFunc("DELETE "+BasePath+"/projects/{project}/memberships/{user}", s.revokeMembership)
 	central.HandleFunc("GET "+BasePath+"/connections", s.listConnections)
+	central.HandleFunc("GET "+BasePath+"/personal-accounts/methods", s.personalAccountMethods)
+	central.HandleFunc("POST "+BasePath+"/personal-accounts/sign-ins", s.beginPersonalAccount)
+	central.HandleFunc("GET "+BasePath+"/personal-accounts/sign-ins/{attempt}", s.personalAccountAttempt)
+	central.HandleFunc("DELETE "+BasePath+"/personal-accounts/sign-ins/{attempt}", s.personalAccountAttempt)
 	central.HandleFunc("GET "+BasePath+"/projects/{project}/source", s.projectSource)
 	central.HandleFunc("GET "+BasePath+"/projects/{project}/repository", s.projectRepository)
 	central.HandleFunc("GET "+BasePath+"/projects/{project}/repository/publications", s.projectPublications)
@@ -155,6 +162,8 @@ func fail(w http.ResponseWriter, err error) {
 	status := http.StatusServiceUnavailable
 	switch {
 	case errors.Is(err, catalog.ErrDenied), errors.Is(err, connections.ErrDenied), errors.Is(err, api.ErrAccessDenied):
+		status = 403
+	case errors.Is(err, personal.ErrDenied):
 		status = 403
 	case errors.Is(err, api.ErrAuthenticationRequired):
 		status = 401

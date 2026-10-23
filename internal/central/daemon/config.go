@@ -71,24 +71,29 @@ type repositoryAppConfig struct {
 	PrivateKeyFile string               `json:"private_key_file"`
 	Grants         []repositories.Grant `json:"grants"`
 }
+type personalAccountConfig struct {
+	OpenCodeBinary string `json:"opencode_binary"`
+	RuntimeRoot    string `json:"runtime_root"`
+}
 
 type fileConfig struct {
-	RepositoryApp  *repositoryAppConfig   `json:"repository_app"`
-	Version        int                    `json:"version"`
-	Listen         string                 `json:"listen"`
-	PublicOrigin   string                 `json:"public_origin"`
-	WorkerOrigin   string                 `json:"worker_origin"`
-	DataRoot       string                 `json:"data_root"`
-	MasterKeyFile  string                 `json:"master_key_file"`
-	TLSCertificate string                 `json:"tls_certificate_file"`
-	TLSKey         string                 `json:"tls_key_file"`
-	InitialOwners  []ownerConfig          `json:"initial_owners"`
-	OIDC           *oidcConfig            `json:"oidc"`
-	GitHub         *githubConfig          `json:"github"`
-	Gateway        gatewayConfig          `json:"openshell"`
-	ModelOrigins   []originConfig         `json:"model_origins"`
-	ModelProfiles  []modelcatalog.Profile `json:"model_profiles"`
-	ProviderCAFile string                 `json:"provider_ca_file"`
+	RepositoryApp    *repositoryAppConfig   `json:"repository_app"`
+	Version          int                    `json:"version"`
+	Listen           string                 `json:"listen"`
+	PublicOrigin     string                 `json:"public_origin"`
+	WorkerOrigin     string                 `json:"worker_origin"`
+	DataRoot         string                 `json:"data_root"`
+	MasterKeyFile    string                 `json:"master_key_file"`
+	TLSCertificate   string                 `json:"tls_certificate_file"`
+	TLSKey           string                 `json:"tls_key_file"`
+	InitialOwners    []ownerConfig          `json:"initial_owners"`
+	OIDC             *oidcConfig            `json:"oidc"`
+	GitHub           *githubConfig          `json:"github"`
+	Gateway          gatewayConfig          `json:"openshell"`
+	ModelOrigins     []originConfig         `json:"model_origins"`
+	ModelProfiles    []modelcatalog.Profile `json:"model_profiles"`
+	ProviderCAFile   string                 `json:"provider_ca_file"`
+	PersonalAccounts *personalAccountConfig `json:"personal_accounts"`
 }
 type configuration struct {
 	repositories              *repositories.Config
@@ -159,6 +164,14 @@ func load(path string) (result configuration, err error) {
 		return filepath.Join(base, value)
 	}
 	f.DataRoot = resolve(f.DataRoot)
+	if f.PersonalAccounts == nil {
+		f.PersonalAccounts = &personalAccountConfig{OpenCodeBinary: "/usr/local/bin/opencode", RuntimeRoot: "/run/kingdom/accounts"}
+	}
+	f.PersonalAccounts.OpenCodeBinary = resolve(f.PersonalAccounts.OpenCodeBinary)
+	f.PersonalAccounts.RuntimeRoot = resolve(f.PersonalAccounts.RuntimeRoot)
+	if f.PersonalAccounts.OpenCodeBinary == "" || f.PersonalAccounts.RuntimeRoot == "" {
+		return result, ErrConfiguration
+	}
 	f.MasterKeyFile = resolve(f.MasterKeyFile)
 	key, e := readFile(f.MasterKeyFile, true, 32)
 	if e != nil || len(key) != 32 {
