@@ -83,6 +83,8 @@ model connections. Managed workers use the Kingdom profile for OpenShell.
 Build it with `make build-central`, then follow the
 [central service guide](docs/central-service.md) for HTTPS, identity, and worker
 configuration. Full hosted deployment acceptance is still in progress.
+Add a new project's initial ZIP archive or file in the portal before you first
+open the project. See [initial project files](docs/central-project-input.md).
 
 The local `kd init` and `kd summon` workflow does not require the central service
 or OpenShell.

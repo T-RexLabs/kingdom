@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,7 +18,95 @@ import (
 	"kingdom/internal/central/auth"
 	"kingdom/internal/central/catalog"
 	"kingdom/internal/central/projects"
+	"kingdom/internal/central/sources"
 )
+
+func TestHTTPDrainPrecedesSharedServiceRelease(t *testing.T) {
+	c, shared, _ := config(t)
+	entered, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	c.Portal = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-r.Context().Done()
+		close(cancelled)
+		<-release
+	})
+	services := c.Projects
+	var released atomic.Bool
+	c.Projects = func(s Shared) (ProjectServices, error) {
+		result, err := services(s)
+		result.Close = func(context.Context) error { released.Store(true); return nil }
+		return result, err
+	}
+	a := open(t, c)
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		a.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "https://kingdom.example/", nil))
+	}()
+	<-entered
+	ctx, cancel := context.WithCancel(context.Background())
+	closed := make(chan error, 1)
+	go func() { closed <- a.Close(ctx) }()
+	<-cancelled
+	if released.Load() {
+		t.Fatal("released shared service while HTTP request was active")
+	}
+	cancel()
+	if err := <-closed; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if err := shared.CatalogDB.Ping(); err != nil {
+		t.Fatal("state closed before HTTP drain", err)
+	}
+	close(release)
+	<-returned
+	if err := a.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !released.Load() {
+		t.Fatal("shared service not released after HTTP drain")
+	}
+}
+
+type sourceRouteFixture struct{ actor, project string }
+
+func (s *sourceRouteFixture) Status(_ context.Context, actor, project string) (sources.Status, error) {
+	s.actor, s.project = actor, project
+	return sources.Status{State: "empty", CanUpload: true}, nil
+}
+func (*sourceRouteFixture) Upload(context.Context, string, string, string, string, string, io.Reader) (sources.Metadata, error) {
+	return sources.Metadata{}, errors.New("unexpected upload")
+}
+func TestSharedSourceServiceReceivesProtectedProjectRoute(t *testing.T) {
+	c, shared, _ := config(t)
+	inputs := new(sourceRouteFixture)
+	services := c.Projects
+	c.Projects = func(s Shared) (ProjectServices, error) {
+		result, err := services(s)
+		result.Sources = inputs
+		return result, err
+	}
+	a := open(t, c)
+	owner, err := shared.Catalog.BootstrapOwner(context.Background(), c.InitialOwners[0], "Owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := shared.Catalog.CreateProject(context.Background(), owner.ID, "Project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cookie, err := shared.Sessions.CreateSession(context.Background(), owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("GET", "https://kingdom.example/api/central/v1/projects/"+project.ID+"/source", nil)
+	request.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	a.ServeHTTP(w, request)
+	if w.Code != http.StatusOK || inputs.actor != owner.ID || inputs.project != project.ID {
+		t.Fatalf("source route status=%d actor=%q project=%q", w.Code, inputs.actor, inputs.project)
+	}
+}
 
 type runtimeFixture struct {
 	auth   api.Authenticator

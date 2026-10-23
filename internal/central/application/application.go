@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -42,6 +43,7 @@ type ProjectServices struct {
 	Build   projects.Builder
 	Workers http.Handler
 	Models  centralserver.ModelDiscovery
+	Sources centralserver.ProjectSources
 	Close   func(context.Context) error
 }
 type Config struct {
@@ -68,6 +70,11 @@ type Application struct {
 	closeToken    chan struct{}
 	released      bool
 	closeServices func(context.Context) error
+	httpMu        sync.Mutex
+	httpActive    int
+	httpDrained   chan struct{}
+	httpContext   context.Context
+	httpCancel    context.CancelFunc
 }
 
 func New(ctx context.Context, c Config) (result *Application, err error) {
@@ -77,7 +84,8 @@ func New(ctx context.Context, c Config) (result *Application, err error) {
 	if err = privateDirectory(c.DataRoot); err != nil {
 		return nil, ErrConfiguration
 	}
-	a := &Application{closeToken: make(chan struct{}, 1)}
+	httpContext, httpCancel := context.WithCancel(context.Background())
+	a := &Application{closeToken: make(chan struct{}, 1), httpDrained: make(chan struct{}), httpContext: httpContext, httpCancel: httpCancel}
 	a.closeToken <- struct{}{}
 	defer func() {
 		if err != nil {
@@ -142,7 +150,7 @@ func New(ctx context.Context, c Config) (result *Application, err error) {
 	if a.projects, err = projects.New(projects.Config{Build: services.Build, StartupTimeout: c.StartupTimeout, MaxProjects: c.MaxProjects}); err != nil {
 		return nil, err
 	}
-	server, e := centralserver.New(centralserver.Config{Sessions: a.sessions, Login: login, Catalog: centralCatalog, Connections: vault, ProjectFactory: a.projects.Factory, Models: services.Models})
+	server, e := centralserver.New(centralserver.Config{Sessions: a.sessions, Login: login, Catalog: centralCatalog, Connections: vault, ProjectFactory: a.projects.Factory, Models: services.Models, Sources: services.Sources})
 	if e != nil {
 		return nil, e
 	}
@@ -160,18 +168,43 @@ func (a *Application) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	a.httpMu.Lock()
 	if a.closed.Load() {
+		a.httpMu.Unlock()
 		http.Error(w, "Service unavailable.", http.StatusServiceUnavailable)
 		return
 	}
-	a.handler.ServeHTTP(w, r)
+	a.httpActive++
+	a.httpMu.Unlock()
+	defer func() {
+		a.httpMu.Lock()
+		a.httpActive--
+		if a.closed.Load() && a.httpActive == 0 {
+			close(a.httpDrained)
+		}
+		a.httpMu.Unlock()
+	}()
+	ctx, cancel := context.WithCancel(r.Context())
+	stop := context.AfterFunc(a.httpContext, func() {
+		cancel()
+		if r.Body != nil {
+			_ = r.Body.Close()
+		}
+	})
+	defer stop()
+	defer cancel()
+	a.handler.ServeHTTP(w, r.WithContext(ctx))
 }
 
 // Close stops new HTTP work and cancels browser streams, then joins every
 // project before it releases shared credentials, capability state or SQLite.
 // Unresolved project work retains all shared state for a later cleanup retry.
 func (a *Application) Close(ctx context.Context) error {
-	a.closed.Store(true)
+	a.httpMu.Lock()
+	if !a.closed.Swap(true) && a.httpActive == 0 {
+		close(a.httpDrained)
+	}
+	a.httpMu.Unlock()
 	if a.sessions != nil {
 		a.sessions.Close()
 	}
@@ -188,6 +221,12 @@ func (a *Application) Close(ctx context.Context) error {
 		if e := a.projects.Close(ctx); e != nil {
 			return e
 		}
+	}
+	a.httpCancel()
+	select {
+	case <-a.httpDrained:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	if a.closeServices != nil {
 		if e := a.closeServices(ctx); e != nil {

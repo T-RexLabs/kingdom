@@ -6,7 +6,7 @@ The service stores a verified immutable archive manifest in the central catalog 
 
 ZIP uploads are limited to 128 MiB compressed, 1 GiB expanded, 64 MiB per file, 32,768 entries including directories, 64 path components, and 4,096 path bytes. Single-file uploads are limited to 64 MiB. Existing archive validation rejects links, duplicate or ambiguous names, traversal, protected project metadata, unsupported file types, and invalid paths. At most four uploads per source service are staged at once.
 
-The source service and hosted builder must be configured together: `server.Config.Sources` handles requests and `hostedbuilder.Config.PrepareInitial` calls the same service before runtime startup. The application must drain HTTP requests and project startup before closing the service. A database reference is published only after source bytes are synchronized. An uncertain database commit retains its private bytes for exact retry; it does not activate unverified input.
+`kingdom-central` connects the protected upload routes and the hosted builder to the same source service. The portal's Initial Project Files section selects the project and input type. Add files before opening the project. On shutdown, the application joins project startup and active HTTP requests before closing the source service. A database reference is published only after source bytes are synchronized. An uncertain database commit retains its private bytes for exact retry; it does not activate unverified input.
 
 ## API
 

@@ -4,6 +4,7 @@ import { centralFetch } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { fieldClass, fieldLabelClass } from "@/components/ui/field-styles";
 import { CentralConnections } from "./connections";
+import { ProjectInput } from "./project-input";
 import { useCentralSession } from "./session-context";
 
 type Project = { id: string; display_name: string };
@@ -53,11 +54,12 @@ export function CentralPortal() {
     <div className="mx-auto max-w-5xl space-y-8 px-5 py-10">
       <section aria-labelledby="projects-heading">
         <h1 id="projects-heading" className="text-2xl font-medium">Projects</h1>
-        <p className="mb-6 mt-2 text-sm text-foreground-muted">Open a project to plan work, follow runs, and review results.</p>
+        <p className="mb-6 mt-2 text-sm text-foreground-muted">Add initial files below before you first open a project. Then plan work, follow runs, and review results.</p>
         {projects.isPending ? <p role="status" className="text-sm text-foreground-muted">Loading projects…</p> : projects.isError ? <div role="alert" className="rounded-lg border border-border bg-surface p-5"><p className="mb-3 text-sm">Kingdom could not load your projects.</p><Button variant="secondary" onClick={() => { void projects.refetch(); }}>Try Again</Button></div> : projects.data.length === 0 ? <p className="rounded-lg border border-dashed border-border p-6 text-sm text-foreground-muted">{session.user.team_owner ? "Create your first project below." : "You do not have access to a project yet. Contact your team owner."}</p> : <ul className="grid gap-4 sm:grid-cols-2">
           {projects.data.map(project => <li key={project.id}><a href={`/projects/${project.id}/`} className="ui-card block rounded-lg border border-border bg-surface p-5 transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-accent"><h2 className="font-medium">{project.display_name}</h2><p className="mt-2 text-sm text-foreground-muted">Open Project</p></a></li>)}
         </ul>}
       </section>
+      <ProjectInput projects={projects.data ?? []} />
       <CentralConnections projects={projects.data ?? []} />
       {message && <p ref={errorHeading} tabIndex={-1} role="alert" className="rounded-lg border border-border bg-surface p-4 text-sm">{message}</p>}
       {session.user.team_owner && <section aria-labelledby="new-project-heading" className="ui-card max-w-xl rounded-lg border border-border bg-surface p-6">

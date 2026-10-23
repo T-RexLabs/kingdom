@@ -136,6 +136,13 @@ requests. Custom providers also require exact `model_profiles`; Kingdom does
 not infer thinking effort from a model name. See the
 [model catalog contract](central-model-catalog.md).
 
+## Initial Project Files
+
+Create a project, then select it in Initial Project Files before you open it.
+Add a ZIP archive or one file. Opening a project permanently closes initial
+uploads. See [initial project files](central-project-input.md) for limits and
+retry rules.
+
 ## Shutdown and Recovery
 
 Send SIGINT or SIGTERM for an orderly stop. The service stops new requests,
@@ -143,6 +150,9 @@ cancels streams, and joins project work before it closes shared credentials and
 databases. Unresolved cleanup returns an error and retains the durable state
 for recovery. Do not delete a sandbox or project directory to bypass a pending
 closure check.
+
+OpenShell execution does not support Resume. Saved checkpoint details remain
+visible. Use Rerun to start fresh work.
 
 The command and portal are implemented. Full hosted workflow, packaging,
 project inputs and publishing, OAuth model connections, and optional local

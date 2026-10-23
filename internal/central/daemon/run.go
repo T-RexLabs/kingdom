@@ -16,6 +16,7 @@ import (
 	"kingdom/internal/central/hostedbuilder"
 	"kingdom/internal/central/modelcatalog"
 	"kingdom/internal/central/modelproxy"
+	"kingdom/internal/central/sources"
 	"kingdom/internal/execution/openshell/worker"
 	webui "kingdom/web"
 )
@@ -31,9 +32,13 @@ func Run(ctx context.Context, path string, out io.Writer) error {
 		MasterKey: c.key, InitialOwners: c.owners, OIDC: c.oidc, GitHub: c.github,
 		Portal: webui.CentralHandler(),
 		Projects: func(shared application.Shared) (application.ProjectServices, error) {
-			models, e := modelcatalog.New(modelcatalog.Config{Connections: shared.Connections, Origins: c.origins, TLSRoots: c.roots, Profiles: c.file.ModelProfiles})
+			inputs, e := sources.New(ctx, shared.CatalogDB, shared.Catalog, filepath.Join(c.file.DataRoot, "inputs"))
 			if e != nil {
 				return application.ProjectServices{}, e
+			}
+			models, e := modelcatalog.New(modelcatalog.Config{Connections: shared.Connections, Origins: c.origins, TLSRoots: c.roots, Profiles: c.file.ModelProfiles})
+			if e != nil {
+				return application.ProjectServices{}, errors.Join(e, inputs.Close())
 			}
 			providers := map[string]string{"openai": "openai"}
 			for _, p := range c.file.ModelProfiles {
@@ -41,8 +46,9 @@ func Run(ctx context.Context, path string, out io.Writer) error {
 			}
 			resolver := &modelproxy.APIKeyResolver{Store: shared.Connections, Providers: providers}
 			builder, e := hostedbuilder.New(ctx, hostedbuilder.Config{
-				RootDir:      filepath.Join(c.file.DataRoot, "projects"),
-				PublicOrigin: c.file.PublicOrigin, WorkerOrigin: c.file.WorkerOrigin,
+				RootDir:        filepath.Join(c.file.DataRoot, "projects"),
+				PrepareInitial: inputs.PrepareInitial,
+				PublicOrigin:   c.file.PublicOrigin, WorkerOrigin: c.file.WorkerOrigin,
 				GatewayID: c.file.Gateway.GatewayID, WorkerID: c.file.Gateway.WorkerID,
 				CatalogDB: shared.CatalogDB, Catalog: shared.Catalog,
 				Connections: shared.Connections, Registry: shared.Registry,
@@ -61,9 +67,14 @@ func Run(ctx context.Context, path string, out io.Writer) error {
 			if e != nil {
 				cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				return application.ProjectServices{}, errors.Join(e, models.Close(cleanup))
+				return application.ProjectServices{}, errors.Join(e, models.Close(cleanup), inputs.Close())
 			}
-			return application.ProjectServices{Build: builder.Build, Workers: http.HandlerFunc(builder.Workers), Models: models, Close: models.Close}, nil
+			return application.ProjectServices{Build: builder.Build, Workers: http.HandlerFunc(builder.Workers), Models: models, Sources: inputs, Close: func(ctx context.Context) error {
+				if e := models.Close(ctx); e != nil {
+					return e
+				}
+				return inputs.Close()
+			}}, nil
 		},
 	})
 	if e != nil {
