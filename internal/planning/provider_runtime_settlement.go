@@ -58,7 +58,7 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 		ReusableProviderSessionID: strings.TrimSpace(reusableProviderSessionID),
 		InvocationID:              invocationID,
 		Reserve: func(ctx context.Context) error {
-			_, err := r.deps.store.ReservePlanningProviderInvocation(ctx, state.CreatePlanningProviderInvocationRequest{PlanningProviderInvocationID: invocationID, PlanningOperationID: operation.OperationID, PlanningSessionID: session.PlanningSessionID, LogicalSessionID: logicalSessionID, CreatedAt: issuedAt, LeaseOwner: operation.LeaseOwner, LeaseVersion: operation.LeaseVersion})
+			_, err := r.deps.store.ReservePlanningProviderInvocation(ctx, state.CreatePlanningProviderInvocationRequest{WorkspacePath: session.ProjectRoot, PlanningProviderInvocationID: invocationID, PlanningOperationID: operation.OperationID, PlanningSessionID: session.PlanningSessionID, LogicalSessionID: logicalSessionID, CreatedAt: issuedAt, LeaseOwner: operation.LeaseOwner, LeaseVersion: operation.LeaseVersion})
 			return err
 		},
 		AbandonPreparation: func(ctx context.Context) error {

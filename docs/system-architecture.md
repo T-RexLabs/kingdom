@@ -100,3 +100,5 @@ The architecture guide should stay stable as implementation details change. Use 
 * [Prompt source and authoring rules](prompt-authoring.md)
 * The files in `policies/` for role authority, provider behavior, communication, and retries
 * The JSON files in `internal/bootstrapassets/files/workflows/` for the exact built in workflow steps
+
+Provider preparations can retain an immutable workspace pin before remote source capture. The pin binds the canonical invocation, resource, and lease to an absolute private host path and the opened directory identity. Source capture requires the current preparation and rejects a replaced or symlink root. Historical cleanup can reopen that exact directory after admission closes, but does not gain publication authority. Remote output restoration separately requires the current run lease, an unpublished direct execution target in `attempt_dirty`, and a descriptor that does not alias the source or published root. Planning output does not write back to its project root.

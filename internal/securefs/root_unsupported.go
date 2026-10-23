@@ -53,3 +53,5 @@ func directoryEntry(*os.File, string) (Entry, error)    { return Entry{}, unsupp
 func replaceRootRegularFrom(context.Context, *Root, string, func(io.Writer) error, fs.FileMode, fs.FileMode, time.Time, bool) error {
 	return unsupportedRoot()
 }
+
+func rootDirectoryIdentity(*Root) (FileIdentity, error) { return FileIdentity{}, unsupportedRoot() }

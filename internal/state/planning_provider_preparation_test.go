@@ -15,13 +15,26 @@ func TestPlanningPreparationFailureAndRecoveryRetainExactOwner(t *testing.T) {
 		t.Run(map[bool]string{false: "failure", true: "recovery"}[recovery], func(t *testing.T) {
 			s, op, a := newPlanningRequestActivation(t)
 			ctx := context.Background()
-			inv, err := s.ReservePlanningProviderInvocation(ctx, CreatePlanningProviderInvocationRequest{PlanningProviderInvocationID: a.PlanningProviderInvocationID, PlanningOperationID: a.PlanningOperationID, PlanningSessionID: a.PlanningSessionID, LogicalSessionID: a.LogicalSessionID, CreatedAt: a.CreatedAt, LeaseOwner: a.LeaseOwner, LeaseVersion: a.LeaseVersion})
+			workspace := t.TempDir()
+			if _, err := s.db.Exec(`UPDATE planning_sessions SET project_root=? WHERE planning_session_id=?`, workspace, a.PlanningSessionID); err != nil {
+				t.Fatal(err)
+			}
+			inv, err := s.ReservePlanningProviderInvocation(ctx, CreatePlanningProviderInvocationRequest{WorkspacePath: workspace, PlanningProviderInvocationID: a.PlanningProviderInvocationID, PlanningOperationID: a.PlanningOperationID, PlanningSessionID: a.PlanningSessionID, LogicalSessionID: a.LogicalSessionID, CreatedAt: a.CreatedAt, LeaseOwner: a.LeaseOwner, LeaseVersion: a.LeaseVersion})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if inv.InvocationState != PlanningProviderInvocationStateIssued || inv.ProviderSessionID != "" {
 				t.Fatalf("startup identity: %+v", inv)
 			}
+			p, err := providerrequest.NewAuthority(s.db, s.leaseNow).Preparation(ctx, inv.PlanningProviderInvocationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root, err := providerrequest.OpenPreparationWorkspace(ctx, s.db, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root.Close()
 			op.ActiveProviderInvocationID = &inv.PlanningProviderInvocationID
 			if recovery {
 				op.LeaseVersion++

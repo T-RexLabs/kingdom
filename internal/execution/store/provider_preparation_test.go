@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"kingdom/internal/execution/providerrequest"
 	"testing"
 	"time"
 )
@@ -21,10 +22,20 @@ func TestPreparationHasDurableInvocationBeforeProviderStartup(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("claim: %v", err)
 	}
-	_, err = s.ReserveProviderInvocation(ctx, ReserveProviderInvocationRequest{CreateProviderInvocationRequest: CreateProviderInvocationRequest{ProviderInvocationID: "startup", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:01Z", IssuedAt: "2026-03-01T12:00:01Z"}, ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion})
+	workspace := t.TempDir()
+	_, err = s.ReserveProviderInvocation(ctx, ReserveProviderInvocationRequest{WorkspacePath: workspace, CreateProviderInvocationRequest: CreateProviderInvocationRequest{ProviderInvocationID: "startup", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:01Z", IssuedAt: "2026-03-01T12:00:01Z"}, ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion})
 	if err != nil {
 		t.Fatal(err)
 	}
+	p, err := providerrequest.NewAuthority(db, s.now).Preparation(ctx, "startup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := providerrequest.OpenPreparationWorkspace(ctx, db, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.Close()
 	// Before startup there must be a recoverable owner, not only a process-local ID.
 	a, _, err := s.GetAttempt(ctx, attemptID)
 	if err != nil {

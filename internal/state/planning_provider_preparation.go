@@ -15,6 +15,20 @@ func (s *PlanningStore) ReservePlanningProviderInvocation(ctx context.Context, r
 	if err != nil {
 		return PlanningProviderInvocation{}, err
 	}
+	var pin providerrequest.WorkspacePin
+	if req.WorkspacePath != "" {
+		session, ok, e := s.GetSession(ctx, req.PlanningSessionID)
+		if e != nil {
+			return PlanningProviderInvocation{}, e
+		}
+		if !ok || session.ProjectRoot != req.WorkspacePath {
+			return PlanningProviderInvocation{}, fmt.Errorf("planning workspace does not match session")
+		}
+		pin, err = providerrequest.PinWorkspace(session.ProjectRoot)
+		if err != nil {
+			return PlanningProviderInvocation{}, err
+		}
+	}
 	var inv PlanningProviderInvocation
 	_, err = sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
@@ -25,7 +39,22 @@ func (s *PlanningStore) ReservePlanningProviderInvocation(ctx context.Context, r
 		if err = linkPlanningOperationActiveInvocationTx(ctx, tx, inv, planningProviderInvocationOpening{LeaseOwner: req.LeaseOwner, LeaseVersion: req.LeaseVersion, OpenedAt: s.leaseNow().UTC().Format(time.RFC3339Nano)}); err != nil {
 			return err
 		}
-		return providerrequest.ReservePreparationTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: inv.PlanningProviderInvocationID}, providerrequest.Lease{Owner: req.LeaseOwner, Version: int64(req.LeaseVersion)}, s.leaseNow())
+		owner := providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: inv.PlanningProviderInvocationID}
+		lease := providerrequest.Lease{Owner: req.LeaseOwner, Version: int64(req.LeaseVersion)}
+		if err := providerrequest.ReservePreparationTx(ctx, tx, owner, lease, s.leaseNow()); err != nil {
+			return err
+		}
+		if req.WorkspacePath != "" {
+			var path string
+			if err := tx.QueryRowContext(ctx, `SELECT project_root FROM planning_sessions WHERE planning_session_id=?`, req.PlanningSessionID).Scan(&path); err != nil {
+				return err
+			}
+			if path != req.WorkspacePath {
+				return fmt.Errorf("planning workspace changed")
+			}
+			return providerrequest.RecordPreparationWorkspaceTx(ctx, tx, owner, lease, pin)
+		}
+		return nil
 	}, sqlitex.Options{})
 	return inv, err
 }

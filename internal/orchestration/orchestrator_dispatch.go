@@ -319,7 +319,7 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 	}
 	// Reserve canonical ownership before provider startup. Activation then binds
 	// the prepared session and profile before request dispatch.
-	if _, err := o.executionStore.ReserveProviderInvocation(ctx, executionstore.ReserveProviderInvocationRequest{CreateProviderInvocationRequest: executionstore.CreateProviderInvocationRequest{ProviderInvocationID: providerInvocationID, AttemptID: attemptID, RunID: run.RunID, NodeRunID: attempt.NodeRunID, LogicalSessionID: sessionID, CompletionMode: executionSpec.CompletionMode, IssuedAt: now, CreatedAt: now}, ExpectedLeaseOwner: attempt.LeaseOwner, ExpectedLeaseVersion: attempt.LeaseVersion}); err != nil {
+	if _, err := o.executionStore.ReserveProviderInvocation(ctx, executionstore.ReserveProviderInvocationRequest{CreateProviderInvocationRequest: executionstore.CreateProviderInvocationRequest{ProviderInvocationID: providerInvocationID, AttemptID: attemptID, RunID: run.RunID, NodeRunID: attempt.NodeRunID, LogicalSessionID: sessionID, CompletionMode: executionSpec.CompletionMode, IssuedAt: now, CreatedAt: now}, WorkspacePath: workspacePath, ExpectedLeaseOwner: attempt.LeaseOwner, ExpectedLeaseVersion: attempt.LeaseVersion}); err != nil {
 		return fmt.Errorf("reserve provider startup: %w", err)
 	}
 	abandonPreparation := func() error {

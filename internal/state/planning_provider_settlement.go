@@ -88,6 +88,7 @@ type PlanningProviderCompletionSettlement struct {
 }
 
 type CreatePlanningProviderInvocationRequest struct {
+	WorkspacePath                string
 	PlanningProviderInvocationID string
 	PlanningOperationID          string
 	PlanningSessionID            string
@@ -511,6 +512,7 @@ func planningProviderError(operation, reason, invocationID, operationID, state s
 
 func normalizeCreatePlanningProviderInvocationRequest(req CreatePlanningProviderInvocationRequest) (CreatePlanningProviderInvocationRequest, error) {
 	normalized := CreatePlanningProviderInvocationRequest{
+		WorkspacePath:                req.WorkspacePath,
 		PlanningProviderInvocationID: strings.TrimSpace(req.PlanningProviderInvocationID),
 		PlanningOperationID:          strings.TrimSpace(req.PlanningOperationID),
 		PlanningSessionID:            strings.TrimSpace(req.PlanningSessionID),

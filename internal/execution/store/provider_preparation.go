@@ -11,6 +11,7 @@ import (
 
 type ReserveProviderInvocationRequest struct {
 	CreateProviderInvocationRequest
+	WorkspacePath        string
 	ExpectedLeaseOwner   string
 	ExpectedLeaseVersion int64
 }
@@ -24,6 +25,13 @@ func (s *Store) ReserveProviderInvocation(ctx context.Context, req ReserveProvid
 	}
 	if create.ProviderSessionID != "" {
 		return ProviderInvocation{}, fmt.Errorf("preparation cannot claim a provider session")
+	}
+	var pin providerrequest.WorkspacePin
+	if req.WorkspacePath != "" {
+		pin, err = providerrequest.PinWorkspace(req.WorkspacePath)
+		if err != nil {
+			return ProviderInvocation{}, err
+		}
 	}
 	var inv ProviderInvocation
 	_, err = sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
@@ -43,7 +51,15 @@ func (s *Store) ReserveProviderInvocation(ctx context.Context, req ReserveProvid
 		if n != 1 {
 			return fmt.Errorf("preparation owner conflict")
 		}
-		return providerrequest.ReservePreparationTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: inv.ProviderInvocationID}, providerrequest.Lease{Owner: req.ExpectedLeaseOwner, Version: req.ExpectedLeaseVersion}, s.currentTime())
+		owner := providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: inv.ProviderInvocationID}
+		lease := providerrequest.Lease{Owner: req.ExpectedLeaseOwner, Version: req.ExpectedLeaseVersion}
+		if err := providerrequest.ReservePreparationTx(ctx, tx, owner, lease, s.currentTime()); err != nil {
+			return err
+		}
+		if req.WorkspacePath != "" {
+			return providerrequest.RecordPreparationWorkspaceTx(ctx, tx, owner, lease, pin)
+		}
+		return nil
 	}, sqlitex.Options{})
 	return inv, err
 }
