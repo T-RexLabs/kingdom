@@ -14,8 +14,6 @@ import (
 	"kingdom/internal/execution/providerrequest"
 )
 
-var ErrManagedExecutionUnavailable = errors.New("managed provider dispatch requires verified remote authority and tool integration")
-
 type ManagedServiceConfig struct {
 	Worker      ManagedWorker
 	Requests    *providerrequest.Authority
@@ -41,6 +39,7 @@ type managedEntry struct {
 	ready               chan struct{}
 	cleanup             chan struct{}
 	handle              ManagedHandle
+	request             *request
 	session             *requestSession
 	spool               string
 }
@@ -170,14 +169,12 @@ func (s *ManagedService) Prepare(ctx context.Context, req ExecuteRequest) (resul
 	if err = work.Err(); err != nil {
 		return result, err
 	}
+	request.identity, request.started = identity, entry.session
+	request.invocationID, request.attemptID = req.InvocationID, req.AttemptID
+	request.stop, request.done = make(chan struct{}), make(chan struct{})
+	entry.request = request
 	result = Prepared{Backend: providerexecution.BackendOpenShell, RemoteRuntime: endpoint.Runtime, ProviderSessionID: sessionID, Identity: identity}
 	return result, nil
-}
-
-// Execute stays closed until canonical remote dispatch, native effects, tools,
-// and terminal closure are integrated. Preparation cannot bypass this gate.
-func (*ManagedService) Execute(context.Context, ExecuteRequest) (ExecuteResponse, error) {
-	return ExecuteResponse{}, ErrManagedExecutionUnavailable
 }
 
 func (s *ManagedService) closeEntry(ctx context.Context, e *managedEntry) error {
@@ -186,6 +183,19 @@ func (s *ManagedService) closeEntry(ctx context.Context, e *managedEntry) error 
 	case <-e.ready:
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+	if prepared := e.request; prepared != nil {
+		prepared.requestStop()
+		prepared.mu.Lock()
+		executing := prepared.executing
+		prepared.mu.Unlock()
+		if executing {
+			select {
+			case <-prepared.done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 	}
 	select {
 	case e.cleanup <- struct{}{}:
@@ -214,8 +224,8 @@ func (s *ManagedService) closeEntry(ctx context.Context, e *managedEntry) error 
 	if err := errors.Join(failures...); err != nil {
 		return err
 	}
-	// Execute is disabled: this spool contains preparation events only. Future
-	// execution must stage verified evidence before releasing any capture.
+	// An executing request has joined above. Its retained terminal snapshots
+	// are staged outside this capture spool before it releases done.
 	if e.spool != "" {
 		if err := os.RemoveAll(e.spool); err != nil {
 			return err
@@ -229,6 +239,7 @@ func (s *ManagedService) closeEntry(ctx context.Context, e *managedEntry) error 
 	s.mu.Unlock()
 	return nil
 }
+
 // Drain closes writers and capabilities without attempting final runtime deletion.
 // Durable worker ownership is used when preparation or a process restart lost
 // the in-memory handle.
