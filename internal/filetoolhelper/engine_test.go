@@ -48,9 +48,9 @@ func TestProtectedComponentsAndTraversalRejected(t *testing.T) {
 	}
 }
 
-func TestFixedExecutableIdentityNeedsNoProcAndRejectsSymlink(t *testing.T) {
+func TestFixedExecutableIdentityUsesAllowedUsrRootAndRejectsSymlink(t *testing.T) {
 	rootPath := t.TempDir()
-	name := filepath.Join(rootPath, strings.TrimPrefix(HelperPath, "/"))
+	name := filepath.Join(rootPath, strings.TrimPrefix(HelperPath, "/usr/"))
 	os.MkdirAll(filepath.Dir(name), 0755)
 	content := []byte("fixed image helper")
 	os.WriteFile(name, content, 0755)

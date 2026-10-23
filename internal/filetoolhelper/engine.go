@@ -33,7 +33,7 @@ func Run(ctx context.Context, j Job, out io.Writer) error {
 	if e := j.Validate(); e != nil {
 		return e
 	}
-	imageRoot, e := securefs.OpenRoot("/")
+	imageRoot, e := securefs.OpenRoot("/usr")
 	if e != nil {
 		return e
 	}
@@ -129,7 +129,7 @@ func text(root *securefs.Root, name string) ([]byte, securefs.FileIdentity, erro
 }
 
 func verifyExecutable(imageRoot *securefs.Root, expected string) error {
-	file, e := imageRoot.OpenRegular(strings.TrimPrefix(HelperPath, "/"))
+	file, e := imageRoot.OpenRegular(strings.TrimPrefix(HelperPath, "/usr/"))
 	if e != nil {
 		return e
 	}
