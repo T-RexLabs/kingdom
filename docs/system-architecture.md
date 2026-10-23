@@ -12,7 +12,7 @@ This guide is a map of the current system and the rules that shape it. Use the s
 | `kd` command | Initializes a project, starts Kingdom, and gives operators command line access. |
 | Go runtime | Owns workflow state, role authority, approvals, provider execution, and recovery. |
 | SQLite and runtime files | SQLite records work state and audit history. Runtime files hold project changes and evidence needed to recover unfinished work. |
-| OpenCode | Runs the model work assigned by Kingdom on the host. |
+| OpenCode | Runs assigned model work on the host or through the configured managed OpenShell backend. |
 
 The web app, command line, and API all work with the same local runtime. They do not each maintain a separate view of a run.
 
@@ -72,9 +72,9 @@ Canonical request content stays immutable while referenced. Planning sessions ow
 
 ## Trust Boundaries
 
-Kingdom currently runs on one host, with state stored in SQLite. The installed server listens on loopback, and Kingdom does not provide scheduling across hosts or enterprise identity management.
+Kingdom runs on one host, with state stored in SQLite. Default local startup listens on loopback. The separate central service uses HTTPS, configured OIDC or GitHub login, and current project membership checks. It shares project runtimes within one team. Kingdom does not schedule work across hosts or manage an enterprise identity directory.
 
-OpenCode processes run on the host in the workspace Kingdom prepares. Kingdom supervises their lifecycle and checks actions against its configured policies. This does not provide an operating system sandbox for shell commands or protect against hostile software already running as the local user.
+Default local execution runs OpenCode on the host in a prepared workspace. Kingdom supervises its lifecycle and checks actions against configured policies. This mode does not provide an operating system sandbox for shell commands or protect against hostile software already running as the local user. Managed execution uses the pinned Kingdom OpenShell profile and managed execution extension. It requires verified process identity, confined file and command tools, workspace transfer, closure evidence, and typed disposal. Stock OpenShell installation alone does not provide this contract. Local startup does not inspect or contact OpenShell unless explicitly configured to use it.
 
 OpenCode is the supported provider engine. GitHub Issues can be imported as project context; Kingdom does not write changes back to GitHub.
 
@@ -107,4 +107,6 @@ The architecture guide should stay stable as implementation details change. Use 
 
 Provider preparations can retain an immutable workspace pin before remote source capture. The pin binds the canonical invocation, resource, and lease to an absolute private host path and the opened directory identity. Source capture requires the current preparation and rejects a replaced or symlink root. Historical cleanup can reopen that exact directory after admission closes, but does not gain publication authority. Remote output restoration separately requires the current run lease, an unpublished direct execution target in `attempt_dirty`, and a descriptor that does not alias the source or published root. Planning output does not write back to its project root.
 
-Canonical remote prompt dispatch requires the current owner and lease, open request and preparation admission, exact runtime discovery and admitted creation, an immutable worker manifest and workspace pin, the verified import of that manifest source, and an admitted provider server tied to the retained launch intent. The imported process and server identities must match the authenticated runtime subject. A terminal server, missing proof, or any local process guardian denies dispatch. This internal authority gate supports controlled integration; it does not enable the hosted product runtime or replace current model and plugin capability authorization.
+Canonical remote prompt dispatch requires the current owner and lease, open request and preparation admission, exact runtime discovery and admitted creation, an immutable worker manifest and workspace pin, the verified import of that manifest source, and an admitted provider server tied to the retained launch intent. The imported process and server identities must match the authenticated runtime subject. A terminal server, missing proof, or any local process guardian denies dispatch. Managed runtime assembly uses this gate together with current model and plugin capability authorization. Discovery or a configured backend name cannot grant dispatch authority.
+
+External result publication reads canonical snapshot blobs, never the live project tree. The source requires a successful run, a trusted execution target, and the same trusted and published snapshot owned by that run. Metadata and file reads recheck current project access. Partial results, foreign snapshots, protected files, and corrupt blobs cannot support publication. Publication adapters must stage and verify each complete file before they send it upstream.
