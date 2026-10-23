@@ -43,3 +43,28 @@ it("offers team connections only to team owners and keeps replacement revision e
  expect(request?.[0]).toBe("/connections/team");
  expect(JSON.parse(request?.[1].body)).toMatchObject({expected_revision:4,credential:"replacement-secret"});
 });
+it("offers account sign-in separately and disconnects an account without a key replacement",async()=>{
+ const user=userEvent.setup();
+ centralFetch.mockImplementation(async(path:string,options?:RequestInit)=>{
+  if(path.endsWith("/methods"))return {providers:["github-copilot"]};
+  if(options?.method==="DELETE")return {remote_revocation_confirmed:false};
+  return [{id:"personal-account",owner_id:"user",scope:"personal",revision:1,disabled:false,definition:{label:"My Account",provider:"github-copilot",auth_kind:"copilot_oauth"}}];
+ });
+ view();
+ expect(await screen.findByRole("button",{name:"Disconnect"})).toBeInTheDocument();
+ expect(screen.queryByRole("button",{name:"Replace Key"})).not.toBeInTheDocument();
+ await user.click(screen.getByRole("button",{name:"Disconnect"}));
+ expect(await screen.findByRole("status")).toHaveTextContent("Remote revocation is not confirmed");
+ await user.click(screen.getByRole("radio",{name:"Personal Account"}));
+ expect(await screen.findByLabelText("Account Connection Name")).toBeInTheDocument();
+ expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+});
+
+it("starts reconnection as a new personal flow without rewriting an old connection",async()=>{
+ const user=userEvent.setup();
+ centralFetch.mockImplementation(async(path:string)=>path.endsWith("/methods")?{providers:["github-copilot"]}:[{id:"old-account",owner_id:"user",scope:"personal",revision:1,disabled:true,definition:{label:"Old Account",provider:"github-copilot",auth_kind:"copilot_oauth"}}]);
+ view(); await user.click(await screen.findByRole("button",{name:"Reconnect"}));
+ expect(await screen.findByLabelText("Account Connection Name")).toBeInTheDocument();
+ expect(screen.getByText("Sign in again to create a new personal connection. Existing work keeps its original connection.")).toBeInTheDocument();
+ expect(centralFetch.mock.calls.some(call=>call[1]?.method==="PUT"||call[1]?.method==="POST")).toBe(false);
+});
