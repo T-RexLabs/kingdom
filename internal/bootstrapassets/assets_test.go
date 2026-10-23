@@ -134,15 +134,9 @@ func TestFreshScaffoldContainsCanonicalMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
-		"0001_initial_schema.up.sql",
-		"0002_events_execution_activity_index.up.sql",
-		"0003_external_sources_and_idempotency_retention.up.sql",
-		"0004_resumable_workspace_tree_cleanup.up.sql",
-		"0005_agent_voice_and_guidance.up.sql",
-		"0006_planning_session_owned_cascades.up.sql",
-		"0007_provider_request_ownership.up.sql",
-		"0008_attempt_resume_checkpoints.up.sql",
+	want, err := dbmigrations.List()
+	if err != nil || len(want) == 0 {
+		t.Fatalf("canonical migration inventory is unavailable: %v", err)
 	}
 	if len(entries) != len(want) {
 		t.Fatalf("fresh scaffold has %d migrations, want %d", len(entries), len(want))
