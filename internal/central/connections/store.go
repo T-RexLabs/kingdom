@@ -248,16 +248,16 @@ func binding(m Metadata) ([]byte, error) {
 }
 
 func (s *Store) Create(ctx context.Context, actor string, scope Scope, d Definition, credential []byte) (Metadata, error) {
-	return s.create(ctx, actor, scope, d, credential, "")
+	return s.create(ctx, actor, scope, d, credential, "", false)
 }
 func (s *Store) CreateRequest(ctx context.Context, actor string, scope Scope, d Definition, credential []byte, key string) (Metadata, error) {
 	if !mutation.ValidKey(key) {
 		return Metadata{}, mutation.ErrInvalid
 	}
-	return s.create(ctx, actor, scope, d, credential, key)
+	return s.create(ctx, actor, scope, d, credential, key, false)
 }
-func (s *Store) create(ctx context.Context, actor string, scope Scope, d Definition, credential []byte, key string) (Metadata, error) {
-	if (scope != Personal && scope != Team) || !validDefinition(d) {
+func (s *Store) create(ctx context.Context, actor string, scope Scope, d Definition, credential []byte, key string, account bool) (Metadata, error) {
+	if (scope != Personal && scope != Team) || !validDefinition(d) || account && (scope != Personal || d.AuthKind == "api_key") || !account && d.AuthKind != "api_key" {
 		return Metadata{}, ErrInvalid
 	}
 	tx, err := s.beginWrite(ctx)
@@ -326,16 +326,16 @@ func read(ctx context.Context, tx *sql.Tx, id string, revision int64) (Metadata,
 // Revise creates an immutable successor and checks the caller's observed current
 // revision. An in-flight invocation can continue to refer to its pinned revision.
 func (s *Store) Revise(ctx context.Context, actor, id string, expected int64, d Definition, credential []byte) (Metadata, error) {
-	return s.revise(ctx, actor, id, expected, d, credential, "")
+	return s.revise(ctx, actor, id, expected, d, credential, "", false)
 }
 func (s *Store) ReviseRequest(ctx context.Context, actor, id string, expected int64, d Definition, credential []byte, key string) (Metadata, error) {
 	if !mutation.ValidKey(key) {
 		return Metadata{}, mutation.ErrInvalid
 	}
-	return s.revise(ctx, actor, id, expected, d, credential, key)
+	return s.revise(ctx, actor, id, expected, d, credential, key, false)
 }
-func (s *Store) revise(ctx context.Context, actor, id string, expected int64, d Definition, credential []byte, key string) (Metadata, error) {
-	if !validDefinition(d) || expected <= 0 || expected == 1<<63-1 {
+func (s *Store) revise(ctx context.Context, actor, id string, expected int64, d Definition, credential []byte, key string, account bool) (Metadata, error) {
+	if !validDefinition(d) || expected <= 0 || expected == 1<<63-1 || account && d.AuthKind == "api_key" || !account && d.AuthKind != "api_key" {
 		return Metadata{}, ErrInvalid
 	}
 	tx, err := s.beginWrite(ctx)
@@ -353,6 +353,9 @@ func (s *Store) revise(ctx context.Context, actor, id string, expected int64, d 
 	}
 	if !allowed(u, m, true) {
 		return Metadata{}, ErrDenied
+	}
+	if m.Definition.AuthKind != d.AuthKind || account && (m.Scope != Personal || m.Definition.Provider != d.Provider) {
+		return Metadata{}, ErrInvalid
 	}
 	fingerprint := s.requestFingerprint(struct {
 		Expected   int64
@@ -427,10 +430,15 @@ func (s *Store) disable(ctx context.Context, actor, id, key string) error {
 // Resolve requires an exact positive revision and the real invocation actor.
 // Team ownership never authorizes access to another user's personal credentials.
 func (s *Store) Resolve(ctx context.Context, actor, id string, revision int64) (Metadata, Secret, error) {
-	return s.resolve(ctx, actor, "", id, revision)
+	return s.resolve(ctx, actor, "", id, revision, resolutionPolicy{})
 }
 
-func (s *Store) resolve(ctx context.Context, actor, project, id string, revision int64) (Metadata, Secret, error) {
+type resolutionPolicy struct {
+	account       bool
+	allowDisabled bool
+}
+
+func (s *Store) resolve(ctx context.Context, actor, project, id string, revision int64, policy resolutionPolicy) (Metadata, Secret, error) {
 	if revision <= 0 {
 		return Metadata{}, Secret{}, ErrInvalid
 	}
@@ -452,7 +460,10 @@ func (s *Store) resolve(ctx context.Context, actor, project, id string, revision
 	if err != nil {
 		return Metadata{}, Secret{}, err
 	}
-	if !allowed(u, m, false) || m.Disabled {
+	if !allowed(u, m, false) || m.Disabled && !policy.allowDisabled {
+		return Metadata{}, Secret{}, ErrDenied
+	}
+	if policy.account && (m.Scope != Personal || m.Definition.AuthKind == "api_key") || !policy.account && m.Definition.AuthKind != "api_key" {
 		return Metadata{}, Secret{}, ErrDenied
 	}
 	additional, err := binding(m)

@@ -46,5 +46,5 @@ func (s *Store) ResolveForProject(ctx context.Context, actor, project, id string
 	if strings.TrimSpace(project) == "" {
 		return Metadata{}, Secret{}, ErrInvalid
 	}
-	return s.resolve(ctx, actor, project, id, revision)
+	return s.resolve(ctx, actor, project, id, revision, resolutionPolicy{})
 }

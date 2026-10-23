@@ -73,7 +73,7 @@ func New(ctx context.Context, cfg Config) (*Registry, error) {
 	db.SetMaxOpenConns(1)
 	fail := func() (*Registry, error) { db.Close(); file.Close(); return nil, ErrInvalid }
 	var version int
-	if db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version) != nil || version < 0 || version > 2 {
+	if db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version) != nil || version < 0 || version > 3 {
 		return fail()
 	}
 	if version == 0 {
@@ -91,11 +91,15 @@ func New(ctx context.Context, cfg Config) (*Registry, error) {
  CREATE TRIGGER IF NOT EXISTS worker_capability_fence_retained BEFORE DELETE ON worker_capability_owner_fences BEGIN SELECT RAISE(ABORT,'capability owner fence must be retained');END;
  CREATE INDEX IF NOT EXISTS worker_capability_owner ON worker_capabilities(purpose,invocation_id);
  CREATE INDEX IF NOT EXISTS worker_capability_access ON worker_capabilities(actor_id,project_id,state);
+ CREATE INDEX IF NOT EXISTS worker_capability_connection ON worker_capabilities(json_extract(CAST(binding AS TEXT),'$.Binding.Access.selection.connection.id'),json_extract(CAST(binding AS TEXT),'$.Binding.Access.selection.connection.revision'));
+ CREATE TABLE IF NOT EXISTS worker_capability_connection_fences (connection_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=0),PRIMARY KEY(connection_id,revision));
+ CREATE TRIGGER IF NOT EXISTS worker_connection_fence_immutable BEFORE UPDATE ON worker_capability_connection_fences BEGIN SELECT RAISE(ABORT,'connection fence is immutable');END;
+ CREATE TRIGGER IF NOT EXISTS worker_connection_fence_retained BEFORE DELETE ON worker_capability_connection_fences BEGIN SELECT RAISE(ABORT,'connection fence must be retained');END;
  CREATE TRIGGER IF NOT EXISTS worker_capability_pins BEFORE UPDATE OF id,token_hash,binding,expires,purpose,invocation_id,actor_id,project_id ON worker_capabilities BEGIN SELECT RAISE(ABORT,'model capability is immutable');END;
  CREATE TRIGGER IF NOT EXISTS worker_capability_request BEFORE UPDATE OF request ON worker_capabilities WHEN OLD.request IS NOT NULL BEGIN SELECT RAISE(ABORT,'model request identity is immutable');END;
  CREATE TRIGGER IF NOT EXISTS worker_capability_state BEFORE UPDATE OF state ON worker_capabilities WHEN
  (OLD.state='closed' AND NEW.state<>'closed') OR (OLD.state='revoking' AND NEW.state NOT IN ('revoking','closed')) OR (OLD.state='active' AND NEW.state='prepared') OR (OLD.state='fenced' AND NEW.state IN ('prepared','active')) BEGIN SELECT RAISE(ABORT,'model capability cannot reopen');END;
- CREATE TRIGGER IF NOT EXISTS worker_capability_retained BEFORE DELETE ON worker_capabilities BEGIN SELECT RAISE(ABORT,'model capability must be retained');END; PRAGMA user_version=2;`)
+ CREATE TRIGGER IF NOT EXISTS worker_capability_retained BEFORE DELETE ON worker_capabilities BEGIN SELECT RAISE(ABORT,'model capability must be retained');END; PRAGMA user_version=3;`)
 	if err != nil {
 		return fail()
 	}
@@ -138,6 +142,10 @@ func (b *Registry) Issue(ctx context.Context, pins Pins) (Lease, error) {
 	}
 	var fenced int
 	if err = b.db.QueryRowContext(ctx, `SELECT count(*) FROM worker_capability_owner_fences WHERE purpose=? AND invocation_id=?`, pins.Purpose, pins.Binding.Preparation.Owner.InvocationID).Scan(&fenced); err != nil || fenced != 0 {
+		return Lease{}, ErrDenied
+	}
+	connection := pins.Binding.Access.Selection.Connection
+	if err = b.db.QueryRowContext(ctx, `SELECT count(*) FROM worker_capability_connection_fences WHERE connection_id=? AND revision IN (0,?)`, connection.ID, connection.Revision).Scan(&fenced); err != nil || fenced != 0 {
 		return Lease{}, ErrDenied
 	}
 	rows, err := b.db.QueryContext(ctx, `SELECT binding FROM worker_capabilities WHERE state<>'closed' AND purpose=? AND invocation_id=?`, pins.Purpose, pins.Binding.Preparation.Owner.InvocationID)
@@ -420,7 +428,7 @@ func decodeStrict(raw []byte, dst any) error {
 	return nil
 }
 func encodePins(p Pins) ([]byte, error) {
-	if !validBinding(p.Binding) || (p.Purpose != Model && p.Purpose != Plugin) || p.Purpose == Model && ((p.Route.Protocol != "openai" && p.Route.Protocol != "openai_chatgpt") || p.Route.Endpoint == "" || p.Route.Model == "") || p.Purpose == Plugin && p.Route != (Route{}) {
+	if !validBinding(p.Binding) || (p.Purpose != Model && p.Purpose != Plugin) || p.Purpose == Model && (!p.Route.ValidProtocol() || p.Route.Endpoint == "" || p.Route.Model == "") || p.Purpose == Plugin && p.Route != (Route{}) {
 		return nil, ErrDenied
 	}
 	raw, e := json.Marshal(p)
@@ -492,7 +500,7 @@ func (b *Registry) RevokeAccess(ctx context.Context, actor, project string) erro
 	if actor == "" || project == "" {
 		return ErrDenied
 	}
-	return b.revokeAccess(ctx, actor, project)
+	return b.revokeAccess(ctx, actor, project, "", 0)
 }
 
 // RevokeUser is the explicit user-disable form, spanning that actor's projects.
@@ -500,15 +508,35 @@ func (b *Registry) RevokeUser(ctx context.Context, actor string) error {
 	if actor == "" {
 		return ErrDenied
 	}
-	return b.revokeAccess(ctx, actor, "")
+	return b.revokeAccess(ctx, actor, "", "", 0)
 }
-func (b *Registry) revokeAccess(ctx context.Context, actor, project string) error {
+
+// RevokeConnection permanently fences one connection revision. Revision zero
+// fences all revisions, including future ones. Call after disabling the canonical
+// connection or replacing its authorization. Unlike an owner notification, this
+// fence also denies a first issuance and survives registry restart. Model streams
+// are cancelled and joined; plugin receipts remain available for worker cleanup.
+func (b *Registry) RevokeConnection(ctx context.Context, connection string, revision int64) error {
+	id, err := uuid.Parse(connection)
+	if err != nil || id == uuid.Nil || id.String() != connection || revision < 0 {
+		return ErrDenied
+	}
+	return b.revokeAccess(ctx, "", "", connection, revision)
+}
+
+func (b *Registry) revokeAccess(ctx context.Context, actor, project, connection string, revision int64) error {
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
 		return ErrDenied
 	}
-	rows, err := b.db.QueryContext(ctx, `SELECT id,binding FROM worker_capabilities WHERE actor_id=? AND (?='' OR project_id=?)`, actor, project, project)
+	query := `SELECT id,binding FROM worker_capabilities WHERE actor_id=? AND (?='' OR project_id=?)`
+	arguments := []any{actor, project, project}
+	if connection != "" {
+		query = `SELECT id,binding FROM worker_capabilities WHERE json_extract(CAST(binding AS TEXT),'$.Binding.Access.selection.connection.id')=? AND (?=0 OR json_extract(CAST(binding AS TEXT),'$.Binding.Access.selection.connection.revision')=?)`
+		arguments = []any{connection, revision, revision}
+	}
+	rows, err := b.db.QueryContext(ctx, query, arguments...)
 	if err != nil {
 		b.mu.Unlock()
 		return ErrOpen
@@ -525,7 +553,8 @@ func (b *Registry) revokeAccess(ctx context.Context, actor, project string) erro
 			return ErrOpen
 		}
 		pins, e := decodePins(raw)
-		if e != nil || pins.Binding.Access.ActorID != actor || project != "" && pins.Binding.Access.ProjectID != project {
+		selected := pins.Binding.Access.Selection.Connection
+		if e != nil || actor != "" && pins.Binding.Access.ActorID != actor || project != "" && pins.Binding.Access.ProjectID != project || connection != "" && (selected.ID != connection || revision != 0 && selected.Revision != revision) {
 			rows.Close()
 			b.mu.Unlock()
 			return ErrOpen
@@ -546,6 +575,13 @@ func (b *Registry) revokeAccess(ctx context.Context, actor, project string) erro
 	if err != nil {
 		b.mu.Unlock()
 		return ErrOpen
+	}
+	if connection != "" {
+		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO worker_capability_connection_fences(connection_id,revision) VALUES(?,?)`, connection, revision); err != nil {
+			tx.Rollback()
+			b.mu.Unlock()
+			return ErrOpen
+		}
 	}
 	for _, pins := range ownerPins {
 		raw, _ := json.Marshal(pins.Binding)
