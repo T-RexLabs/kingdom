@@ -221,3 +221,40 @@ func TestHostedBackendDeclarationDoesNotActivateWithoutVerifiedClosure(t *testin
 }
 
 func (explicitCatalog) List(context.Context, bool) ([]apigen.ProviderModel, error) { return nil, nil }
+
+type failedCloseBackend struct {
+	backendProbe
+	fail bool
+}
+
+func (p *failedCloseBackend) CloseContext(context.Context) error {
+	if p.fail {
+		return errors.New("provider cleanup unresolved")
+	}
+	return nil
+}
+func TestConstructionRetainsProviderWhenRollbackCannotClose(t *testing.T) {
+	root := t.TempDir()
+	db, e := sql.Open("sqlite", filepath.Join(root, "project.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer db.Close()
+	themes, e := theme.OpenStore(root)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer themes.Close()
+	provider := &failedCloseBackend{backendProbe: backendProbe{kind: providerexecution.BackendLocal}, fail: true}
+	instance, e := New(context.Background(), Config{Mode: Local, DB: db, ThemeStore: themes, ProjectRoot: root, RuntimeRoot: filepath.Join(root, "runtime"), ProviderService: provider, ProviderModelCatalog: explicitCatalog{}})
+	if e == nil || instance == nil {
+		t.Fatalf("lost partial provider ownership: instance=%v err=%v", instance, e)
+	}
+	if e = db.Ping(); e != nil {
+		t.Fatal(e)
+	}
+	provider.fail = false
+	if e = instance.CloseProvider(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+}

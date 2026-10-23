@@ -45,6 +45,7 @@ type Config struct {
 	// configuration validation succeeds, including on construction failure.
 	ProviderService      opencode.Backend
 	ProviderModelCatalog api.ProviderModelCatalog
+	HostedSelection      *api.HostedSelectionConfig
 
 	ExternalAdapter                              external.Adapter
 	GitHubSharedAppSlug, GitHubSharedAppClientID string
@@ -134,8 +135,11 @@ func New(ctx context.Context, cfg Config) (instance *Instance, err error) {
 	// Never leave partially constructed consumers running after a failed New.
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, instance.rollback())
-			instance = nil
+			cleanupErr := instance.rollback()
+			err = errors.Join(err, cleanupErr)
+			if cleanupErr == nil {
+				instance = nil
+			}
 		}
 	}()
 	catalog := cfg.ProviderModelCatalog
@@ -172,6 +176,7 @@ func New(ctx context.Context, cfg Config) (instance *Instance, err error) {
 		ProviderEngine:             cfg.ProviderEngine,
 		ProviderService:            p,
 		ProviderModelCatalog:       catalog,
+		HostedSelection:            cfg.HostedSelection,
 		ProviderPolicyPath:         cfg.Paths.ProviderPolicyPath,
 		ProviderPolicySchemaPath:   cfg.Paths.ProviderPolicySchemaPath,
 		ProjectRoot:                cfg.ProjectRoot,

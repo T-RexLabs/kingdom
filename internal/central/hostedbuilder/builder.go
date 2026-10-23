@@ -1,0 +1,366 @@
+// Package hostedbuilder assembles isolated hosted project runtimes. It owns no
+// listener, central credentials, shared registry, or central database lifetime.
+package hostedbuilder
+
+import (
+	"context"
+	"crypto/x509"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"kingdom/internal/api"
+	"kingdom/internal/bootstrapassets"
+	"kingdom/internal/central/capability"
+	"kingdom/internal/central/catalog"
+	"kingdom/internal/central/connections"
+	"kingdom/internal/central/modelproxy"
+	"kingdom/internal/central/pluginauthority"
+	"kingdom/internal/central/projects"
+	"kingdom/internal/central/selections"
+	"kingdom/internal/central/workerauthority"
+	"kingdom/internal/dbmigrations"
+	"kingdom/internal/execution/access"
+	"kingdom/internal/execution/openshell/commands"
+	assembly "kingdom/internal/execution/openshell/provider"
+	"kingdom/internal/execution/openshell/worker"
+	"kingdom/internal/execution/openshell/workspaceoutput"
+	"kingdom/internal/execution/openshell/workspacesource"
+	"kingdom/internal/execution/providerrequest"
+	"kingdom/internal/execution/remote"
+	kingdom "kingdom/internal/orchestration"
+	runtime "kingdom/internal/projectruntime"
+	"kingdom/internal/providers/opencode"
+	"kingdom/internal/runtimefs"
+	"kingdom/internal/state"
+	"kingdom/internal/theme"
+	"kingdom/internal/workspacetransfer"
+	_ "modernc.org/sqlite"
+)
+
+type Models struct {
+	Catalog  api.ProviderModelCatalog
+	Cached   selections.CachedModels
+	Resolver modelproxy.Resolver
+}
+type Config struct {
+	RootDir, PublicOrigin, GatewayID, WorkerID string
+	CatalogDB                                  *sql.DB
+	Catalog                                    *catalog.Store
+	Connections                                *connections.Store
+	Registry                                   *capability.Registry
+	RequestKey                                 func(context.Context, string) ([]byte, error)
+	Models                                     func(context.Context, string) (Models, error)
+	Endpoint                                   worker.Endpoint
+	Image                                      string
+	ProfileSHA256                              []byte
+	Server                                     worker.ServerProfile
+	HelperSHA256, FileToolSHA256               string
+	AllowedIPs                                 []string
+	ModelOrigins                               []modelproxy.OriginPolicy
+	ModelTLSRoots                              *x509.CertPool
+	TransferTimeout, StopTimeout               time.Duration
+}
+type Service struct {
+	c        Config
+	mu       sync.RWMutex
+	handlers map[string]http.Handler
+}
+
+func New(ctx context.Context, c Config) (*Service, error) {
+	u, e := url.Parse(c.PublicOrigin)
+	if c.CatalogDB == nil || c.Catalog == nil || c.Connections == nil || c.Registry == nil || c.RequestKey == nil || c.Models == nil || !filepath.IsAbs(c.RootDir) || c.GatewayID == "" || c.WorkerID == "" || e != nil || u.Scheme != "https" || u.Hostname() == "" || u.Path != "" || u.RawPath != "" || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("explicit hosted builder configuration required")
+	}
+	if !digest(c.HelperSHA256) || !digest(c.FileToolSHA256) || !digest(c.Server.LauncherSHA256) || !digest(c.Server.OpenCodeSHA256) || len(c.ProfileSHA256) != 32 || strings.Count(c.Image, "@sha256:") != 1 || !digest(strings.Split(c.Image, "@sha256:")[1]) || c.Server.Lifetime <= 0 || c.Server.ContextLimit <= 0 || c.Server.OutputLimit <= 0 {
+		return nil, errors.New("immutable managed worker pins required")
+	}
+	if e = privateDir(c.RootDir); e != nil {
+		return nil, e
+	}
+	if e = initializeMappings(ctx, c.CatalogDB); e != nil {
+		return nil, e
+	}
+	if c.TransferTimeout == 0 {
+		c.TransferTimeout = time.Minute
+	}
+	if c.StopTimeout == 0 {
+		c.StopTimeout = time.Minute
+	}
+	return &Service{c: c, handlers: map[string]http.Handler{}}, nil
+}
+func privateDir(path string) error {
+	if e := os.MkdirAll(path, 0700); e != nil {
+		return e
+	}
+	info, e := os.Lstat(path)
+	if e != nil {
+		return e
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0700 {
+		return errors.New("private hosted directory required")
+	}
+	return nil
+}
+
+// Workers never constructs runtimes or waits for project startup.
+func (s *Service) Workers(w http.ResponseWriter, r *http.Request) {
+	const prefix = "/worker/projects/"
+	if r.TLS == nil || !strings.HasPrefix(r.URL.Path, prefix) || r.URL.RawPath != "" {
+		http.NotFound(w, r)
+		return
+	}
+	id, route, ok := strings.Cut(strings.TrimPrefix(r.URL.Path, prefix), "/")
+	parsed, e := uuid.Parse(id)
+	if !ok || e != nil || parsed.String() != id {
+		http.NotFound(w, r)
+		return
+	}
+
+	if r.Method != http.MethodPost || r.URL.RawQuery != "" {
+		http.NotFound(w, r)
+		return
+	}
+	switch route {
+	case "model/v1/responses", "model/v1/chat/completions", "plugin/v1/native/invoke", "plugin/v1/command/invoke", "plugin/v1/command/cancel":
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	s.mu.RLock()
+	h := s.handlers[id]
+	s.mu.RUnlock()
+	if h == nil {
+		http.NotFound(w, r)
+		return
+	}
+	h.ServeHTTP(w, r)
+}
+func (s *Service) Build(b projects.BuildContext, id string, auth api.Authenticator) (result projects.Runtime, err error) {
+	parsed, e := uuid.Parse(id)
+	if e != nil || parsed == uuid.Nil || parsed.String() != id || auth == nil || b.Startup == nil || b.Lifetime == nil {
+		return nil, projects.ErrUnavailable
+	}
+	var exists int
+	if e = s.c.CatalogDB.QueryRowContext(b.Startup, `SELECT count(*) FROM central_projects WHERE id=?`, id).Scan(&exists); e != nil || exists != 1 {
+		return nil, projects.ErrUnavailable
+	}
+	root := filepath.Join(s.c.RootDir, id)
+	for _, dir := range []string{root, filepath.Join(root, "project"), filepath.Join(root, "runtime"), filepath.Join(root, "source"), filepath.Join(root, "stage"), filepath.Join(root, "spool")} {
+		if e = privateDir(dir); e != nil {
+			return nil, e
+		}
+	}
+	home := filepath.Join(root, "runtime")
+	projectRoot := filepath.Join(root, "project")
+	if e = bootstrapassets.WriteScaffold(home, false); e != nil {
+		return nil, e
+	}
+
+	dbPath := filepath.Join(root, "project.db")
+	file, openErr := os.OpenFile(dbPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if openErr == nil {
+		if e = file.Close(); e != nil {
+			return nil, e
+		}
+	} else if !os.IsExist(openErr) {
+		return nil, openErr
+	}
+	info, e := os.Lstat(dbPath)
+	if e != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+		return nil, errors.New("private project database required")
+	}
+	db, e := sql.Open("sqlite", databaseDSN(dbPath))
+	if e != nil {
+		return nil, e
+	}
+	db.SetMaxOpenConns(1)
+	owned := &project{db: db, service: s, id: id, closeToken: make(chan struct{}, 1)}
+	owned.closeToken <- struct{}{}
+	defer func() {
+		if err != nil {
+			cleanup, cancel := context.WithTimeout(context.Background(), s.c.StopTimeout)
+			defer cancel()
+			if closeErr := owned.Close(cleanup); closeErr != nil {
+				result = owned
+				err = errors.Join(err, closeErr)
+			}
+		}
+	}()
+	names, e := dbmigrations.List()
+	if e != nil {
+		return nil, e
+	}
+	migrations := make([]state.SQLMigration, 0, len(names))
+	for _, name := range names {
+		raw, e := dbmigrations.Read(name)
+		if e != nil {
+			return nil, e
+		}
+		migrations = append(migrations, state.SQLMigration{Name: name, SQL: raw})
+	}
+	if e = state.ApplySQLMigrations(b.Startup, db, migrations, time.Now().UTC()); e != nil {
+		return nil, e
+	}
+	if _, e = db.ExecContext(b.Startup, `CREATE TABLE IF NOT EXISTS hosted_database_identity(slot INTEGER PRIMARY KEY CHECK(slot=1),id TEXT NOT NULL UNIQUE);CREATE TRIGGER IF NOT EXISTS hosted_database_identity_immutable BEFORE UPDATE ON hosted_database_identity BEGIN SELECT RAISE(ABORT,'database identity immutable'); END;CREATE TRIGGER IF NOT EXISTS hosted_database_identity_retained BEFORE DELETE ON hosted_database_identity BEGIN SELECT RAISE(ABORT,'database identity retained'); END;INSERT OR IGNORE INTO hosted_database_identity VALUES(1,?)`, uuid.NewString()); e != nil {
+		return nil, e
+	}
+	var databaseID string
+	if e = db.QueryRowContext(b.Startup, `SELECT id FROM hosted_database_identity WHERE slot=1`).Scan(&databaseID); e != nil {
+		return nil, e
+	}
+	tx, e := db.BeginTx(b.Startup, nil)
+	if e != nil {
+		return nil, e
+	}
+	defer tx.Rollback()
+	if e = access.BindProjectTx(b.Startup, tx, id); e != nil {
+		return nil, e
+	}
+	if e = s.c.Registry.BindProjectTx(b.Startup, tx); e != nil {
+		return nil, e
+	}
+	if e = tx.Commit(); e != nil {
+		return nil, e
+	}
+	key, e := s.c.RequestKey(b.Startup, id)
+	if e != nil {
+		return nil, e
+	}
+	requests, e := remote.NewRequestStore(key)
+	clear(key)
+	if e != nil {
+		return nil, e
+	}
+	gateway, e := worker.Dial(s.c.Endpoint)
+	if e != nil {
+		return nil, e
+	}
+	owned.gateway = gateway
+	mapping, e := workspace(b.Startup, s.c.CatalogDB, gateway.Native, id, s.c.GatewayID, databaseID, time.Now())
+	if e != nil {
+		return nil, e
+	}
+	base := s.c.PublicOrigin + "/worker/projects/" + id
+	modelURL := base + "/model/v1"
+	pluginURL := base + "/plugin"
+	target := remote.Target{WorkerID: s.c.WorkerID, GatewayID: s.c.GatewayID, WorkspaceID: mapping.ID}
+	w, e := worker.New(db, requests, gateway.Native, gateway.Managed, worker.Config{Target: target, Workspace: mapping.Name, Image: s.c.Image, ProfileSHA256: s.c.ProfileSHA256, Egress: worker.Egress{ModelURL: modelURL, CallbackURL: pluginURL, AllowedIPs: s.c.AllowedIPs}})
+	if e != nil {
+		return nil, e
+	}
+	authority := providerrequest.NewAuthority(db, time.Now)
+	authorizer, e := workerauthority.New(authority, s.c.Connections)
+	if e != nil {
+		return nil, e
+	}
+	modelConfig, e := s.c.Models(b.Startup, id)
+	if e != nil {
+		return nil, e
+	}
+	if modelConfig.Catalog == nil || modelConfig.Cached == nil || modelConfig.Resolver == nil {
+		return nil, errors.New("project model catalog unavailable")
+	}
+	selection, e := selections.New(s.c.Connections, modelConfig.Cached)
+	if e != nil {
+		return nil, e
+	}
+	models, e := modelproxy.New(modelproxy.Config{Registry: s.c.Registry, PublicBaseURL: modelURL, Authorizer: workerauthority.Model{Authority: authorizer}, Resolver: modelConfig.Resolver, Origins: s.c.ModelOrigins, TLSRoots: s.c.ModelTLSRoots})
+	if e != nil {
+		return nil, e
+	}
+	owned.models = models
+	plugins, e := pluginauthority.New(s.c.Registry, workerauthority.Plugin{Authority: authorizer}, pluginURL)
+	if e != nil {
+		return nil, e
+	}
+	executor, e := commands.New(db, requests, gateway.Managed, commands.Config{Workspace: mapping.Name, Target: target, ProfileSHA256: s.c.ProfileSHA256, HelperSHA256: s.c.FileToolSHA256, CleanupTimeout: s.c.StopTimeout})
+	if e != nil {
+		return nil, e
+	}
+	callback, e := opencode.NewManagedCallbackHandler(plugins, executor, executor)
+	if e != nil {
+		return nil, e
+	}
+	sources, e := workspacesource.New(filepath.Join(root, "source"), workspacesource.CanonicalResolver{DB: db, Authority: authority}, workspacetransfer.DefaultLimits())
+	if e != nil {
+		return nil, e
+	}
+	owned.sources = sources
+	store, e := runtimefs.NewStore(db, home)
+	if e != nil {
+		return nil, e
+	}
+	output, e := workspaceoutput.New(workspaceoutput.Config{DB: db, Worker: w, Store: store, Sources: sources, SpoolRoot: filepath.Join(root, "spool"), StageRoot: filepath.Join(root, "stage"), Limits: workspacetransfer.DefaultLimits()})
+	if e != nil {
+		return nil, e
+	}
+	disposer, e := worker.NewDisposer(w, prerequisites{db})
+	if e != nil {
+		return nil, e
+	}
+	provider, e := assembly.New(assembly.Config{DB: db, Worker: w, Sources: sources, Output: output, Transfers: worker.Transfers{Forwarder: gateway.Forwarder, StageRoot: filepath.Join(root, "stage"), HelperSHA256: s.c.HelperSHA256, Limits: workspacetransfer.DefaultLimits(), Timeout: s.c.TransferTimeout}, Server: s.c.Server, Services: worker.ServerServices{Models: models, Plugins: plugins, Forwarder: gateway.Forwarder}, Commands: executor, Registry: s.c.Registry, Disposer: disposer, SpoolRoot: filepath.Join(root, "spool")})
+	if e != nil {
+		return nil, e
+	}
+	managed, e := opencode.NewManagedService(opencode.ManagedServiceConfig{Worker: provider, Requests: authority, CaptureRoot: filepath.Join(root, "capture"), StopLimit: s.c.StopTimeout})
+	if e != nil {
+		return nil, e
+	}
+	owned.provider = managed
+	themes, e := theme.OpenStore(home)
+	if e != nil {
+		return nil, e
+	}
+	owned.themes = themes
+	mux := http.NewServeMux()
+	mux.Handle("/worker/projects/"+id+"/model/", http.StripPrefix("/worker/projects/"+id+"/model", models.Handler()))
+	mux.Handle("/worker/projects/"+id+"/plugin/", http.StripPrefix("/worker/projects/"+id+"/plugin", callback))
+	s.mu.Lock()
+	if s.handlers[id] != nil {
+		s.mu.Unlock()
+		return nil, projects.ErrUnavailable
+	}
+	s.handlers[id] = mux
+	owned.registered = true
+	s.mu.Unlock()
+	instance, e := runtime.New(b.Startup, runtime.Config{Mode: runtime.Hosted, DB: db, ThemeStore: themes, Paths: paths(home), ProjectRoot: projectRoot, RuntimeRoot: home, BasePath: "/api/v1", ProviderEngine: "opencode", GovernanceMode: "strict", PublishMode: "direct", Authenticator: auth, ProviderService: managed, ProviderModelCatalog: modelConfig.Catalog, HostedSelection: &api.HostedSelectionConfig{ProjectID: id, Resolver: selection}})
+	owned.instance = instance
+	if e != nil {
+		return nil, e
+	}
+	if e = instance.Start(b.Lifetime); e != nil {
+		return nil, e
+	}
+	return owned, nil
+}
+
+type prerequisites struct{ db *sql.DB }
+
+func (p prerequisites) RequireClosed(ctx context.Context, o remote.Owner, r remote.Reference) error {
+	return providerrequest.RequireRemoteDisposalPrerequisites(ctx, p.db, o, r)
+}
+func paths(home string) kingdom.BootstrapPaths {
+	return kingdom.BootstrapPaths{SchemaDir: filepath.Join(home, "schemas"), RetryPolicyPath: filepath.Join(home, "policies/retry_policy.yaml"), RetryPolicySchemaPath: filepath.Join(home, "schemas/retry_policy.schema.json"), ProviderPolicyPath: filepath.Join(home, "policies/opencode_provider_policy.yaml"), ProviderPolicySchemaPath: filepath.Join(home, "schemas/opencode_provider_policy.schema.json"), RolePolicyPath: filepath.Join(home, "policies/role_policy.yaml"), NetworkPolicyPath: filepath.Join(home, "policies/network_policy.yaml")}
+}
+
+func digest(s string) bool {
+	raw, e := hex.DecodeString(s)
+	return e == nil && len(raw) == 32 && hex.EncodeToString(raw) == s
+}
+
+func databaseDSN(path string) string {
+	query := url.Values{}
+	query.Add("_pragma", "foreign_keys(1)")
+	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "journal_mode(WAL)")
+	return (&url.URL{Scheme: "file", Path: path, RawQuery: query.Encode()}).String()
+}
