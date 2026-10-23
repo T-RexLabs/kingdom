@@ -85,6 +85,30 @@ func (s *Server) disableConnection(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Personal account disconnect first fences the connection and joins model
+	// streams. API-key disable retains its existing authority and response.
+	items, e := s.cfg.Connections.List(r.Context(), actor)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	for _, m := range items {
+		if m.ID == r.PathValue("connection") && m.Definition.AuthKind != "api_key" {
+			if s.cfg.PersonalAccounts == nil {
+				fail(w, connections.ErrDenied)
+				return
+			}
+			confirmed, err := s.cfg.PersonalAccounts.Disconnect(r.Context(), actor, m.ID, k)
+			if err != nil {
+				fail(w, err)
+				return
+			}
+			write(w, 200, struct {
+				Confirmed bool `json:"remote_revocation_confirmed"`
+			}{confirmed})
+			return
+		}
+	}
 	if e := s.cfg.Connections.DisableRequest(r.Context(), actor, r.PathValue("connection"), k); e != nil {
 		fail(w, e)
 		return
