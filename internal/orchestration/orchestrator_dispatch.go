@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
@@ -800,19 +802,17 @@ func (o *orchestrationLoop) startOwnedAsyncExecution(ctx context.Context, job as
 			startPayloadRaw = "{}"
 		}
 		request := o.providerRequest(job)
-		request.OnCommandGuardianOwnership = func(callbackCtx context.Context, guard opencode.CommandGuardianOwnership) error {
-			return o.acknowledgeProviderCommandGuardian(callbackCtx, job, guard)
-		}
-		request.OnCommandGuardianQuiescence = func(callbackCtx context.Context, guard opencode.CommandGuardianQuiescence) error {
-			return o.ingestProviderCommandGuardianQuiescence(callbackCtx, job, guard)
-		}
 		request.OnInvocationStarted = func() {
 			launchObserved = true
 			launchObservedAt = o.now().UTC().Format(time.RFC3339Nano)
 			o.observeExecutionLaunchAsync(ctx, job, startPayloadRaw, launchObservedAt)
 		}
 		request.OnActivity = o.providerExecutionActivityObserver(ctx, job)
-		response, execErr := o.executeWithDurableProgress(executionCtx, job, request)
+		var response opencode.ExecuteResponse
+		execErr := o.configureProviderGuardianCallbacks(executionCtx, job, &request)
+		if execErr == nil {
+			response, execErr = o.executeWithDurableProgress(executionCtx, job, request)
+		}
 		heartbeatResult := heartbeat.stopAndWait()
 		applyExecuteResponseToAsyncResult(&job, response, execErr)
 		job.outcome = normalizeExecutionOutcome(job.outcome, job.err)
@@ -1299,4 +1299,32 @@ func (o *orchestrationLoop) discardProviderRequest(ctx context.Context, provider
 	discardCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
 	defer cancel()
 	return o.provider.Discard(discardCtx, providerInvocationID)
+}
+
+func (o *orchestrationLoop) configureProviderGuardianCallbacks(ctx context.Context, job asyncExecutionResult, request *opencode.ExecuteRequest) error {
+	request.OnCommandGuardianOwnership = nil
+	request.OnCommandGuardianQuiescence = nil
+	binding, found, err := providerrequest.ForOwner(ctx, o.db, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: job.providerInvocationID})
+	if err != nil {
+		return err
+	}
+	if !found || binding.Lease.Owner != job.expectedLeaseOwner || binding.Lease.Version != job.expectedLeaseVersion {
+		return fmt.Errorf("provider callback binding or lease is unavailable")
+	}
+	switch binding.Backend {
+	case providerexecution.BackendOpenShell:
+		return nil
+	case providerexecution.BackendLocal:
+	default:
+		return fmt.Errorf("provider callback backend is unsupported")
+	}
+
+	request.OnCommandGuardianOwnership = func(callbackCtx context.Context, guard opencode.CommandGuardianOwnership) error {
+		return o.acknowledgeProviderCommandGuardian(callbackCtx, job, guard)
+	}
+	request.OnCommandGuardianQuiescence = func(callbackCtx context.Context, guard opencode.CommandGuardianQuiescence) error {
+		return o.ingestProviderCommandGuardianQuiescence(callbackCtx, job, guard)
+	}
+
+	return nil
 }
