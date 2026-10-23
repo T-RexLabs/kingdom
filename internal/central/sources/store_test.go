@@ -249,3 +249,26 @@ func TestUploadRechecksOwnerRevocationAfterBody(t *testing.T) {
 		t.Fatal(status, err)
 	}
 }
+
+func TestRepositorySourceProvenanceIsImmutable(t *testing.T) {
+	s, _, owner, project := fixture(t)
+	ctx := context.Background()
+	key := uuid.NewString()
+	data := archive(t, "main.go")
+	origin := RepositoryOrigin{RepositoryID: 42, CommitSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40)}
+	result, err := s.ImportRepository(ctx, owner.ID, project.ID, key, origin, bytes.NewReader(data))
+	if err != nil || result.Repository == nil || *result.Repository != origin || result.Kind != "github" {
+		t.Fatalf("provenance: %+v %v", result, err)
+	}
+	replay, err := s.ImportRepository(ctx, owner.ID, project.ID, key, origin, bytes.NewReader(data))
+	if err != nil || replay.ID != result.ID {
+		t.Fatalf("replay: %+v %v", replay, err)
+	}
+	origin.CommitSHA = strings.Repeat("c", 40)
+	if _, err = s.ImportRepository(ctx, owner.ID, project.ID, key, origin, bytes.NewReader(data)); err == nil {
+		t.Fatal("changed provenance accepted")
+	}
+	if _, err = s.Upload(ctx, owner.ID, project.ID, uuid.NewString(), "github", "", bytes.NewReader(data)); err == nil {
+		t.Fatal("public upload supplied repository provenance")
+	}
+}

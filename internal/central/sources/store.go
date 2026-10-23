@@ -20,12 +20,19 @@ var ErrUnavailable = errors.New("project input unavailable")
 var ErrConflict = errors.New("initial project input is already fixed")
 var ErrInvalid = errors.New("invalid project input")
 
+type RepositoryOrigin struct {
+	RepositoryID int64  `json:"repository_id"`
+	CommitSHA    string `json:"commit_sha"`
+	TreeSHA      string `json:"tree_sha"`
+}
+
 type Metadata struct {
-	ID     string `json:"id"`
-	Kind   string `json:"kind"`
-	Files  int    `json:"files"`
-	Bytes  int64  `json:"bytes"`
-	SHA256 string `json:"sha256"`
+	Repository *RepositoryOrigin `json:"repository,omitempty"`
+	ID         string            `json:"id"`
+	Kind       string            `json:"kind"`
+	Files      int               `json:"files"`
+	Bytes      int64             `json:"bytes"`
+	SHA256     string            `json:"sha256"`
 }
 type Status struct {
 	CanUpload bool      `json:"can_upload"`

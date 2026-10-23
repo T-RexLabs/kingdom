@@ -71,6 +71,64 @@ paths:
         '403': {description: Project-owner or CSRF authorization denied.}
         '409': {description: Initial input fixed or retry payload conflict.}
         '503': {description: Outcome unavailable; retain the exact retry request.}
+  /api/central/v1/projects/{project}/repository:
+    parameters:
+      - $ref: '#/components/parameters/Project'
+    get:
+      operationId: getProjectRepository
+      summary: Read Configured Repository Access
+      responses:
+        '200':
+          description: Operator-selected repository grant.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [available, can_publish]
+                properties:
+                  available: {type: boolean}
+                  repository_id: {type: integer, format: int64, minimum: 1}
+                  can_publish: {type: boolean}
+        '401': {description: Session required.}
+        '403': {description: Project access denied.}
+        '503': {description: Repository service unavailable.}
+  /api/central/v1/projects/{project}/repository/import:
+    parameters:
+      - $ref: '#/components/parameters/Project'
+    post:
+      operationId: importProjectRepository
+      summary: Import Initial Repository Files
+      description: Requires project-owner and CSRF authority. The retry key pins the resolved commit before import. No replacement after initial input or startup.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, format: uuid}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [ref]
+              properties:
+                ref: {type: string, minLength: 1, maxLength: 200}
+      responses:
+        '201':
+          description: Verified repository input selected or replayed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Source'}
+        '400': {description: Invalid or unsupported repository input.}
+        '401': {description: Session required.}
+        '403': {description: Project-owner, repository grant, or CSRF authorization denied.}
+        '409': {description: Initial input fixed or retry payload conflict.}
+        '503': {description: Outcome unavailable; retain the exact retry request.}
 components:
   securitySchemes:
     session: {type: apiKey, in: cookie, name: __Host-kingdom-session}
@@ -86,7 +144,14 @@ components:
       required: [id, kind, files, bytes, sha256]
       properties:
         id: {type: string, format: uuid}
-        kind: {type: string, enum: [zip, file]}
+        kind: {type: string, enum: [zip, file, github]}
         files: {type: integer, minimum: 0}
         bytes: {type: integer, format: int64, minimum: 0}
         sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+        repository:
+          type: object
+          required: [repository_id, commit_sha, tree_sha]
+          properties:
+            repository_id: {type: integer, format: int64, minimum: 1}
+            commit_sha: {type: string, pattern: '^[a-f0-9]{40}$'}
+            tree_sha: {type: string, pattern: '^[a-f0-9]{40}$'}

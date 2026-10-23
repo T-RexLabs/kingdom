@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/google/uuid"
 	"kingdom/internal/central/catalog"
@@ -21,7 +22,20 @@ import (
 const MaxUploadBytes int64 = 128 << 20
 
 func (s *Service) Upload(ctx context.Context, actor, project, key, kind, name string, input io.Reader) (Metadata, error) {
-	if !mutation.ValidKey(key) || (kind != "zip" && kind != "file") || input == nil {
+	return s.upload(ctx, actor, project, key, kind, name, nil, input)
+}
+
+// ImportRepository accepts only trusted repository-client provenance. HTTP upload
+// routes cannot supply this metadata.
+func (s *Service) ImportRepository(ctx context.Context, actor, project, key string, origin RepositoryOrigin, input io.Reader) (Metadata, error) {
+	if origin.RepositoryID <= 0 || !regexp.MustCompile(`^[a-f0-9]{40}$`).MatchString(origin.CommitSHA) || !regexp.MustCompile(`^[a-f0-9]{40}$`).MatchString(origin.TreeSHA) {
+		return Metadata{}, ErrInvalid
+	}
+	return s.upload(ctx, actor, project, key, "github", "", &origin, input)
+}
+
+func (s *Service) upload(ctx context.Context, actor, project, key, kind, name string, origin *RepositoryOrigin, input io.Reader) (Metadata, error) {
+	if !mutation.ValidKey(key) || (kind != "zip" && kind != "file" && (kind != "github" || origin == nil)) || input == nil {
 		return Metadata{}, ErrInvalid
 	}
 	if err := s.catalog.Authorize(ctx, actor, project, catalog.ManageProject); err != nil {
@@ -108,6 +122,13 @@ func (s *Service) Upload(ctx context.Context, actor, project, key, kind, name st
 		return Metadata{}, err
 	}
 	fingerprint, err := mutation.Fingerprint(struct{ Kind, Name, Digest string }{kind, name, hex.EncodeToString(hash.Sum(nil))})
+	if origin != nil {
+		fingerprint, err = mutation.Fingerprint(struct {
+			Kind, Name, Digest string
+			Origin             *RepositoryOrigin
+		}{kind, name, hex.EncodeToString(hash.Sum(nil)), origin})
+	}
+
 	if err != nil {
 		return Metadata{}, err
 	}
@@ -129,7 +150,7 @@ func (s *Service) Upload(ctx context.Context, actor, project, key, kind, name st
 	if fixed != 0 {
 		return Metadata{}, ErrConflict
 	}
-	result := Metadata{ID: uuid.NewString(), Kind: kind, Bytes: stage.Manifest.ExpandedBytes, SHA256: stage.Digest}
+	result := Metadata{Repository: origin, ID: uuid.NewString(), Kind: kind, Bytes: stage.Manifest.ExpandedBytes, SHA256: stage.Digest}
 	for _, entry := range stage.Manifest.Entries {
 		if entry.Kind == "file" {
 			result.Files++
