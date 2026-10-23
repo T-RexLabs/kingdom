@@ -21,10 +21,20 @@ type ResultFile struct {
 	SHA256 string `json:"sha256"`
 }
 type ResultSnapshot struct {
-	RunID          string       `json:"run_id"`
-	SnapshotID     string       `json:"snapshot_id"`
-	ManifestSHA256 string       `json:"manifest_sha256"`
-	Files          []ResultFile `json:"files"`
+	RunID            string         `json:"run_id"`
+	SnapshotID       string         `json:"snapshot_id"`
+	SourceSnapshotID string         `json:"source_snapshot_id"`
+	ManifestSHA256   string         `json:"manifest_sha256"`
+	Files            []ResultFile   `json:"files"`
+	Changes          []ResultChange `json:"changes"`
+}
+
+// A nil Before means creation; a nil After means deletion. Both cannot be nil.
+// Unchanged content and executable mode do not produce a repository change.
+type ResultChange struct {
+	Path   string      `json:"path"`
+	Before *ResultFile `json:"before,omitempty"`
+	After  *ResultFile `json:"after,omitempty"`
 }
 
 // Reader checks canonical publication eligibility on every access. Consumers

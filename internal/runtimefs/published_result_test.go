@@ -3,9 +3,11 @@ package runtimefs
 import (
 	"context"
 	"io"
+	"kingdom/internal/publishedresult"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func publishedResultFixture(t *testing.T) (*Store, string) {
@@ -121,5 +123,75 @@ func TestPublishedResultCorruptBlobFailsBeforePublisherCanAcceptIt(t *testing.T)
 	r.Close()
 	if err == nil {
 		t.Fatal("corrupt canonical bytes accepted")
+	}
+}
+
+func TestPublishedResultDeltaRetainsBaselineAndExcludesUnchangedFiles(t *testing.T) {
+	s, root := publishedResultFixture(t)
+	ctx := context.Background()
+	for path, content := range map[string]string{"unchanged.txt": "keep", "edit.txt": "before", "deleted.txt": "remove", "script.sh": "echo fixture"} {
+		writeTestFile(t, root, path, content)
+	}
+	capture := func(id, parent string) {
+		t.Helper()
+		_, err := s.CaptureSnapshot(ctx, CaptureSnapshotRequest{SnapshotID: id, RunID: "published-run", ParentSnapshotID: parent, SnapshotKind: "trusted_promotion", RootPath: root, CreatedAt: "2026-10-23T00:00:00Z"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture("delta-source", "")
+	writeTestFile(t, root, "edit.txt", "after")
+	writeTestFile(t, root, "new.txt", "created")
+	if err := os.Remove(filepath.Join(root, "deleted.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, "script.sh"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(root, "unchanged.txt"), time.Unix(123, 0), time.Unix(123, 0)); err != nil {
+		t.Fatal(err)
+	}
+	capture("delta-result", "delta-source")
+	if _, err := s.db.Exec(`UPDATE run_execution_targets SET source_snapshot_id='delta-source',trusted_snapshot_id='delta-result',published_snapshot_id='delta-result'`); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Resolve(ctx, "published-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SourceSnapshotID != "delta-source" || result.SnapshotID != "delta-result" || len(result.Changes) != 4 {
+		t.Fatalf("wrong delta %+v", result)
+	}
+	changes := map[string]publishedresult.ResultChange{}
+	for _, change := range result.Changes {
+		changes[change.Path] = change
+	}
+	if _, ok := changes["unchanged.txt"]; ok {
+		t.Fatal("timestamp-only change published")
+	}
+	if change := changes["deleted.txt"]; change.Before == nil || change.After != nil {
+		t.Fatal("deletion lacks exact baseline")
+	}
+	if change := changes["new.txt"]; change.Before != nil || change.After == nil {
+		t.Fatal("creation lacks exact result")
+	}
+	if change := changes["edit.txt"]; change.Before == nil || change.After == nil || change.Before.SHA256 == change.After.SHA256 {
+		t.Fatal("edit lacks before/after identity")
+	}
+	if change := changes["script.sh"]; change.Before.Mode != 0644 || change.After.Mode != 0755 {
+		t.Fatal("executable mode change lost")
+	}
+	reader, err := s.Open(ctx, result.RunID, result.SourceSnapshotID, "edit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := io.ReadAll(reader)
+	reader.Close()
+	if err != nil || string(before) != "before" {
+		t.Fatal("baseline reader wrong", err)
+	}
+	if reader, err := s.Open(ctx, result.RunID, result.SnapshotID, "deleted.txt"); err == nil {
+		reader.Close()
+		t.Fatal("deleted file opened from result")
 	}
 }
