@@ -39,6 +39,7 @@ type Profile struct {
 }
 type Config struct {
 	Connections *connections.Store
+	Accounts    AccountDiscovery
 	Origins     []modelproxy.OriginPolicy
 	TLSRoots    *x509.CertPool
 	Profiles    []Profile
@@ -55,9 +56,11 @@ type Snapshot struct {
 type entry struct {
 	metadata connections.Metadata
 	snapshot Snapshot
+	routes   map[string]modelproxy.Route
 }
 type Service struct {
 	store    *connections.Store
+	accounts AccountDiscovery
 	client   *http.Client
 	profiles map[string]map[string]Model
 	ttl      time.Duration
@@ -89,7 +92,7 @@ func New(c Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{store: c.Connections, client: client, profiles: map[string]map[string]Model{}, ttl: c.TTL, now: c.Now, cache: map[[32]byte]entry{}, slots: make(chan struct{}, 8)}
+	s := &Service{store: c.Connections, accounts: c.Accounts, client: client, profiles: map[string]map[string]Model{}, ttl: c.TTL, now: c.Now, cache: map[[32]byte]entry{}, slots: make(chan struct{}, 8)}
 	s.lifetime, s.cancel = context.WithCancel(context.Background())
 	s.done = make(chan struct{})
 	var base Profile
@@ -223,7 +226,7 @@ func (s *Service) Refresh(ctx context.Context, actor, project, id string, revisi
 	case <-ctx.Done():
 		return Snapshot{}, ErrUnavailable
 	}
-	m, secret, err := s.store.ResolveForProject(ctx, actor, project, id, revision)
+	m, err := s.store.PinForProject(ctx, actor, project, id, revision)
 	if err != nil {
 		return Snapshot{}, ErrUnavailable
 	}
@@ -234,6 +237,10 @@ func (s *Service) Refresh(ctx context.Context, actor, project, id string, revisi
 		return Snapshot{}, ErrUnavailable
 	}
 	if m.Definition.AuthKind != "api_key" {
+		return s.refreshAccount(ctx, actor, project, m, fail)
+	}
+	resolved, secret, err := s.store.ResolveForProject(ctx, actor, project, id, revision)
+	if err != nil || resolved != m {
 		return fail()
 	}
 	profiles, ok := s.profiles[m.Definition.Provider+"\n"+endpoint(m)]
@@ -305,7 +312,7 @@ func (s *Service) Refresh(ctx context.Context, actor, project, id string, revisi
 		s.mu.Unlock()
 		return Snapshot{}, ErrUnavailable
 	}
-	s.cache[key(m)] = entry{m, clone(v)}
+	s.cache[key(m)] = entry{metadata: m, snapshot: clone(v)}
 	s.mu.Unlock()
 	return clone(v), nil
 }

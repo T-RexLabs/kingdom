@@ -384,23 +384,52 @@ func (m *Manager) requestHandler(project string, next http.Handler) http.Handler
 // AuthenticatedUser accepts only this manager's admitted request context and
 // rechecks current session and account state. Caller-supplied IDs are not used.
 func (m *Manager) AuthenticatedUser(r *http.Request) (catalog.User, error) {
+	session, err := m.AuthenticatedSession(r)
+	return session.User, err
+}
+
+// AuthenticatedSession returns the exact current admitted browser session.
+// Personal sign-in attempts use it to prevent another session taking over an
+// attempt or publishing a credential after the initiating session is revoked.
+func (m *Manager) AuthenticatedSession(r *http.Request) (Session, error) {
 	v, ok := r.Context().Value(verifiedContextKey{}).(verifiedContext)
 	if !ok || v.manager != m || r.Context().Err() != nil {
-		return catalog.User{}, api.ErrAuthenticationRequired
+		return Session{}, api.ErrAuthenticationRequired
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return catalog.User{}, api.ErrAuthenticationRequired
+		return Session{}, api.ErrAuthenticationRequired
 	}
 	if _, ok := m.active[v.binding]; !ok {
-		return catalog.User{}, api.ErrAuthenticationRequired
+		return Session{}, api.ErrAuthenticationRequired
 	}
 	session, err := m.lookup(r.Context(), v.binding.hash)
 	if err != nil {
-		return catalog.User{}, err
+		return Session{}, err
 	}
-	return session.User, nil
+	return session, nil
+}
+
+// CheckSession is a trusted in-process check for a retained sign-in owner. The
+// public session ID is a token hash, not a replacement browser credential.
+func (m *Manager) CheckSession(ctx context.Context, owner, id string) error {
+	raw, err := hex.DecodeString(id)
+	if err != nil || len(raw) != 32 || hex.EncodeToString(raw) != id {
+		return api.ErrAuthenticationRequired
+	}
+	var hash [32]byte
+	copy(hash[:], raw)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return api.ErrAuthenticationRequired
+	}
+	session, err := m.lookup(ctx, hash)
+	if err != nil || session.User.ID != owner {
+		return api.ErrAuthenticationRequired
+	}
+	return nil
 }
 
 type projectAuthenticator struct {
