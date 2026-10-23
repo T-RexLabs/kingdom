@@ -298,3 +298,16 @@ func TestCatalogEvictsExpiredEntriesAndBoundsRevisionCache(t *testing.T) {
 		t.Fatal("expired foreign revision accepted")
 	}
 }
+
+func TestEmptyDiscoveryReturnsArray(t *testing.T) {
+	f := setup(t)
+	f.body.Store(`{"object":"list","data":[]}`)
+	snapshot, err := f.refresh()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil || !bytes.Contains(raw, []byte(`"models":[]`)) {
+		t.Fatalf("empty catalog is not an array: %s %v", raw, err)
+	}
+}

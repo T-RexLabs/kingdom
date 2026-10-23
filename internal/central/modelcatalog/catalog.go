@@ -155,7 +155,7 @@ func endpoint(m connections.Metadata) string {
 	return m.Definition.Endpoint
 }
 func clone(v Snapshot) Snapshot {
-	v.Models = append([]Model(nil), v.Models...)
+	v.Models = append([]Model{}, v.Models...)
 	for i := range v.Models {
 		v.Models[i].Efforts = append([]string(nil), v.Models[i].Efforts...)
 	}
