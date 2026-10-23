@@ -85,7 +85,7 @@ func accountEnvironment(root, password string) []string {
 	return []string{
 		"PATH=" + filepath.Dir(os.Args[0]) + ":/usr/local/bin:/usr/bin:/bin",
 		"HOME=" + filepath.Join(root, "home"), "XDG_CONFIG_HOME=" + filepath.Join(root, "config"), "XDG_DATA_HOME=" + filepath.Join(root, "data"), "XDG_STATE_HOME=" + filepath.Join(root, "state"), "XDG_CACHE_HOME=" + filepath.Join(root, "cache"), "TMPDIR=" + filepath.Join(root, "tmp"),
-		"OPENCODE_SERVER_PASSWORD=" + password, "OPENCODE_PASSWORD=" + password, "OPENCODE_CONFIG_CONTENT=" + string(config), "OPENCODE_DISABLE_PROJECT_CONFIG=1", "OPENCODE_CONFIG_PROJECT_DISABLE=1", "OPENCODE_DISABLE_CLAUDE_CODE=1", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1", "OPENCODE_DISABLE_MODELS_FETCH=1",
+		"OPENCODE_SERVER_PASSWORD=" + password, "OPENCODE_PASSWORD=" + password, "OPENCODE_CONFIG_CONTENT=" + string(config), "OPENCODE_DISABLE_PROJECT_CONFIG=1", "OPENCODE_CONFIG_PROJECT_DISABLE=1", "OPENCODE_DISABLE_CLAUDE_CODE=1", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1", "OPENCODE_DISABLE_MODELS_FETCH=1", "OPENCODE_DISABLE_FFF=1",
 	}
 }
 

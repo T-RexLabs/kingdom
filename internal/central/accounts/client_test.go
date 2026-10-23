@@ -116,7 +116,7 @@ func TestEnvironmentDoesNotInheritHostCredentials(t *testing.T) {
 	if strings.Contains(joined, "host-secret") || strings.Contains(joined, "host-plugin") {
 		t.Fatal("inherited host configuration")
 	}
-	for _, key := range []string{"HOME=/private/attempt/home", "XDG_CONFIG_HOME=/private/attempt/config", "XDG_DATA_HOME=/private/attempt/data", "XDG_STATE_HOME=/private/attempt/state", "OPENCODE_DISABLE_PROJECT_CONFIG=1"} {
+	for _, key := range []string{"HOME=/private/attempt/home", "XDG_CONFIG_HOME=/private/attempt/config", "XDG_DATA_HOME=/private/attempt/data", "XDG_STATE_HOME=/private/attempt/state", "OPENCODE_DISABLE_PROJECT_CONFIG=1", "OPENCODE_DISABLE_FFF=1"} {
 		if !strings.Contains(joined, key) {
 			t.Fatalf("missing %s", key)
 		}

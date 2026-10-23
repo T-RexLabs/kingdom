@@ -67,6 +67,9 @@ func NewSignIns(ctx context.Context, c SignInsConfig) (*SignIns, error) {
 	if c.DB == nil || c.Accounts == nil || c.Connections == nil || c.Catalog == nil || c.CheckSession == nil || !filepath.IsAbs(c.BinaryPath) || !filepath.IsAbs(c.RuntimeRoot) {
 		return nil, ErrDenied
 	}
+	if err := initializePortalRequests(ctx, c.DB); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(c.RuntimeRoot, 0o700); err != nil {
 		return nil, err
 	}
