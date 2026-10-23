@@ -21,8 +21,9 @@ var (
 
 type Identity struct{ Issuer, Subject string }
 type User struct {
-	ID, DisplayName string
-	TeamOwner       bool
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	TeamOwner   bool   `json:"team_owner"`
 }
 type Project struct{ ID, DisplayName string }
 type Role string

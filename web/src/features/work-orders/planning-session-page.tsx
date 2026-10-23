@@ -38,7 +38,7 @@ import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { useThemeCopy } from "@/theme";
-import { normalizeThinkingEffortSelection } from "./provider-model-selection";
+import { normalizeThinkingEffortSelection, modelSelectionKey, selectedModelPayload, selectedProviderModelLabel } from "./provider-model-selection";
 
 export function PlanningSessionPage() {
   const { sessionId } = useParams({ from: "/work-orders/planning/$sessionId" });
@@ -89,7 +89,7 @@ export function PlanningSessionPage() {
 	} = updateModelSelection;
 	const providerModelCatalogController = useProviderModelCatalogController();
 	const providerModelCatalog = providerModelCatalogController.state;
-	const canonicalModel = session?.model_selection.model ?? "";
+	const canonicalModel = modelSelectionKey(session?.model_selection);
 	const canonicalThinkingEffort = session?.model_selection.thinking_effort ?? "";
 	const [modelSelectionDraft, setModelSelectionDraft] = useState(() => ({
 		sessionId,
@@ -297,7 +297,7 @@ export function PlanningSessionPage() {
 
   const hasModelSelectionChanges =
     Boolean(session) &&
-    (model !== (session?.model_selection.model ?? "") ||
+    (model !== (modelSelectionKey(session?.model_selection)) ||
       thinkingEffort !== (session?.model_selection.thinking_effort ?? ""));
 
   const hasUserMessages = userMessageCount > 0;
@@ -312,13 +312,10 @@ export function PlanningSessionPage() {
 		if (modelRecoveryPending) return;
 		const normalizedModel = submittedModel.trim();
 		const normalizedThinkingEffort = submittedThinkingEffort.trim();
+		const selection = selectedModelPayload(providerModelCatalog.items, normalizedModel, normalizedThinkingEffort);
+		if (normalizedModel && !selection) return;
 		modelMutate({
-			modelSelection: normalizedModel
-				? {
-					model: normalizedModel,
-					...(normalizedThinkingEffort ? { thinking_effort: normalizedThinkingEffort } : {}),
-				}
-				: undefined,
+			modelSelection: selection,
 			key: newIdempotencyKey("planning-update-model"),
 			editGeneration,
 		}, {
@@ -330,7 +327,7 @@ export function PlanningSessionPage() {
 						? {
 							...current,
 							acknowledgedAutosave: {
-								model: result.model_selection.model ?? "",
+								model: modelSelectionKey(result.model_selection),
 								thinkingEffort: result.model_selection.thinking_effort ?? "",
 								editGeneration,
 							},
@@ -339,7 +336,7 @@ export function PlanningSessionPage() {
 				));
 			},
 		});
-	}, [modelMutate, modelRecoveryPending, sessionId]);
+	}, [modelMutate, modelRecoveryPending, sessionId, providerModelCatalog.items]);
 	const handleModelRecovery = () => {
 		const editGeneration = pendingModelVariables?.editGeneration;
 		void retryModelRecovery().then((result) => {
@@ -349,7 +346,7 @@ export function PlanningSessionPage() {
 					? {
 						...current,
 						acknowledgedAutosave: {
-							model: result.model_selection.model ?? "",
+							model: modelSelectionKey(result.model_selection),
 							thinkingEffort: result.model_selection.thinking_effort ?? "",
 							editGeneration,
 						},
@@ -462,7 +459,7 @@ export function PlanningSessionPage() {
 	const isPlaceholderHeaderTitle = Boolean(session) && hasPlaceholderTitle(session) && displayTitle.trim().length === 0;
 
   const modelControls = <details className="mt-3 text-xs text-foreground-muted" open={modelError || modelRecoveryPending ? true : undefined}>
-    <summary aria-label="Planner model settings" className="flex w-fit cursor-pointer list-none items-center gap-2 rounded-md py-1.5 pr-2 hover:text-foreground">{selectedModel?.model_name ?? (model || "Choose Planner Model")}{thinkingEffort ? ` · ${thinkingEffort}` : ""}<ChevronDown className="h-3 w-3" /></summary>
+    <summary aria-label="Planner model settings" className="flex w-fit cursor-pointer list-none items-center gap-2 rounded-md py-1.5 pr-2 hover:text-foreground">{selectedModel?.model_name ?? selectedProviderModelLabel(providerModelCatalog.items, model, "Choose Planner Model")}{thinkingEffort ? ` · ${thinkingEffort}` : ""}<ChevronDown className="h-3 w-3" /></summary>
         <div className="space-y-3 border-t border-border/60 pt-3">
           <div className="flex flex-wrap items-end gap-3">
             <div className="w-full">

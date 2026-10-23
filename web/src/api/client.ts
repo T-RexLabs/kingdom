@@ -134,16 +134,23 @@ export function buildAuthHeaders(
  * Typed fetch wrapper for the Kingdom API.
  * Throws on non-2xx responses with the canonical error envelope.
  */
-export async function apiFetch<T>(
-  path: string,
-  options?: RequestInit & {
-    params?: Record<string, string | number | boolean | undefined>;
-    responseType?: "json" | "text";
-  }
-): Promise<T> {
+type FetchOptions = RequestInit & {
+  params?: Record<string, string | number | boolean | undefined>;
+  responseType?: "json" | "text";
+};
+
+export function apiFetch<T>(path: string, options?: FetchOptions): Promise<T> {
+  return fetchAtBase<T>(API_BASE, path, options);
+}
+
+export function centralFetch<T>(path: string, options?: FetchOptions): Promise<T> {
+  return fetchAtBase<T>("/api/central/v1", path, options);
+}
+
+async function fetchAtBase<T>(base: string, path: string, options?: FetchOptions): Promise<T> {
   const { params, responseType = "json", ...fetchOpts } = options ?? {};
 
-  let url = `${API_BASE}${path}`;
+  let url = `${base}${path}`;
   if (params) {
     const searchParams = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {

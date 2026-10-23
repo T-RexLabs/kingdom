@@ -8,6 +8,9 @@ import { FormalizeNotifierMount, GlobalFormalizeProvider } from "@/features/work
 import { RunsCollectionEventStreamMount } from "@/features/runs/use-runs-collection-event-stream";
 import { SCENE_ROOT_ID } from "@/lib/overlay-system";
 import { router } from "./router";
+import { HostedSessionBoundary } from "@/features/central/session";
+import { CentralPortal } from "@/features/central/portal";
+import { runtimeMode } from "@/lib/runtime-mode";
 import { LocalSessionBoundary } from "@/features/local-session/local-session-boundary";
 import { shouldRetryApiMutation, shouldRetryApiQuery } from "@/api/client";
 import "./index.css";
@@ -27,12 +30,15 @@ const queryClient = new QueryClient({
   },
 });
 
+const mode = runtimeMode();
+const SessionBoundary = mode === "local" ? LocalSessionBoundary : HostedSessionBoundary;
+
 createRoot(document.getElementById(SCENE_ROOT_ID)!).render(
   <StrictMode>
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <NotificationProvider>
-          <LocalSessionBoundary><ThemeProvider><GlobalFormalizeProvider>
+          <SessionBoundary>{mode === "central" ? <CentralPortal /> : <ThemeProvider><GlobalFormalizeProvider>
             {/* Headless side-effect component: subscribes to the
                 tracked formalize operation's stream and fires the
                 terminal toast (Plan Ready / Plan Failed / Plan
@@ -49,7 +55,7 @@ createRoot(document.getElementById(SCENE_ROOT_ID)!).render(
             >
               <RouterProvider router={router} />
             </Suspense>
-          </GlobalFormalizeProvider></ThemeProvider></LocalSessionBoundary>
+          </GlobalFormalizeProvider></ThemeProvider>}</SessionBoundary>
         </NotificationProvider>
       </QueryClientProvider>
     </ErrorBoundary>

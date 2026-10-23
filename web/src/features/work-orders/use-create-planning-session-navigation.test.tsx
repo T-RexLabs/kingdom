@@ -43,7 +43,7 @@ describe("useCreatePlanningSessionNavigation", () => {
 	it("reuses the same idempotency key when retrying a pending create", async () => {
 		const client = makeClient();
 		const wrapper = makeWrapper(client);
-		const body = { model_selection: { model: "gpt-5.4" } };
+		const body = { model_selection: { model: "gpt-5.4", connection: { id: "connection-1", revision: 3 } } };
 		createMutateAsync
 			.mockRejectedValueOnce(new ApiError(409, {
 				message: "reservation pending",
@@ -87,6 +87,7 @@ describe("useCreatePlanningSessionNavigation", () => {
 
 		expect(result.current.hasRecovery).toBe(true);
 		const firstRequest = createMutateAsync.mock.calls[0]?.[0];
+    expect(firstRequest.body.model_selection.connection).toEqual(body.model_selection.connection);
 
 		await act(async () => {
 			await result.current.retryRecovery();

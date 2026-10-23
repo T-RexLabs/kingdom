@@ -1,3 +1,5 @@
+import { runtimeMode } from "@/lib/runtime-mode";
+import { hostedProviderModels } from "@/features/central/connections-client";
 import { skipToken, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch, shouldRetryApiQuery } from "./client";
 import { useActivityHistory } from "./hooks-activity";
@@ -441,6 +443,7 @@ export function useAgents() {
 }
 
 function fetchProviderModels(refresh: boolean, signal?: AbortSignal) {
+  if (runtimeMode() === "hosted-project") return hostedProviderModels(refresh, signal);
 	return apiFetch<ProviderModelsResponse>("/provider/models", {
 		params: { refresh },
 		signal,
@@ -455,6 +458,7 @@ export function useProviderModels(options?: RunDetailQueryOptions) {
   return useQuery({
 	queryKey: providerModelsQueryKey,
 	queryFn: ({ signal }) => fetchProviderModels(false, signal),
+    refetchInterval: runtimeMode() === "hosted-project" ? 30_000 : false,
 	enabled: options?.enabled ?? true,
   });
 }

@@ -1,3 +1,4 @@
+import { runtimeMode } from "@/lib/runtime-mode";
 import { useWorkspaceCapabilities } from "@/api/hooks";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
@@ -7,7 +8,7 @@ import { useThemeCopy, ThemeArtwork } from "@/theme";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ModelSelectField } from "./model-select-field";
 import { ThinkingEffortField } from "./thinking-effort-field";
-import { normalizeThinkingEffortSelection } from "./provider-model-selection";
+import { normalizeThinkingEffortSelection, selectedModelPayload } from "./provider-model-selection";
 import { useCreatePlanningSessionNavigation } from "./use-create-planning-session-navigation";
 import { ProviderModelCatalogNotice } from "./provider-model-catalog-state";
 import { useProviderModelCatalogController } from "./use-provider-model-catalog";
@@ -43,15 +44,10 @@ export function PlanningSessionIndexPage() {
       model.trim()
         ? {
             ...(title.trim() ? { title: title.trim() } : {}),
-            model_selection: {
-              model: model.trim(),
-              ...(normalizedThinkingEffort.trim()
-                ? { thinking_effort: normalizedThinkingEffort.trim() }
-                : {}),
-            },
+            model_selection: selectedModelPayload(providerModelCatalog.items, model, normalizedThinkingEffort),
           }
         : title.trim() ? { title: title.trim() } : {},
-    [title, model, normalizedThinkingEffort]
+    [title, model, normalizedThinkingEffort, providerModelCatalog.items]
   );
 
   const startSession = async (create: () => Promise<{ planning_session_id: string }>) => {
@@ -145,7 +141,7 @@ export function PlanningSessionIndexPage() {
               <Button
                 type="button"
                 onClick={() => void startSession(() => createPlanningSession.mutateAsync(currentRequest))}
-                disabled={!workspace.data || createPlanningSession.isPending || recoveryPending}
+                disabled={!workspace.data || createPlanningSession.isPending || recoveryPending || (runtimeMode() === "hosted-project" && !selectedModelPayload(providerModelCatalog.items, model, normalizedThinkingEffort))}
               >
                 {createPlanningSession.isPending && !recoveryPending ? "Starting..." : "Start Planner Session"}
               </Button>

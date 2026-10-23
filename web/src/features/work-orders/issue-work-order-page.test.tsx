@@ -1073,6 +1073,46 @@ describe("issue work order page", () => {
     });
   });
 
+  it("submits exact hosted connection revisions for global and role-specific selections", async () => {
+    const user = userEvent.setup();
+    const meta = document.createElement("meta"); meta.name = "kingdom-runtime-mode"; meta.content = "hosted-project"; document.head.append(meta);
+    const catalog = mockUseProviderModels();
+    mockUseProviderModels.mockReturnValue({ ...catalog, data: { ...catalog.data, items: catalog.data.items.map((item: {id:string}, index:number) => ({ ...item, id: JSON.stringify([`connection-${index}`, index+2, item.id]), canonical_model: item.id, connection: {id:`connection-${index}`,revision:index+2} })) } });
+    renderWithReviewOptions(<IssueWorkOrderPage />);
+
+    await selectGlobalModel(user);
+    await user.click(screen.getByLabelText("Thinking Effort"));
+    await user.click(screen.getByRole("option", { name: "High" }));
+    await user.click(screen.getByRole("button", { name: /Role Models/i }));
+    await user.click(screen.getByRole("combobox", { name: "Reviewer Model" }));
+    await user.type(screen.getByPlaceholderText("Search models"), "nano");
+    await user.click(screen.getByRole("option", { name: "OpenCode - GPT-5 Nano" }));
+
+    await user.type(screen.getByLabelText("Title"), "Work Order C");
+    await user.type(screen.getByLabelText("Work Brief"), "Use model overrides");
+    await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
+
+    expect(createRunMutate).toHaveBeenCalledTimes(1);
+    expect(createRunMutate.mock.calls[0][0]).toMatchObject({
+      body: {
+        model_selection: {
+          global: {
+            model: "github-copilot/gpt-5.3-codex",
+            connection: {id:"connection-0",revision:2},
+            thinking_effort: "high",
+          },
+          role_overrides: {
+            "reviewer": {
+              model: "opencode/gpt-5-nano",
+              connection: {id:"connection-1",revision:3},
+            },
+          },
+        },
+      },
+    });
+    meta.remove();
+  });
+
   it("sends lineage metadata on work order create while preserving run configuration", async () => {
     const user = userEvent.setup();
     renderWithReviewOptions(<IssueWorkOrderPage />);

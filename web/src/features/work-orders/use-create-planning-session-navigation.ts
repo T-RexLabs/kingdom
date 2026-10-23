@@ -11,6 +11,7 @@ function normalizeCreatePlanningSessionRequest(body: CreatePlanningSessionReques
     ...(body.title?.trim() ? { title: body.title.trim() } : {}),
     ...(model ? { model_selection: {
       model,
+      ...(body.model_selection?.connection ? { connection: { ...body.model_selection.connection } } : {}),
       ...(thinkingEffort !== "" ? { thinking_effort: thinkingEffort } : {}),
     }} : {}),
   };
