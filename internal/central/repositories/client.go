@@ -64,7 +64,7 @@ type access struct {
 }
 
 func NewClient(cfg Config) (*Client, error) {
-	if cfg.AppID <= 0 || cfg.PrivateKey == nil || cfg.PrivateKey.N.BitLen() < 2048 || cfg.PrivateKey.Validate() != nil {
+	if cfg.AppID <= 0 || !validPrivateKey(cfg.PrivateKey) {
 		return nil, ErrInvalid
 	}
 	grants := make(map[string]Grant, len(cfg.Grants))
@@ -98,7 +98,7 @@ func (c *Client) jwt() (string, error) {
 // request deliberately never returns an upstream body or transport error. Both
 // can contain credentials or provider-controlled details.
 func (c *Client) request(ctx context.Context, method, path, token string, body any, limit int64, out any) error {
-	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#\\\r\n") {
+	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "#\\\r\n") {
 		return ErrInvalid
 	}
 	var input io.Reader
@@ -123,7 +123,7 @@ func (c *Client) request(ctx context.Context, method, path, token string, body a
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return ErrUnavailable
+		return responseError(res.StatusCode)
 	}
 	raw, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
 	if err != nil || int64(len(raw)) > limit {
@@ -188,4 +188,21 @@ func (c *Client) authorize(ctx context.Context, project string, publish bool) (a
 }
 func (a access) path(suffix string) string {
 	return "/repos/" + a.repo.Owner.Login + "/" + a.repo.Name + suffix
+}
+
+type responseError int
+
+func (e responseError) Error() string { return ErrUnavailable.Error() }
+func (e responseError) Unwrap() error { return ErrUnavailable }
+
+func validPrivateKey(key *rsa.PrivateKey) bool {
+	if key == nil || key.N == nil || key.D == nil || key.N.BitLen() < 2048 || key.E < 3 || len(key.Primes) < 2 {
+		return false
+	}
+	for _, prime := range key.Primes {
+		if prime == nil || prime.Sign() <= 0 {
+			return false
+		}
+	}
+	return key.Validate() == nil
 }

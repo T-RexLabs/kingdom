@@ -2,11 +2,14 @@ package daemon
 
 import (
 	"bytes"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"github.com/google/uuid"
 	"io"
 	"net"
 	"net/netip"
@@ -20,6 +23,7 @@ import (
 	"kingdom/internal/central/catalog"
 	"kingdom/internal/central/modelcatalog"
 	"kingdom/internal/central/modelproxy"
+	"kingdom/internal/central/repositories"
 	"kingdom/internal/execution/openshell/worker"
 	"kingdom/internal/securefs"
 )
@@ -62,7 +66,14 @@ type gatewayConfig struct {
 	ContextLimit    int      `json:"context_limit"`
 	OutputLimit     int      `json:"output_limit"`
 }
+type repositoryAppConfig struct {
+	AppID          int64                `json:"app_id"`
+	PrivateKeyFile string               `json:"private_key_file"`
+	Grants         []repositories.Grant `json:"grants"`
+}
+
 type fileConfig struct {
+	RepositoryApp  *repositoryAppConfig   `json:"repository_app"`
 	Version        int                    `json:"version"`
 	Listen         string                 `json:"listen"`
 	PublicOrigin   string                 `json:"public_origin"`
@@ -80,6 +91,7 @@ type fileConfig struct {
 	ProviderCAFile string                 `json:"provider_ca_file"`
 }
 type configuration struct {
+	repositories              *repositories.Config
 	file                      fileConfig
 	key                       []byte
 	certificate               tls.Certificate
@@ -172,6 +184,54 @@ func load(path string) (result configuration, err error) {
 			return result, ErrConfiguration
 		}
 		result.oidc = &auth.OIDCConfig{Issuer: f.OIDC.Issuer, ClientID: f.OIDC.ClientID, ClientSecret: secret, AdditionalEndpointOrigins: f.OIDC.AdditionalOrigins}
+	}
+	if f.RepositoryApp != nil {
+		if f.RepositoryApp.AppID <= 0 || len(f.RepositoryApp.Grants) == 0 || len(f.RepositoryApp.Grants) > 1000 {
+			return result, ErrConfiguration
+		}
+		for _, grant := range f.RepositoryApp.Grants {
+			id, e := uuid.Parse(grant.ProjectID)
+			if e != nil || id == uuid.Nil || id.String() != grant.ProjectID {
+				return result, ErrConfiguration
+			}
+		}
+		raw, e := readFile(resolve(f.RepositoryApp.PrivateKeyFile), true, 64<<10)
+		if e != nil {
+			return result, ErrConfiguration
+		}
+		block, rest := pem.Decode(raw)
+		invalidPEM := block == nil || len(bytes.TrimSpace(rest)) != 0
+		clear(raw)
+		if invalidPEM {
+			return result, ErrConfiguration
+		}
+		var key *rsa.PrivateKey
+		if block.Type == "RSA PRIVATE KEY" {
+			key, e = x509.ParsePKCS1PrivateKey(block.Bytes)
+		} else if block.Type == "PRIVATE KEY" {
+			var parsed any
+			parsed, e = x509.ParsePKCS8PrivateKey(block.Bytes)
+			if e == nil {
+				var ok bool
+				key, ok = parsed.(*rsa.PrivateKey)
+				if !ok {
+					return result, ErrConfiguration
+				}
+			}
+		} else {
+			return result, ErrConfiguration
+		}
+		clear(block.Bytes)
+		if e != nil {
+			return result, ErrConfiguration
+		}
+		config := repositories.Config{AppID: f.RepositoryApp.AppID, PrivateKey: key, Grants: f.RepositoryApp.Grants}
+		probe, e := repositories.NewClient(config)
+		if e != nil {
+			return result, ErrConfiguration
+		}
+		probe.Close()
+		result.repositories = &config
 	}
 	if f.GitHub != nil {
 		secret, e := readText(resolve(f.GitHub.ClientSecretFile))

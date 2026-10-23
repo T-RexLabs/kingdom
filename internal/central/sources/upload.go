@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -170,4 +171,33 @@ func (s *Service) upload(ctx context.Context, actor, project, key, kind, name st
 		return Metadata{}, ErrUnavailable
 	}
 	return result, nil
+}
+
+// ReplayRepository resolves only the exact trusted import operation's committed
+// source. It does not accept an unrelated source or bypass current ownership.
+func (s *Service) ReplayRepository(ctx context.Context, actor, project, key string, repositoryID int64, commit string) (Metadata, bool, error) {
+	if !mutation.ValidKey(key) || repositoryID <= 0 {
+		return Metadata{}, false, ErrInvalid
+	}
+	tx, err := s.write(ctx)
+	if err != nil {
+		return Metadata{}, false, err
+	}
+	defer tx.Rollback()
+	if err = catalog.AuthorizeTx(ctx, tx, actor, project, catalog.ManageProject); err != nil {
+		return Metadata{}, false, err
+	}
+	var raw []byte
+	err = tx.QueryRowContext(ctx, `SELECT m.response FROM central_mutations m JOIN central_project_sources s ON s.project=m.resource AND s.metadata=m.response WHERE m.actor=? AND m.request_id=? AND m.operation='project.source' AND m.resource=?`, actor, key, project).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return Metadata{}, false, nil
+	}
+	if err != nil {
+		return Metadata{}, false, err
+	}
+	var result Metadata
+	if json.Unmarshal(raw, &result) != nil || result.Kind != "github" || result.Repository == nil || result.Repository.RepositoryID != repositoryID || result.Repository.CommitSHA != commit {
+		return Metadata{}, false, ErrConflict
+	}
+	return result, true, nil
 }

@@ -9,6 +9,12 @@ import (
 	"testing"
 )
 
+func (s *repositoryFixture) Publish(_ context.Context, actor, project, key string, request repositories.PublishRequest) (repositories.Publication, error) {
+	s.calls++
+	s.actor = actor
+	return repositories.Publication{State: "pending"}, nil
+}
+
 type repositoryFixture struct {
 	calls int
 	actor string
@@ -51,4 +57,11 @@ func TestRepositoryImportRequiresOwnerAndCSRFWithoutStartingRuntime(t *testing.T
 	if w.Code != 403 || service.calls != 2 || f.factoryCalls.Load() != 0 {
 		t.Fatal("repository boundary bypassed", w.Code, service.calls)
 	}
+}
+
+func (s *repositoryFixture) Publications(context.Context, string, string, string) ([]repositories.Publication, error) {
+	return []repositories.Publication{}, nil
+}
+func (s *repositoryFixture) Reconcile(context.Context, string, string, string) (repositories.Publication, error) {
+	return repositories.Publication{State: "pending"}, nil
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"io"
+	"math/big"
 	"net/http"
 	"strings"
 	"testing"
@@ -111,5 +112,13 @@ func TestRepositoryRejectsBroaderTokenAndRedirect(t *testing.T) {
 				t.Fatal("unsafe token accepted or leaked")
 			}
 		})
+	}
+}
+
+func TestMalformedAppKeyFailsWithoutPanic(t *testing.T) {
+	for _, key := range []*rsa.PrivateKey{nil, {}, {PublicKey: rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), 2048), E: 65537}}} {
+		if _, err := NewClient(Config{AppID: 1, PrivateKey: key}); err != ErrInvalid {
+			t.Fatal("malformed key accepted")
+		}
 	}
 }

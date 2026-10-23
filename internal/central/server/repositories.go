@@ -11,8 +11,11 @@ import (
 )
 
 type ProjectRepositories interface {
+	Publications(context.Context, string, string, string) ([]repositories.Publication, error)
+	Reconcile(context.Context, string, string, string) (repositories.Publication, error)
 	Status(context.Context, string, string) (repositories.RepositoryStatus, error)
 	Import(context.Context, string, string, string, string) (sources.Metadata, error)
+	Publish(context.Context, string, string, string, repositories.PublishRequest) (repositories.Publication, error)
 }
 
 func (s *Server) projectRepository(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +53,27 @@ func (s *Server) projectRepository(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if r.PathValue("action") == "publish" {
+		var request repositories.PublishRequest
+		if !decode(w, r, &request) {
+			return
+		}
+		result, err := s.cfg.Repositories.Publish(r.Context(), actor, project, key, request)
+		if err != nil {
+			repositoryFailure(w, err)
+			return
+		}
+		status := http.StatusOK
+		if result.State == "pending" {
+			status = http.StatusAccepted
+		}
+		write(w, status, result)
+		return
+	}
+	if r.PathValue("action") != "import" {
+		http.NotFound(w, r)
+		return
+	}
 	var request struct {
 		Ref string `json:"ref"`
 	}
@@ -76,4 +100,49 @@ func repositoryFailure(w http.ResponseWriter, err error) {
 	default:
 		fail(w, err)
 	}
+}
+
+func (s *Server) projectPublications(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.actor(w, r)
+	if !ok {
+		return
+	}
+	project := r.PathValue("project")
+	if !validID(project) {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.cfg.Catalog.Authorize(r.Context(), actor, project, catalog.ManageProject); err != nil {
+		fail(w, err)
+		return
+	}
+	if s.cfg.Repositories == nil {
+		http.Error(w, "Repository access unavailable.", 503)
+		return
+	}
+	if r.Method == http.MethodGet {
+		run := r.URL.Query().Get("run_id")
+		if run == "" || len(run) > 256 {
+			http.Error(w, "Run ID is required.", 400)
+			return
+		}
+		result, err := s.cfg.Repositories.Publications(r.Context(), actor, project, run)
+		if err != nil {
+			repositoryFailure(w, err)
+			return
+		}
+		write(w, 200, result)
+		return
+	}
+	id := r.PathValue("publication")
+	if !validID(id) {
+		http.NotFound(w, r)
+		return
+	}
+	result, err := s.cfg.Repositories.Reconcile(r.Context(), actor, project, id)
+	if err != nil {
+		repositoryFailure(w, err)
+		return
+	}
+	write(w, 200, result)
 }

@@ -264,6 +264,15 @@ func TestRepositorySourceProvenanceIsImmutable(t *testing.T) {
 	if err != nil || replay.ID != result.ID {
 		t.Fatalf("replay: %+v %v", replay, err)
 	}
+	if recovered, found, err := s.ReplayRepository(ctx, owner.ID, project.ID, key, 42, origin.CommitSHA); err != nil || !found || recovered.ID != result.ID {
+		t.Fatalf("protected replay: %+v %v %v", recovered, found, err)
+	}
+	if _, found, err := s.ReplayRepository(ctx, owner.ID, project.ID, uuid.NewString(), 42, origin.CommitSHA); err != nil || found {
+		t.Fatal("foreign key recovered source")
+	}
+	if _, _, err := s.ReplayRepository(ctx, "foreign", project.ID, key, 42, origin.CommitSHA); err == nil {
+		t.Fatal("foreign actor recovered source")
+	}
 	origin.CommitSHA = strings.Repeat("c", 40)
 	if _, err = s.ImportRepository(ctx, owner.ID, project.ID, key, origin, bytes.NewReader(data)); err == nil {
 		t.Fatal("changed provenance accepted")

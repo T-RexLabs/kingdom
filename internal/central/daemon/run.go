@@ -16,6 +16,9 @@ import (
 	"kingdom/internal/central/hostedbuilder"
 	"kingdom/internal/central/modelcatalog"
 	"kingdom/internal/central/modelproxy"
+	"kingdom/internal/central/repositories"
+	"kingdom/internal/central/resultsource"
+	centralserver "kingdom/internal/central/server"
 	"kingdom/internal/central/sources"
 	"kingdom/internal/execution/openshell/worker"
 	webui "kingdom/web"
@@ -69,9 +72,32 @@ func Run(ctx context.Context, path string, out io.Writer) error {
 				defer cancel()
 				return application.ProjectServices{}, errors.Join(e, models.Close(cleanup), inputs.Close())
 			}
-			return application.ProjectServices{Build: builder.Build, Workers: http.HandlerFunc(builder.Workers), Models: models, Sources: inputs, Close: func(ctx context.Context) error {
+			var repositoryService *repositories.Service
+			var repositoryClient *repositories.Client
+			if c.repositories != nil {
+				repositoryClient, e = repositories.NewClient(*c.repositories)
+				if e == nil {
+					var results *resultsource.Service
+					results, e = resultsource.New(shared.Catalog, shared.Sessions, shared.ProjectFactory)
+					if e == nil {
+						repositoryService, e = repositories.New(ctx, shared.CatalogDB, shared.Catalog, repositoryClient, inputs, results)
+					}
+				}
+				if e != nil {
+					if repositoryClient != nil {
+						repositoryClient.Close()
+					}
+					cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					return application.ProjectServices{}, errors.Join(e, models.Close(cleanup), inputs.Close())
+				}
+			}
+			return application.ProjectServices{Build: builder.Build, Workers: http.HandlerFunc(builder.Workers), Models: models, Sources: inputs, Repositories: repositoryHTTP(repositoryService), Close: func(ctx context.Context) error {
 				if e := models.Close(ctx); e != nil {
 					return e
+				}
+				if repositoryClient != nil {
+					repositoryClient.Close()
 				}
 				return inputs.Close()
 			}}, nil
@@ -127,4 +153,11 @@ func serve(ctx context.Context, listener net.Listener, configuration *tls.Config
 		serveErr = nil
 	}
 	return errors.Join(serveErr, shutdownErr, <-closed)
+}
+
+func repositoryHTTP(service *repositories.Service) centralserver.ProjectRepositories {
+	if service == nil {
+		return nil
+	}
+	return service
 }

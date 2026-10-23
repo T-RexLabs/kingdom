@@ -44,11 +44,12 @@ type Shared struct {
 	RequestKey func(string) ([]byte, error)
 }
 type ProjectServices struct {
-	Build   projects.Builder
-	Workers http.Handler
-	Models  centralserver.ModelDiscovery
-	Sources centralserver.ProjectSources
-	Close   func(context.Context) error
+	Build        projects.Builder
+	Workers      http.Handler
+	Models       centralserver.ModelDiscovery
+	Sources      centralserver.ProjectSources
+	Repositories centralserver.ProjectRepositories
+	Close        func(context.Context) error
 }
 type Config struct {
 	DataRoot, PublicOrigin string
@@ -160,7 +161,7 @@ func New(ctx context.Context, c Config) (result *Application, err error) {
 	if a.projects, err = projects.New(projects.Config{Build: services.Build, StartupTimeout: c.StartupTimeout, MaxProjects: c.MaxProjects}); err != nil {
 		return nil, err
 	}
-	server, e := centralserver.New(centralserver.Config{Sessions: a.sessions, Login: login, Catalog: centralCatalog, Connections: vault, ProjectFactory: a.projects.Factory, Models: services.Models, Sources: services.Sources})
+	server, e := centralserver.New(centralserver.Config{Sessions: a.sessions, Login: login, Catalog: centralCatalog, Connections: vault, ProjectFactory: a.projects.Factory, Models: services.Models, Sources: services.Sources, Repositories: services.Repositories})
 	if e != nil {
 		return nil, e
 	}

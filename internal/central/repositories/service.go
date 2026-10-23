@@ -14,6 +14,7 @@ import (
 )
 
 type SourceImporter interface {
+	ReplayRepository(context.Context, string, string, string, int64, string) (sources.Metadata, bool, error)
 	ImportRepository(context.Context, string, string, string, sources.RepositoryOrigin, io.Reader) (sources.Metadata, error)
 }
 type Service struct {
@@ -22,6 +23,7 @@ type Service struct {
 	client  *Client
 	sources SourceImporter
 	slots   chan struct{}
+	results ResultSource
 }
 type RepositoryStatus struct {
 	Available    bool  `json:"available"`
@@ -29,11 +31,11 @@ type RepositoryStatus struct {
 	CanPublish   bool  `json:"can_publish"`
 }
 
-func New(ctx context.Context, db *sql.DB, authority *catalog.Store, client *Client, source SourceImporter) (*Service, error) {
+func New(ctx context.Context, db *sql.DB, authority *catalog.Store, client *Client, source SourceImporter, results ResultSource) (*Service, error) {
 	if db == nil || authority == nil || client == nil || source == nil {
 		return nil, ErrInvalid
 	}
-	s := &Service{db: db, catalog: authority, client: client, sources: source, slots: make(chan struct{}, 4)}
+	s := &Service{db: db, catalog: authority, client: client, sources: source, results: results, slots: make(chan struct{}, 4)}
 	tx, err := s.write(ctx)
 	if err != nil {
 		return nil, err
@@ -48,8 +50,14 @@ func New(ctx context.Context, db *sql.DB, authority *catalog.Store, client *Clie
 		return nil, err
 	}
 	var version int
-	if err = tx.QueryRowContext(ctx, `SELECT version FROM central_repository_schema WHERE slot=1`).Scan(&version); err != nil || version != 1 {
+	if err = tx.QueryRowContext(ctx, `SELECT version FROM central_repository_schema WHERE slot=1`).Scan(&version); err != nil || (version != 1 && version != 2) {
 		return nil, ErrInvalid
+	}
+	if err = publicationSchema(ctx, tx); err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE central_repository_schema SET version=2 WHERE slot=1 AND version=1`); err != nil {
+		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
@@ -72,7 +80,7 @@ func (s *Service) Status(ctx context.Context, actor, project string) (Repository
 		return RepositoryStatus{}, err
 	}
 	g, ok := s.client.Grant(project)
-	return RepositoryStatus{ok, g.RepositoryID, g.Publish}, nil
+	return RepositoryStatus{ok, g.RepositoryID, g.Publish && s.catalog.Authorize(ctx, actor, project, catalog.ManageProject) == nil}, nil
 }
 func (s *Service) importOperation(ctx context.Context, actor, project, key, ref, commit string) (id, pinned string, err error) {
 	g, ok := s.client.Grant(project)
@@ -143,6 +151,10 @@ func (s *Service) Import(ctx context.Context, actor, project, key, ref string) (
 		if err != nil {
 			return sources.Metadata{}, err
 		}
+	}
+	grant, _ := s.client.Grant(project)
+	if result, found, err := s.sources.ReplayRepository(ctx, actor, project, id, grant.RepositoryID, commit); err != nil || found {
+		return result, err
 	}
 	file, err := os.CreateTemp("", "kingdom-repository-import-")
 	if err != nil {

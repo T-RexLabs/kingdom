@@ -85,6 +85,7 @@ Build it with `make build-central`, then follow the
 configuration. Full hosted deployment acceptance is still in progress.
 Add a new project's initial ZIP archive or file in the portal before you first
 open the project. See [initial project files](docs/central-project-input.md).
+An operator can also enable [GitHub repository imports and explicit result publication](docs/central-repositories.md) with a separate repository App.
 
 The local `kd init` and `kd summon` workflow does not require the central service
 or OpenShell.

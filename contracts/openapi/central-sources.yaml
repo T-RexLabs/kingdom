@@ -126,9 +126,101 @@ paths:
               schema: {$ref: '#/components/schemas/Source'}
         '400': {description: Invalid or unsupported repository input.}
         '401': {description: Session required.}
-        '403': {description: Project-owner, repository grant, or CSRF authorization denied.}
+        '403': {description: 'Project-owner, repository grant, or CSRF authorization denied.'}
         '409': {description: Initial input fixed or retry payload conflict.}
         '503': {description: Outcome unavailable; retain the exact retry request.}
+  /api/central/v1/projects/{project}/repository/publish:
+    parameters:
+      - $ref: '#/components/parameters/Project'
+    post:
+      operationId: publishProjectResult
+      summary: Publish a Verified Result to GitHub
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, format: uuid}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [run_id, base_branch, title, body]
+              properties:
+                run_id: {type: string, minLength: 1}
+                base_branch: {type: string, minLength: 1, maxLength: 200}
+                title: {type: string, minLength: 1, maxLength: 200}
+                body: {type: string, maxLength: 8192}
+      responses:
+        '200':
+          description: Published or no file changes.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Publication'}
+        '202':
+          description: Saved submission remains pending.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Publication'}
+        '400': {description: Invalid or unsupported result.}
+        '401': {description: Session required.}
+        '403': {description: 'Project-owner, publication grant, or CSRF denied.'}
+        '409': {description: Request identity or upstream baseline conflict.}
+        '503': {description: Outcome unconfirmed; recover the saved request.}
+  /api/central/v1/projects/{project}/repository/publications:
+    parameters:
+      - $ref: '#/components/parameters/Project'
+    get:
+      operationId: listResultPublications
+      summary: List Your Saved Result Publications
+      parameters:
+        - name: run_id
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 256}
+      responses:
+        '200':
+          description: At most 100 actor-owned publication records for this run.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Publication'}
+        '400': {description: Run ID required.}
+        '401': {description: Session required.}
+        '403': {description: Project-owner access denied.}
+        '503': {description: Repository service unavailable.}
+  /api/central/v1/projects/{project}/repository/publications/{publication}/reconcile:
+    parameters:
+      - $ref: '#/components/parameters/Project'
+      - name: publication
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: reconcileResultPublication
+      summary: Recover Your Saved Publication
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Current exact publication outcome.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Publication'}
+        '401': {description: Session required.}
+        '403': {description: 'Actor, project-owner, publication grant, or CSRF denied.'}
+        '409': {description: Retained request or upstream baseline conflict.}
+        '503': {description: Outcome remains unconfirmed.}
 components:
   securitySchemes:
     session: {type: apiKey, in: cookie, name: __Host-kingdom-session}
@@ -139,6 +231,15 @@ components:
       required: true
       schema: {type: string, format: uuid}
   schemas:
+    Publication:
+      type: object
+      required: [state]
+      properties:
+        id: {type: string, format: uuid}
+        state: {type: string, enum: [pending, published, unchanged]}
+        branch: {type: string}
+        pull_request: {type: integer, format: int64, minimum: 1}
+        url: {type: string, format: uri}
     Source:
       type: object
       required: [id, kind, files, bytes, sha256]

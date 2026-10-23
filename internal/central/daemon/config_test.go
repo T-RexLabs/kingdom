@@ -5,12 +5,15 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"github.com/google/uuid"
+	"kingdom/internal/central/repositories"
 	"math/big"
 	"net"
 	"net/http"
@@ -211,5 +214,40 @@ func TestListenerCancelsApplicationWhileDrainingHTTPAndReportsCleanupFailure(t *
 	}
 	if e := <-response; e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestRepositoryAppUsesSeparatePrivateKeyAndExplicitProjectGrant(t *testing.T) {
+	path, f := fixture(t)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filename := filepath.Join(filepath.Dir(path), "repository.pem")
+	raw := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	raw = append(raw, '\n')
+	if err = os.WriteFile(filename, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	project := uuid.NewString()
+	f.RepositoryApp = &repositoryAppConfig{AppID: 123, PrivateKeyFile: "repository.pem", Grants: []repositories.Grant{{ProjectID: project, InstallationID: 456, RepositoryID: 789, Publish: true}}}
+	writeConfig(t, path, f)
+	configured, err := load(path)
+	if err != nil || configured.repositories == nil || configured.repositories.Grants[0].RepositoryID != 789 || configured.github.ClientSecret != "private-client-secret" {
+		t.Fatalf("repository config: %v", err)
+	}
+	clear(configured.key)
+	f.RepositoryApp.Grants[0].ProjectID = "caller-path"
+	writeConfig(t, path, f)
+	if _, err = load(path); !errors.Is(err, ErrConfiguration) {
+		t.Fatal("invalid project grant accepted")
+	}
+	f.RepositoryApp.Grants[0].ProjectID = project
+	writeConfig(t, path, f)
+	if err = os.Chmod(filename, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = load(path); !errors.Is(err, ErrConfiguration) {
+		t.Fatal("public repository private key accepted")
 	}
 }
