@@ -195,3 +195,19 @@ func TestPublishedResultDeltaRetainsBaselineAndExcludesUnchangedFiles(t *testing
 		t.Fatal("deleted file opened from result")
 	}
 }
+
+func TestPublishedResultRejectsForeignRunAncestor(t *testing.T) {
+	s, _ := publishedResultFixture(t)
+	if _, err := s.db.Exec(`INSERT INTO workflow_runs(run_id,work_order_id,workflow_definition_id,run_status,plan_state,created_at,updated_at) VALUES('foreign-run','work_order_runtimefs','wfdef_runtimefs','succeeded','approved','2026-10-23T00:00:00Z','2026-10-23T00:00:00Z');
+ INSERT INTO filesystem_snapshots(snapshot_id,run_id,snapshot_kind,created_at) VALUES('foreign-parent','foreign-run','baseline','2026-10-23T00:00:00Z');
+ UPDATE filesystem_snapshots SET parent_snapshot_id='foreign-parent' WHERE snapshot_id='published-snapshot'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Resolve(context.Background(), "published-run"); err == nil {
+		t.Fatal("foreign-run ancestor accepted")
+	}
+	if reader, err := s.Open(context.Background(), "published-run", "published-snapshot", "src/input.txt"); err == nil {
+		reader.Close()
+		t.Fatal("foreign-run lineage opened")
+	}
+}

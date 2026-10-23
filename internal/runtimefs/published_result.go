@@ -40,6 +40,12 @@ func (s *Store) Resolve(ctx context.Context, run string) (publishedresult.Result
 	if err != nil {
 		return publishedresult.ResultSnapshot{}, err
 	}
+	if _, err = s.publicationLineage(ctx, run, selection.source); err != nil {
+		return publishedresult.ResultSnapshot{}, err
+	}
+	if _, err = s.publicationLineage(ctx, run, selection.published); err != nil {
+		return publishedresult.ResultSnapshot{}, err
+	}
 	before, err := s.OpenSnapshotManifest(ctx, selection.source)
 	if err != nil {
 		return publishedresult.ResultSnapshot{}, publishedresult.ErrUnavailable
@@ -124,7 +130,7 @@ func (s *Store) Open(ctx context.Context, run, snapshot, path string) (io.ReadCl
 	if err != nil || (snapshot != selection.published && snapshot != selection.source) || !fs.ValidPath(path) || path == "." {
 		return nil, publishedresult.ErrUnavailable
 	}
-	lineage, err := s.snapshotLineage(ctx, snapshot)
+	lineage, err := s.publicationLineage(ctx, run, snapshot)
 	if err != nil {
 		return nil, publishedresult.ErrUnavailable
 	}
@@ -160,6 +166,20 @@ func (s *Store) Open(ctx context.Context, run, snapshot, path string) (io.ReadCl
 		}
 		return nil
 	}), nil
+}
+
+func (s *Store) publicationLineage(ctx context.Context, run, snapshot string) ([]string, error) {
+	lineage, err := s.snapshotLineage(ctx, snapshot)
+	if err != nil {
+		return nil, publishedresult.ErrUnavailable
+	}
+	for _, id := range lineage {
+		var owner string
+		if err := s.db.QueryRowContext(ctx, `SELECT run_id FROM filesystem_snapshots WHERE snapshot_id=?`, id).Scan(&owner); err != nil || owner != run {
+			return nil, publishedresult.ErrUnavailable
+		}
+	}
+	return lineage, nil
 }
 func publishedFile(e SnapshotEntry) publishedresult.ResultFile {
 	mode := uint32(0644)
