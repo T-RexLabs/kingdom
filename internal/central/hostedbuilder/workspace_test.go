@@ -63,12 +63,12 @@ func TestWorkspaceReplayKeepsIdentityAndRejectsDatabaseReplacement(t *testing.T)
 	if _, e := workspace(ctx, db, f, id, "gateway", "db-instance", now); e == nil {
 		t.Fatal("lost reply accepted")
 	}
-	first := *f.request
+	firstName, firstRequestID := f.request.Name, f.request.RequestId
 	m, e := workspace(ctx, db, f, id, "gateway", "db-instance", now.Add(time.Minute))
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(m.Name) > 19 || m.Name != first.Name || m.RequestID != first.RequestId || f.creates != 2 {
+	if len(m.Name) > 19 || m.Name != firstName || m.RequestID != firstRequestID || f.creates != 2 {
 		t.Fatal("changed replay")
 	}
 	if _, e = workspace(ctx, db, f, id, "gateway", "db-instance", now.Add(48*time.Hour)); e != nil || f.creates != 2 || f.gets != 1 {
