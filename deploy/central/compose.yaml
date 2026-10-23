@@ -1,0 +1,27 @@
+services:
+  central:
+    build:
+      context: ../..
+      dockerfile: deploy/central/Dockerfile
+    image: kingdom-central:local
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 90s
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - type: bind
+        source: ./config
+        target: /etc/kingdom
+        read_only: true
+      - type: volume
+        source: state
+        target: /var/lib/kingdom
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+
+volumes:
+  state:

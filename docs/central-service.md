@@ -20,6 +20,8 @@ bin/kingdom-central --config /etc/kingdom/service.json
 
 Use `make install-central` to install the command with Go. The web app is embedded
 in the command. A separate web development server is not required.
+For the container build and single-host Compose example, see the
+[container guide](../deploy/central/README.md).
 
 The service requires HTTPS, a 32-byte master key, and at least one login
 provider. The master key is raw binary, not hexadecimal text. Keep a protected
