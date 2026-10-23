@@ -76,6 +76,17 @@ Connect GitHub to bring issues into Planning or a new Work Order. Pick a persona
 * [Set Up GitHub Connections](docs/github%2Dconnections%2Drunbook.md)
 * [Explore Themes and Appearance](docs/themes.md)
 
+## Shared Service
+
+The separate `kingdom-central` command adds login, shared projects, and private
+model connections. Managed workers use the Kingdom profile for OpenShell.
+Build it with `make build-central`, then follow the
+[central service guide](docs/central-service.md) for HTTPS, identity, and worker
+configuration. Full hosted deployment acceptance is still in progress.
+
+The local `kd init` and `kd summon` workflow does not require the central service
+or OpenShell.
+
 <h2 id="contribute">Build With Us</h2>
 
 Kingdom is built with Go and TypeScript/React. From the repository root:

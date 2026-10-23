@@ -34,7 +34,7 @@ KD_GO_SOURCES := $(shell find cmd internal web -type f -name '*.go' ! -name '*_t
 BOOTSTRAP_ASSETS := $(shell find internal/bootstrapassets/files -type f)
 DB_MIGRATIONS := $(shell find internal/dbmigrations -maxdepth 1 -type f -name '*.sql')
 
-.PHONY: help install build dev-web test test-plugin test-web lint-web test-race test-integration test-e2e test-github-smoke test-opencode-security-smoke vet coverage-core scripts-check verify contracts-generate contracts-check openapi-lint tool-versions
+.PHONY: help install install-central build build-central dev-web test test-plugin test-web lint-web test-race test-integration test-e2e test-github-smoke test-opencode-security-smoke vet coverage-core scripts-check verify contracts-generate contracts-check openapi-lint tool-versions
 
 ##@ Setup and Build
 help: ## Show supported make targets
@@ -43,6 +43,13 @@ help: ## Show supported make targets
 install: $(WEB_DIST_INDEX) ## Install `kd` with the embedded web UI
 	$(GO) install ./cmd/kd
 	@printf 'Installed kd to %s\nNext steps:\n  export PATH="$$PATH:%s"\n  kd init\n  kd summon\nPrerequisite: ensure opencode is installed and authenticated.\n' "$(GOBIN)" "$(GOBIN)"
+
+install-central: $(WEB_DIST_INDEX) ## Install the central service command
+	$(GO) install ./cmd/kingdom-central
+
+build-central: $(WEB_DIST_INDEX) ## Build the central service command
+	@mkdir -p bin
+	$(GO) build -o bin/kingdom-central ./cmd/kingdom-central
 
 build: $(KD_BINARY) ## Build the local `kd` binary into `bin/`
 

@@ -20,6 +20,8 @@ The hosted foundations can bind a project database to one central project. A hos
 
 Hosted project assembly owns its database and private runtime files, while central authentication, credentials, and capability registry remain shared. Each project database incarnation has one immutable native workspace mapping in the central catalog; a lost database or expired uncertain creation cannot reuse that workspace's allocation namespace. Worker routes are fixed, project-scoped HTTPS endpoints authenticated by invocation capabilities, and are installed before project consumers start. Failed cleanup retains the runtime and database for retry. Hosted workspace capabilities omit host filesystem paths. This assembly preserves the hosted activation gate.
 
+The separate `kingdom-central` entrypoint owns HTTPS, login, the project portal, and shared project runtime lifetimes. Server-injected metadata selects central or project UI routing; browser input cannot select a host directory or grant access. The project API authenticator checks current membership and retains the requesting actor on each operation. Central shutdown cancels sessions and project consumers before it joins model discovery and closes the capability registry or catalog. A failed close retains shared state for retry. The local `kd` entrypoint remains independent of central credentials, login, and OpenShell installation.
+
 ## How Work Moves
 
 Planning is a separate workspace where an operator can shape a task before making a Work Order. It is optional. A Work Order can also be created directly. A planner turn that fails stays in the conversation as a failed reply with its reason; the planner never sees it, and retrying it adds a new reply beside it.
