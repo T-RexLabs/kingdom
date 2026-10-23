@@ -64,6 +64,7 @@ type executionRuntime struct {
 	settleLimit time.Duration
 	commands    executionCommands
 	recoverFor  func(context.Context, providerexecution.RequestIdentity) error
+	lifecycle   executionLifecycle
 }
 type executionCommands interface {
 	register(providerexecution.RequestIdentity, *commandRegistration) error
@@ -72,7 +73,7 @@ type executionCommands interface {
 }
 
 func (r *requestRuntime) executionRuntime() *executionRuntime {
-	return &executionRuntime{authority: r.authority, settleLimit: r.settleLimit, commands: r.commands, recoverFor: r.recoverFor}
+	return &executionRuntime{authority: r.authority, settleLimit: r.settleLimit, commands: r.commands, recoverFor: r.recoverFor, lifecycle: localExecutionLifecycle{}}
 }
 
 type execution struct {
@@ -101,7 +102,7 @@ func (e *execution) execute(ctx context.Context) (response ExecuteResponse, err 
 	defer func() {
 		retire, cancel := e.bounded(ctx)
 		defer cancel()
-		if err := retireProfile(retire, e.client(), e.request.directory, e.request.profile.id); err != nil {
+		if err := runtime.lifecycle.retire(retire, e); err != nil {
 			slog.Warn("OpenCode profile retirement deferred", "profile_id", e.request.profile.id, "error", err)
 		}
 		// Only a session that ended in a proven success can be continued.
@@ -168,6 +169,9 @@ func (e *execution) execute(ctx context.Context) (response ExecuteResponse, err 
 func (e *execution) abandon(ctx context.Context, cause error) (ExecuteResponse, error) {
 	fence, cancel := e.bounded(ctx)
 	defer cancel()
+	if err := e.runtime.lifecycle.close(fence); err != nil {
+		return ExecuteResponse{}, errors.Join(cause, err)
+	}
 	if err := e.runtime.authority.Abandon(fence, e.identity()); err != nil {
 		return ExecuteResponse{}, errors.Join(cause, err)
 	}
@@ -401,6 +405,16 @@ func (e *execution) finalize(ctx context.Context, invokedAt string) (ExecuteResp
 	if err := runtime.authority.CheckTerminal(ctx, identity, verified.Terminal); err != nil {
 		_ = os.Remove(textContent.Path)
 		return e.reject(ctx, "check OpenCode terminal evidence", err, eventsContent, messagesContent)
+	}
+	if err := runtime.lifecycle.close(ctx); err != nil {
+		discard()
+		return ExecuteResponse{}, fmt.Errorf("close provider resources: %w", err)
+	}
+	if e.outcome(verified.Terminal, verified.Provider).State == "success" && e.cause == stopNone && commandErr == nil {
+		if err := runtime.lifecycle.export(ctx); err != nil {
+			_ = os.Remove(textContent.Path)
+			return e.reject(ctx, "retain provider workspace", err, eventsContent, messagesContent)
+		}
 	}
 	return e.response(ctx, verified, eventsContent, messagesContent, textContent, invokedAt, commandErr)
 }
