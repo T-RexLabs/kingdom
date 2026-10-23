@@ -107,7 +107,10 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 	if cleanRoot == "" {
 		return nil, fmt.Errorf("runtime fs root is required")
 	}
-	cleanRoot = filepath.Clean(cleanRoot)
+	cleanRoot, err := filepath.Abs(cleanRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve runtime fs root: %w", err)
+	}
 	blobRoot := filepath.Join(cleanRoot, "snapshot-blobs")
 	tempRoot := filepath.Join(cleanRoot, "snapshot-tmp")
 	for _, path := range []string{cleanRoot, blobRoot, tempRoot} {
