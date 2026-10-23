@@ -24,8 +24,23 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOMAXPROCS=2 go build -p=2 -trimpath -o /out/kingdom-central ./cmd/kingdom-central
 RUN mkdir -p /out/state && chmod 0700 /out/state
 
+# Keep the account owner on the exact OpenCode release used by managed workers.
+# Copy only the ELF and its musl dependencies; the final image has no shell.
+FROM ghcr.io/anomalyco/opencode@sha256:08481eba3f9e6dbcc4b4bee9e399cd7abe384ebee12b849f0223ff41923344e0 AS account-runtime
+ARG TARGETARCH
+RUN test "$TARGETARCH" = arm64 && \
+    echo "5eb186fb0a84a6dc4df26dbc470ba31f5dd560c7f00ce6e0c6b91df01eb9dea4  /usr/local/bin/opencode" | sha256sum -c - && \
+    mkdir -p /account-runtime && \
+    cp -L /lib/ld-musl-aarch64.so.1 /account-runtime/ld-musl-aarch64.so.1 && \
+    cp -L /usr/lib/libstdc++.so.6 /account-runtime/libstdc++.so.6 && \
+    cp -L /usr/lib/libgcc_s.so.1 /account-runtime/libgcc_s.so.1
+
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=backend /out/kingdom-central /usr/local/bin/kingdom-central
+COPY --from=account-runtime --chmod=0555 /usr/local/bin/opencode /usr/local/bin/opencode
+COPY --from=account-runtime --chmod=0555 /account-runtime/ld-musl-aarch64.so.1 /lib/ld-musl-aarch64.so.1
+COPY --from=account-runtime --chmod=0555 /account-runtime/libstdc++.so.6 /usr/lib/libstdc++.so.6
+COPY --from=account-runtime --chmod=0555 /account-runtime/libgcc_s.so.1 /usr/lib/libgcc_s.so.1
 # Preserve the private directory mode when Docker initializes a state volume.
 COPY --from=backend --chown=65532:65532 --chmod=0700 /out/state /var/lib/kingdom
 USER 65532:65532

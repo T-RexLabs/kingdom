@@ -126,12 +126,47 @@ durable work after settlement.
 
 ## Model Connections
 
-Users can add personal API keys. A team owner can add team keys. The portal
-does not store keys in browser storage or return them after creation. Replacing
-a key creates an immutable revision. Planning and runs retain the exact revision
-they selected, and dispatch checks current access again.
+Choose API Key or Personal Account in Model Connections. Users can add personal
+API keys or sign in with GitHub Copilot or ChatGPT. A team owner can also add
+team API keys. Personal provider accounts remain available only to their owner;
+a personal subscription is not a team credential. Provider plan limits and
+policies still apply.
 
-The default endpoint policy allows `https://api.openai.com`. Add custom HTTPS
+The portal does not store keys in browser storage or return them after creation.
+Replacing a key creates an immutable revision. Planning and runs retain the exact
+connection revision they selected, and dispatch checks current access again.
+Disconnect prevents further use in Kingdom. The portal reports whether remote
+revocation was confirmed. Reconnect starts a new sign-in and creates a new
+connection; it does not change the credentials of existing work.
+
+GitHub Copilot sign-in displays GitHub's device code and opens its fixed sign-in
+page. A private temporary OpenCode account process owns the native login outside
+the sandbox. It uses a separate account directory and does not read the host's
+OpenCode or GitHub account stores. Kingdom retains the resulting credential in
+its encrypted store. The temporary native files are removed after process
+closure. The container places them on its private `/run/kingdom` volatile mount.
+
+ChatGPT uses a local browser helper and a one-time pairing code. Select ChatGPT,
+enter a connection name, and choose Connect ChatGPT. On a computer with a
+browser and Kingdom installed, run:
+
+```sh
+kd chatgpt attach --service https://kingdom.example
+```
+
+The helper prompts for the pairing code. It creates a dedicated sign-in for the
+central service's host identity and transfers it over HTTPS. Do not put the code
+in command arguments. The browser keeps the code only in memory; after a reload,
+it can check the saved sign-in but cannot restore the code. Cancel and restart
+if the helper was not started. The local default `kd` runtime continues to use
+its existing OpenCode setup.
+
+The model proxy resolves account credentials outside the OpenShell workload.
+Workers receive only invocation capabilities. The exact catalog model selects
+Chat Completions, Responses, or Anthropic Messages; model names do not select
+protocols. After sign-in, choose a project and refresh its models.
+
+The default API-key endpoint policy allows `https://api.openai.com`. Add custom HTTPS
 origins with `model_origins`; private addresses require explicit CIDR allowances.
 Use `provider_ca_file` to append a private CA to the system trust store for model
 requests. Custom providers also require exact `model_profiles`; Kingdom does
@@ -162,5 +197,7 @@ Controlled checks cover hosted planning and workflows, file and ZIP inputs,
 container startup and restart, and optional local OpenShell execution. Repository
 protocol tests cover import, result deltas, and uncertain publication recovery.
 These checks use synthetic providers; they do not qualify real account consent,
-a live repository App, or a production deployment. The optional local
-[ChatGPT connection](chatgpt-local-connection.md) remains a local-owner preview.
+a live repository App, or a production deployment. Real provider consent,
+account entitlements, and remote revocation need checks with the deployed
+provider account. See the [ChatGPT connection guide](chatgpt-local-connection.md)
+for the local owner flow.

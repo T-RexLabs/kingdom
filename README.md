@@ -79,7 +79,9 @@ Connect GitHub to bring issues into Planning or a new Work Order. Pick a persona
 ## Shared Service
 
 The separate `kingdom-central` command adds login, shared projects, and private
-model connections. Managed workers use the Kingdom profile for OpenShell.
+model connections. Choose an API key or sign in with your personal GitHub
+Copilot or ChatGPT account. Personal accounts stay private to their owner.
+Managed workers use the Kingdom profile for OpenShell.
 [Optional local OpenShell](docs/local-openshell.md) can use API keys or a
 [Kingdom-owned ChatGPT connection](docs/chatgpt-local-connection.md).
 Build it with `make build-central`, then follow the

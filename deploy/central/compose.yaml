@@ -3,6 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/central/Dockerfile
+      platforms: [linux/arm64]
     image: kingdom-central:local
     restart: unless-stopped
     init: true
@@ -22,6 +23,8 @@ services:
         target: /var/lib/kingdom
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+      # Temporary native account stores never enter the durable state volume.
+      - /run/kingdom:rw,noexec,nosuid,nodev,size=128m,mode=0700,uid=65532,gid=65532
 
 volumes:
   state:

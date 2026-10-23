@@ -1,9 +1,18 @@
 # Central Service Containers
 
-The central image includes the Go service and web app. It does not need Go,
-Node, OpenCode, or a shell at runtime. It runs as UID/GID `65532:65532`. The
-Compose example uses a read-only root filesystem, drops Linux capabilities,
-and mounts a separate private state volume. It does not mount the Docker socket.
+The central image includes the Go service, web app, and pinned OpenCode 2.0.30
+account owner. It does not need Go, Node, or a shell at runtime. It runs as
+UID/GID `65532:65532`. The Compose example uses a read-only root filesystem,
+drops Linux capabilities, and mounts a separate private state volume. It does
+not mount the Docker socket.
+
+Personal GitHub Copilot sign-in uses a temporary OpenCode process outside the
+workload sandbox. Its private native account store is on the `/run/kingdom`
+`tmpfs` mount. The mount has mode `0700`, owner `65532:65532`, and a size limit
+of `128m`. It is not executable. Credentials retained by Kingdom are encrypted
+in the durable central store. Native account files are removed only after the
+owned process has stopped. Do not replace this mount with a durable shared
+folder or a host account directory.
 
 The managed gateway and worker run separately on the same Docker host. Follow
 the [managed OpenShell build guide](../../experiments/openshell-managed-commands/README.md)
@@ -15,7 +24,7 @@ cannot satisfy the managed execution contract.
 From the repository root:
 
 ```sh
-docker build -f deploy/central/Dockerfile -t kingdom-central:local .
+docker build --platform linux/arm64 -f deploy/central/Dockerfile -t kingdom-central:local .
 docker build --platform linux/arm64 -f deploy/central/Dockerfile.worker \
   -t kingdom-provider-worker:local .
 ```
@@ -27,10 +36,12 @@ Dependency downloads are not a claim of byte-for-byte reproducible output.
 Record the actual built image and executable digests for deployment.
 
 The worker contains OpenCode 2.0.30, the Kingdom plugin, the fixed provider
-launcher, and the confined file/workspace helpers. The reviewed managed
-boundary and this OpenCode base are ARM64 artifacts. The worker build rejects
-other target architectures. Other architectures require matching artifacts
-and their own live acceptance.
+launcher, and the confined file/workspace helpers. The central account owner
+uses the same pinned OpenCode ELF and its three required musl runtime libraries.
+The central image does not include the base image's shell or package manager.
+The reviewed managed boundary and this OpenCode base are ARM64 artifacts. Both
+builds reject other target architectures. Other architectures require matching
+artifacts and their own live acceptance.
 
 Extract helper and OpenCode binaries from a stopped worker container, then
 compute their SHA-256 digests. Use those values and the immutable worker image
@@ -50,9 +61,17 @@ and listen settings inside the container:
   "data_root": "/var/lib/kingdom",
   "master_key_file": "/etc/kingdom/secrets/master.key",
   "tls_certificate_file": "/etc/kingdom/tls/server.crt",
-  "tls_key_file": "/etc/kingdom/tls/server.key"
+  "tls_key_file": "/etc/kingdom/tls/server.key",
+  "personal_accounts": {
+    "opencode_binary": "/usr/local/bin/opencode",
+    "runtime_root": "/run/kingdom/accounts"
+  }
 }
 ```
+
+The `personal_accounts` values shown are the container defaults. Keep the
+runtime root on the private volatile mount. For a direct host launch, set an
+absolute OpenCode V2 binary path and a private volatile runtime location.
 
 Merge those fields into the complete version 1 configuration, including login,
 initial owner, and worker pins. The master key must contain exactly 32 random
@@ -89,9 +108,11 @@ single process owner.
 
 ## Verification Scope
 
-The ARM64 central image passed HTTPS startup, embedded portal routing,
-unauthenticated session denial, restart with retained state, and clean exit
-under the Compose security restrictions. This verifies the package entrypoint.
-It does not qualify a complete production deployment or another architecture.
-Worker images require live execution, confinement, closure, and disposal
-checks with their exact built pins.
+Check HTTPS startup, embedded portal routing, unauthenticated session denial,
+restart with retained state, and clean exit under the Compose restrictions.
+Also start the pinned private account process and check its model/integration
+APIs under those restrictions. Check that its native store is on the private
+volatile mount and is removed after process closure. These package checks do
+not qualify real provider consent, a production deployment, or another
+architecture. Worker images require live execution, confinement, closure,
+and disposal checks with their exact built pins.
