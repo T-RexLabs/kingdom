@@ -31,11 +31,23 @@ type Authorizer interface {
 
 // Route is selected by trusted metadata resolution, never an HTTP client.
 type Route = capability.Route
+
+const (
+	ProtocolOpenAI          = capability.ProtocolOpenAI
+	ProtocolOpenAIResponses = capability.ProtocolOpenAIResponses
+	ProtocolOpenAIChat      = capability.ProtocolOpenAIChat
+	ProtocolOpenAIChatGPT   = capability.ProtocolOpenAIChatGPT
+	ProtocolAnthropic       = capability.ProtocolAnthropic
+)
+
 type Resolver interface {
 	Pin(context.Context, Binding) (Route, error)
 	Resolve(context.Context, Binding, Route) (Credential, error)
 }
-type Credential struct{ token string }
+type Credential struct {
+	token   string
+	copilot bool
+}
 
 func (c Credential) String() string               { return "[credential]" }
 func (c Credential) GoString() string             { return "[credential]" }
@@ -50,6 +62,17 @@ func NewBearerCredential(token string) (Credential, error) {
 		}
 	}
 	return Credential{token: token}, nil
+}
+
+// NewCopilotCredential binds the fixed Copilot request profile to a trusted
+// credential resolution. Neither callers nor model bodies provide headers.
+func NewCopilotCredential(token string) (Credential, error) {
+	credential, err := NewBearerCredential(token)
+	if err != nil {
+		return Credential{}, err
+	}
+	credential.copilot = true
+	return credential, nil
 }
 
 type Lease struct {

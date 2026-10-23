@@ -143,3 +143,19 @@ func TestLauncherModelMatchesCanonicalProviderAndProxyModel(t *testing.T) {
 		}
 	}
 }
+
+func TestLauncherNativeProtocolComesOnlyFromTrustedLease(t *testing.T) {
+	for protocol, want := range map[string]string{
+		"openai": "chat_completions", "openai_chat": "chat_completions", "openai_responses": "responses", "openai_chatgpt": "responses", "anthropic": "messages",
+	} {
+		got, err := launcherModelAPI(protocol)
+		if err != nil || got != want {
+			t.Fatalf("protocol %s: API=%s error=%v", protocol, got, err)
+		}
+	}
+	for _, protocol := range []string{"", "github-copilot", "claude-sonnet-4.6", "@opencode/ai/providers/anthropic", "messages"} {
+		if _, err := launcherModelAPI(protocol); !errors.Is(err, remote.ErrConflict) {
+			t.Fatalf("untrusted protocol %q accepted: %v", protocol, err)
+		}
+	}
+}

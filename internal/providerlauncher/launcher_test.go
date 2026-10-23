@@ -337,3 +337,27 @@ func TestResponsesJobSelectsNativeResponsesProvider(t *testing.T) {
 		t.Fatal("untrusted provider API accepted")
 	}
 }
+
+func TestMessagesJobSelectsNativeAnthropicProvider(t *testing.T) {
+	j := job()
+	j.ModelAPI = "messages"
+	if err := j.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	for _, entry := range environment(j) {
+		if strings.HasPrefix(entry, "OPENCODE_CONFIG_CONTENT=") {
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(entry, "OPENCODE_CONFIG_CONTENT=")), &config); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	provider := config["providers"].(map[string]any)[j.ProviderID].(map[string]any)
+	if provider["package"] != "@opencode/ai/providers/anthropic" {
+		t.Fatalf("Messages connection uses %v", provider["package"])
+	}
+	settings := provider["settings"].(map[string]any)
+	if settings["authToken"] != j.ProxyToken || settings["apiKey"] != nil || settings["baseURL"] != j.ProxyURL {
+		t.Fatal("native provider changed scoped credentials")
+	}
+}

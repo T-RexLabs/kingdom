@@ -165,14 +165,9 @@ func (w *Worker) LaunchServer(ctx, lifetime context.Context, p providerrequest.P
 		if e != nil {
 			return nil, e
 		}
-		modelAPI := ""
-		switch model.Protocol {
-		case "openai":
-			modelAPI = providerlauncher.ChatCompletionsAPI
-		case "openai_chatgpt":
-			modelAPI = providerlauncher.ResponsesAPI
-		default:
-			return nil, remote.ErrConflict
+		modelAPI, e := launcherModelAPI(model.Protocol)
+		if e != nil {
+			return nil, e
 		}
 		job := providerlauncher.Job{Version: providerlauncher.JobVersion, ModelAPI: modelAPI, LauncherSHA256: profile.LauncherSHA256, OpenCodeSHA256: profile.OpenCodeSHA256, ControlToken: control, ServerPassword: password, ProxyURL: model.BaseURL, ProxyToken: model.Token(), ProviderID: providerID, ModelID: modelID, CallbackURL: plugin.BaseURL, CallbackToken: plugin.Token(), InstanceID: r.Reference.MainInstanceID, ContextLimit: profile.ContextLimit, OutputLimit: profile.OutputLimit, LifetimeSeconds: int64(profile.Lifetime / time.Second)}
 		spec, e := providerlauncher.Command(job)
@@ -364,4 +359,19 @@ func (s *Server) CloseTransport(ctx context.Context) error {
 		b = s.control.Close(ctx)
 	}
 	return errors.Join(a, b)
+}
+
+// launcherModelAPI uses only the resolver's retained route protocol. Neither a
+// model name nor a workload request can select the executable provider package.
+func launcherModelAPI(protocol string) (string, error) {
+	switch protocol {
+	case modelproxy.ProtocolOpenAI, modelproxy.ProtocolOpenAIChat:
+		return providerlauncher.ChatCompletionsAPI, nil
+	case modelproxy.ProtocolOpenAIChatGPT, modelproxy.ProtocolOpenAIResponses:
+		return providerlauncher.ResponsesAPI, nil
+	case modelproxy.ProtocolAnthropic:
+		return providerlauncher.MessagesAPI, nil
+	default:
+		return "", remote.ErrConflict
+	}
 }

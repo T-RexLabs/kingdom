@@ -37,7 +37,27 @@ type Binding struct {
 	Access      access.Snapshot
 	Request     *providerexecution.RequestIdentity
 }
+
+const (
+	ProtocolOpenAI          = "openai"
+	ProtocolOpenAIResponses = "openai_responses"
+	ProtocolOpenAIChat      = "openai_chat"
+	ProtocolOpenAIChatGPT   = "openai_chatgpt"
+	ProtocolAnthropic       = "anthropic"
+)
+
 type Route struct{ Protocol, Endpoint, Model string }
+
+// ValidProtocol confines retained model routes to native protocols implemented
+// by the trusted proxy and launcher. Provider names never select a protocol.
+func (r Route) ValidProtocol() bool {
+	switch r.Protocol {
+	case ProtocolOpenAI, ProtocolOpenAIChat, ProtocolOpenAIResponses, ProtocolOpenAIChatGPT, ProtocolAnthropic:
+		return true
+	default:
+		return false
+	}
+}
 
 // Pins are trusted, non-secret metadata. Workload requests cannot issue or alter them.
 type Pins struct {

@@ -19,6 +19,7 @@ const JobVersion = 2
 const CommandName = "serve-v2"
 const ChatCompletionsAPI = "chat_completions"
 const ResponsesAPI = "responses"
+const MessagesAPI = "messages"
 
 const LauncherPath = "/usr/local/libexec/kingdom-provider-launcher"
 const OpenCodePath = "/usr/local/bin/opencode"
@@ -82,7 +83,7 @@ func (j Job) Validate() error {
 	if j.Version != JobVersion || !hex256(j.LauncherSHA256) || !hex256(j.OpenCodeSHA256) || !hex256(j.ControlToken) || !hex256(j.ServerPassword) || !modelCapability(j.ProxyToken) || !modelCapability(j.CallbackToken) || !endpoint(j.ProxyURL) || !endpoint(j.CallbackURL) || !identifier(j.ProviderID) || strings.Contains(j.ProviderID, "/") || !identifier(j.ModelID) || !identifier(j.InstanceID) || j.ContextLimit < 1 || j.ContextLimit > 2000000 || j.OutputLimit < 1 || j.OutputLimit > 200000 || j.OutputLimit > j.ContextLimit || j.LifetimeSeconds < 1 || j.LifetimeSeconds > 86400 {
 		return errors.New("invalid provider launcher job")
 	}
-	if j.ModelAPI != ChatCompletionsAPI && j.ModelAPI != ResponsesAPI {
+	if j.ModelAPI != ChatCompletionsAPI && j.ModelAPI != ResponsesAPI && j.ModelAPI != MessagesAPI {
 		return errors.New("invalid provider model API")
 	}
 	return nil

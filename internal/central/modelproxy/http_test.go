@@ -31,6 +31,7 @@ func (a *testAuthority) Check(_ context.Context, b Binding, stage Stage) error {
 
 type testResolver struct {
 	route   Route
+	copilot bool
 	revoked atomic.Bool
 }
 
@@ -38,6 +39,9 @@ func (r *testResolver) Pin(context.Context, Binding) (Route, error) { return r.r
 func (r *testResolver) Resolve(context.Context, Binding, Route) (Credential, error) {
 	if r.revoked.Load() {
 		return Credential{}, ErrDenied
+	}
+	if r.copilot {
+		return NewCopilotCredential("private-upstream-secret")
 	}
 	return NewBearerCredential("private-upstream-secret")
 }
@@ -97,7 +101,7 @@ func TestProxyRequiresActiveAuthorityAndExactModel(t *testing.T) {
 	var calls atomic.Int64
 	_, lease, server, authority, resolver := proxyFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if r.Header.Get("Authorization") != "Bearer private-upstream-secret" || r.Header.Get("Cookie") != "" || r.Header.Get("X-Api-Key") != "" {
+		if r.Header.Get("Authorization") != "Bearer private-upstream-secret" || r.Header.Get("Cookie") != "" || r.Header.Get("X-Api-Key") != "" || r.Header.Get("X-Initiator") != "" || r.Header.Get("X-GitHub-Api-Version") != "" || r.Header.Get("Anthropic-Version") != "" {
 			t.Error("untrusted or missing upstream headers")
 		}
 		w.Header().Set("Content-Type", "application/json")

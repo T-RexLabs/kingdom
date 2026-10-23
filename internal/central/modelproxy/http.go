@@ -21,7 +21,7 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusBadRequest)
 		return
 	}
-	if r.Method != http.MethodPost || (r.URL.Path != "/v1/responses" && r.URL.Path != "/v1/chat/completions") || r.URL.RawQuery != "" || r.URL.RawPath != "" {
+	if r.Method != http.MethodPost || (r.URL.Path != "/v1/responses" && r.URL.Path != "/v1/chat/completions" && r.URL.Path != "/v1/messages") || r.URL.RawQuery != "" || r.URL.RawPath != "" {
 		deny(http.StatusNotFound)
 		return
 	}
@@ -121,7 +121,11 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusForbidden)
 		return
 	}
-	if route.Protocol == "openai_chatgpt" {
+	if !protocolPath(route.Protocol, r.URL.Path) {
+		deny(http.StatusBadRequest)
+		return
+	}
+	if route.Protocol == ProtocolOpenAIChatGPT {
 		body, e = chatGPTRequest(r.URL.Path, object)
 		if e != nil || int64(len(body)) > b.cfg.MaxRequestBytes {
 			deny(http.StatusBadRequest)
@@ -148,6 +152,14 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	upstream.Header.Set("Content-Type", "application/json")
 	upstream.Header.Set("Accept", "application/json, text/event-stream")
 	upstream.Header.Set("Authorization", "Bearer "+credential.token)
+	if route.Protocol == ProtocolAnthropic {
+		// Protocol headers come from this trusted adapter. Workload headers cannot
+		// enable provider betas or change the upstream API contract.
+		upstream.Header.Set("Anthropic-Version", "2023-06-01")
+	}
+	if credential.copilot {
+		setCopilotHeaders(upstream.Header, admission.Request.SessionID, route.Protocol, object)
+	}
 	response, e := b.transport.RoundTrip(upstream)
 	if e != nil {
 		deny(http.StatusBadGateway)
@@ -270,5 +282,22 @@ func uniqueValue(d *json.Decoder, depth int) (any, error) {
 		return result, nil
 	default:
 		return nil, ErrDenied
+	}
+}
+
+// protocolPath checks the pinned native API before credential resolution. The
+// compatible API-key route keeps its two existing OpenAI request forms.
+func protocolPath(protocol, requestPath string) bool {
+	switch protocol {
+	case ProtocolOpenAI:
+		return requestPath == "/v1/responses" || requestPath == "/v1/chat/completions"
+	case ProtocolOpenAIChat:
+		return requestPath == "/v1/chat/completions"
+	case ProtocolOpenAIResponses, ProtocolOpenAIChatGPT:
+		return requestPath == "/v1/responses"
+	case ProtocolAnthropic:
+		return requestPath == "/v1/messages"
+	default:
+		return false
 	}
 }
