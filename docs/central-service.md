@@ -115,6 +115,8 @@ contract. Installing a newer CLI does not install the gateway extension. See
 the [managed profile build guide](../experiments/openshell-managed-commands/README.md)
 for the pinned source, images, and verification requirements.
 
+The service and worker must use the same build. The provider launcher uses job protocol version 2 to pin the model API. Drain active work and finish typed resource cleanup before changing those pins; retained launch requests are never rewritten for a new worker.
+
 The service refuses a missing or incompatible managed profile. It does not
 fall back to host execution. The worker receives scoped proxy tokens, not user
 API keys. Imports must be verified before provider startup. Success requires
@@ -139,9 +141,11 @@ not infer thinking effort from a model name. See the
 ## Initial Project Files
 
 Create a project, then select it in Initial Project Files before you open it.
-Add a ZIP archive or one file. Opening a project permanently closes initial
+Add a ZIP archive, one file, or an operator-approved GitHub repository. Opening a project permanently closes initial
 uploads. See [initial project files](central-project-input.md) for limits and
 retry rules.
+
+Explicit GitHub result publication uses a separate repository App and per-project grant. It sends verified file changes from a successful run to an operation-specific branch and pull request. See [repository setup and publication](central-repositories.md).
 
 ## Shutdown and Recovery
 
@@ -154,7 +158,9 @@ closure check.
 OpenShell execution does not support Resume. Saved checkpoint details remain
 visible. Use Rerun to start fresh work.
 
-The command and portal are implemented. Full hosted workflow, packaging,
-project inputs and publishing, OAuth model connections, and optional local
-OpenShell acceptance remain delivery checks. The controlled execution checks
-use synthetic HTTPS providers and do not qualify a production deployment.
+Controlled checks cover hosted planning and workflows, file and ZIP inputs,
+container startup and restart, and optional local OpenShell execution. Repository
+protocol tests cover import, result deltas, and uncertain publication recovery.
+These checks use synthetic providers; they do not qualify real account consent,
+a live repository App, or a production deployment. The optional local
+[ChatGPT connection](chatgpt-local-connection.md) remains a local-owner preview.
