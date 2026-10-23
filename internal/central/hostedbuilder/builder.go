@@ -23,26 +23,19 @@ import (
 	"kingdom/internal/central/catalog"
 	"kingdom/internal/central/connections"
 	"kingdom/internal/central/modelproxy"
-	"kingdom/internal/central/pluginauthority"
 	"kingdom/internal/central/projects"
 	"kingdom/internal/central/selections"
 	"kingdom/internal/central/workerauthority"
 	"kingdom/internal/dbmigrations"
 	"kingdom/internal/execution/access"
-	"kingdom/internal/execution/openshell/commands"
-	assembly "kingdom/internal/execution/openshell/provider"
+	"kingdom/internal/execution/openshell/stack"
 	"kingdom/internal/execution/openshell/worker"
-	"kingdom/internal/execution/openshell/workspaceoutput"
-	"kingdom/internal/execution/openshell/workspacesource"
 	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/execution/remote"
 	kingdom "kingdom/internal/orchestration"
 	runtime "kingdom/internal/projectruntime"
-	"kingdom/internal/providers/opencode"
-	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
 	"kingdom/internal/theme"
-	"kingdom/internal/workspacetransfer"
 	_ "modernc.org/sqlite"
 )
 
@@ -52,6 +45,7 @@ type Models struct {
 	Resolver modelproxy.Resolver
 }
 type Config struct {
+	PrepareInitial                             func(context.Context, string, string) error
 	RootDir, PublicOrigin, GatewayID, WorkerID string
 	// WorkerOrigin is the sandbox-reachable TLS origin. Empty uses PublicOrigin.
 	WorkerOrigin                 string
@@ -179,6 +173,11 @@ func (s *Service) Build(b projects.BuildContext, id string, auth api.Authenticat
 	}
 	home := filepath.Join(root, "runtime")
 	projectRoot := filepath.Join(root, "project")
+	if s.c.PrepareInitial != nil {
+		if e = s.c.PrepareInitial(b.Startup, id, projectRoot); e != nil {
+			return nil, e
+		}
+	}
 	if e = bootstrapassets.WriteScaffold(home, false); e != nil {
 		return nil, e
 	}
@@ -271,10 +270,6 @@ func (s *Service) Build(b projects.BuildContext, id string, auth api.Authenticat
 	modelURL := base + "/model/v1"
 	pluginURL := base + "/plugin"
 	target := remote.Target{WorkerID: s.c.WorkerID, GatewayID: s.c.GatewayID, WorkspaceID: mapping.ID}
-	w, e := worker.New(db, requests, gateway.Native, gateway.Managed, worker.Config{Target: target, Workspace: mapping.Name, Image: s.c.Image, ProfileSHA256: s.c.ProfileSHA256, Egress: worker.Egress{ModelURL: modelURL, CallbackURL: pluginURL, AllowedIPs: s.c.AllowedIPs}})
-	if e != nil {
-		return nil, e
-	}
 	authority := providerrequest.NewAuthority(db, time.Now)
 	authorizer, e := workerauthority.New(authority, s.c.Connections)
 	if e != nil {
@@ -291,49 +286,12 @@ func (s *Service) Build(b projects.BuildContext, id string, auth api.Authenticat
 	if e != nil {
 		return nil, e
 	}
-	models, e := modelproxy.New(modelproxy.Config{Registry: s.c.Registry, PublicBaseURL: modelURL, Authorizer: workerauthority.Model{Authority: authorizer}, Resolver: modelConfig.Resolver, Origins: s.c.ModelOrigins, TLSRoots: s.c.ModelTLSRoots})
+	pipeline, e := stack.New(stack.Config{DB: db, Requests: requests, Gateway: gateway, Registry: s.c.Registry, Authority: authority, Worker: worker.Config{Target: target, Workspace: mapping.Name, Image: s.c.Image, ProfileSHA256: s.c.ProfileSHA256, Egress: worker.Egress{ModelURL: modelURL, CallbackURL: pluginURL, AllowedIPs: s.c.AllowedIPs}}, Server: s.c.Server, Root: root, RuntimeRoot: home, HelperSHA256: s.c.HelperSHA256, FileToolSHA256: s.c.FileToolSHA256, ModelAuthorizer: workerauthority.Model{Authority: authorizer}, PluginAuthorizer: workerauthority.Plugin{Authority: authorizer}, Resolver: modelConfig.Resolver, ModelOrigins: s.c.ModelOrigins, ModelTLSRoots: s.c.ModelTLSRoots, TransferTimeout: s.c.TransferTimeout, StopTimeout: s.c.StopTimeout})
+	owned.models, owned.sources, owned.provider = pipeline.Models, pipeline.Sources, pipeline.Provider
 	if e != nil {
 		return nil, e
 	}
-	owned.models = models
-	plugins, e := pluginauthority.New(s.c.Registry, workerauthority.Plugin{Authority: authorizer}, pluginURL)
-	if e != nil {
-		return nil, e
-	}
-	executor, e := commands.New(db, requests, gateway.Managed, commands.Config{Workspace: mapping.Name, Target: target, ProfileSHA256: s.c.ProfileSHA256, HelperSHA256: s.c.FileToolSHA256, CleanupTimeout: s.c.StopTimeout})
-	if e != nil {
-		return nil, e
-	}
-	callback, e := opencode.NewManagedCallbackHandler(plugins, executor, executor)
-	if e != nil {
-		return nil, e
-	}
-	sources, e := workspacesource.New(filepath.Join(root, "source"), workspacesource.CanonicalResolver{DB: db, Authority: authority}, workspacetransfer.DefaultLimits())
-	if e != nil {
-		return nil, e
-	}
-	owned.sources = sources
-	store, e := runtimefs.NewStore(db, home)
-	if e != nil {
-		return nil, e
-	}
-	output, e := workspaceoutput.New(workspaceoutput.Config{DB: db, Worker: w, Store: store, Sources: sources, SpoolRoot: filepath.Join(root, "spool"), StageRoot: filepath.Join(root, "stage"), Limits: workspacetransfer.DefaultLimits()})
-	if e != nil {
-		return nil, e
-	}
-	disposer, e := worker.NewDisposer(w, prerequisites{db})
-	if e != nil {
-		return nil, e
-	}
-	provider, e := assembly.New(assembly.Config{DB: db, Worker: w, Sources: sources, Output: output, Transfers: worker.Transfers{Forwarder: gateway.Forwarder, StageRoot: filepath.Join(root, "stage"), HelperSHA256: s.c.HelperSHA256, Limits: workspacetransfer.DefaultLimits(), Timeout: s.c.TransferTimeout}, Server: s.c.Server, Services: worker.ServerServices{Models: models, Plugins: plugins, Forwarder: gateway.Forwarder}, Commands: executor, Registry: s.c.Registry, Disposer: disposer, SpoolRoot: filepath.Join(root, "spool")})
-	if e != nil {
-		return nil, e
-	}
-	managed, e := opencode.NewManagedService(opencode.ManagedServiceConfig{Worker: provider, Requests: authority, CaptureRoot: filepath.Join(root, "capture"), StopLimit: s.c.StopTimeout})
-	if e != nil {
-		return nil, e
-	}
-	owned.provider = managed
+	managed, models, callback := pipeline.Provider, pipeline.Models, pipeline.Callback
 	themes, e := theme.OpenStore(home)
 	if e != nil {
 		return nil, e
@@ -361,11 +319,6 @@ func (s *Service) Build(b projects.BuildContext, id string, auth api.Authenticat
 	return owned, nil
 }
 
-type prerequisites struct{ db *sql.DB }
-
-func (p prerequisites) RequireClosed(ctx context.Context, o remote.Owner, r remote.Reference) error {
-	return providerrequest.RequireRemoteDisposalPrerequisites(ctx, p.db, o, r)
-}
 func paths(home string) kingdom.BootstrapPaths {
 	return kingdom.BootstrapPaths{SchemaDir: filepath.Join(home, "schemas"), RetryPolicyPath: filepath.Join(home, "policies/retry_policy.yaml"), RetryPolicySchemaPath: filepath.Join(home, "schemas/retry_policy.schema.json"), ProviderPolicyPath: filepath.Join(home, "policies/opencode_provider_policy.yaml"), ProviderPolicySchemaPath: filepath.Join(home, "schemas/opencode_provider_policy.schema.json"), RolePolicyPath: filepath.Join(home, "policies/role_policy.yaml"), NetworkPolicyPath: filepath.Join(home, "policies/network_policy.yaml")}
 }

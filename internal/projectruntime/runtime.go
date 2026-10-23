@@ -23,8 +23,9 @@ import (
 type Mode string
 
 const (
-	Local  Mode = "local"
-	Hosted Mode = "hosted"
+	Local        Mode = "local"
+	Hosted       Mode = "hosted"
+	LocalManaged Mode = "local_managed"
 )
 
 var ErrHostedProviderUnavailable = errors.New("hosted project execution requires a managed provider backend")
@@ -47,6 +48,7 @@ type Config struct {
 	ProviderService      opencode.Backend
 	ProviderModelCatalog api.ProviderModelCatalog
 	HostedSelection      *api.HostedSelectionConfig
+	LocalSelection       *api.LocalSelectionConfig
 
 	ExternalAdapter                              external.Adapter
 	GitHubSharedAppSlug, GitHubSharedAppClientID string
@@ -82,7 +84,7 @@ func validate(cfg Config) error {
 			return errors.New("provider backend must not be a typed nil")
 		}
 	}
-	if cfg.Mode != Local && cfg.Mode != Hosted {
+	if cfg.Mode != Local && cfg.Mode != Hosted && cfg.Mode != LocalManaged {
 		return errors.New("project runtime mode must be explicit")
 	}
 	if cfg.Mode == Hosted {
@@ -96,6 +98,18 @@ func validate(cfg Config) error {
 		if !ok || managed.ValidateConfiguration() != nil {
 			return ErrHostedProviderUnavailable
 		}
+	}
+	if cfg.Mode == LocalManaged {
+		if cfg.Authenticator != nil || cfg.HostedSelection != nil || cfg.LocalSelection == nil || cfg.ProviderService == nil || cfg.ProviderModelCatalog == nil || len(cfg.OperatorCredential) == 0 {
+			return errors.New("local managed project requires explicit local ownership, catalog, provider and operator credential")
+		}
+		managed, ok := cfg.ProviderService.(*opencode.ManagedService)
+		if !ok || managed.ValidateConfiguration() != nil {
+			return errors.New("local managed provider is not initialized")
+		}
+	}
+	if cfg.Mode == Local && cfg.LocalSelection != nil {
+		return errors.New("host-local project cannot use managed credential selection")
 	}
 	if cfg.Mode == Local && cfg.ProviderService != nil && cfg.ProviderService.ExecutionBackend() != providerexecution.BackendLocal {
 		return errors.New("local project requires a local provider backend")
@@ -180,6 +194,7 @@ func New(ctx context.Context, cfg Config) (instance *Instance, err error) {
 		ProviderService:            p,
 		ProviderModelCatalog:       catalog,
 		HostedSelection:            cfg.HostedSelection,
+		LocalSelection:             cfg.LocalSelection,
 		ProviderPolicyPath:         cfg.Paths.ProviderPolicyPath,
 		ProviderPolicySchemaPath:   cfg.Paths.ProviderPolicySchemaPath,
 		ProjectRoot:                cfg.ProjectRoot,
