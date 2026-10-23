@@ -25,7 +25,11 @@ import (
 type Commands interface {
 	Cancel(context.Context, providerexecution.RequestIdentity) error
 }
+type Output interface {
+	Apply(context.Context, providerrequest.Preparation, remote.Reservation, string) error
+}
 type Config struct {
+	Output    Output
 	DB        *sql.DB
 	Worker    *worker.Worker
 	Sources   SourceStore
@@ -62,7 +66,7 @@ var _ opencode.ManagedWorker = (*Provider)(nil)
 var _ opencode.ManagedHandle = (*handle)(nil)
 
 func New(c Config) (*Provider, error) {
-	if c.DB == nil || c.Worker == nil || c.Sources == nil || c.Commands == nil || c.Registry == nil || c.Disposer == nil || c.Services.Models == nil || c.Services.Plugins == nil || c.Services.Forwarder == nil || c.Transfers.Forwarder == nil || c.SpoolRoot == "" {
+	if c.Output == nil || c.DB == nil || c.Worker == nil || c.Sources == nil || c.Commands == nil || c.Registry == nil || c.Disposer == nil || c.Services.Models == nil || c.Services.Plugins == nil || c.Services.Forwarder == nil || c.Transfers.Forwarder == nil || c.SpoolRoot == "" {
 		return nil, remote.ErrConflict
 	}
 	if c.Now == nil {
@@ -324,7 +328,10 @@ func (p *Provider) ExportInvocation(ctx context.Context, id string) error {
 	if e != nil {
 		return e
 	}
-	return d.Staged.Close()
+	if e = d.Staged.Close(); e != nil {
+		return e
+	}
+	return p.c.Output.Apply(ctx, preparation(m), r, m.ExportID)
 }
 func (p *Provider) DiscardInvocation(ctx context.Context, id string) error {
 	unlock, e := p.lock(ctx, id)

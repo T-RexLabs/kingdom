@@ -2,6 +2,7 @@ package remote
 
 import (
 	"database/sql"
+	"github.com/google/uuid"
 	"strings"
 	"testing"
 )
@@ -50,6 +51,46 @@ func TestWorkspaceExportRequiresExactSealedDownload(t *testing.T) {
 			e := RequireWorkspaceExport(ctx, db, r.Owner, r.Reference)
 			if mode == "valid" && e != nil {
 				t.Fatal(e)
+			}
+			if mode == "valid" {
+
+				m := WorkerManifest{Owner: r.Owner, ResourceID: "attempt", CreationID: r.Reference.CreationID, ImportID: uuid.NewString(), ExportID: identity.RequestId, Source: SourceArchive{ID: uuid.NewString(), SHA256: strings.Repeat("a", 64), Bytes: 42}, PinsJSON: []byte(`{}`)}
+				transaction(t, db, func(tx *sql.Tx) error { return RecordWorkerManifestTx(ctx, tx, m) })
+				transaction(t, db, func(tx *sql.Tx) error { return BindWorkerManifestAllocationTx(ctx, tx, r.Owner, r.Reference) })
+				if _, e = db.Exec(`CREATE TABLE provider_invocations(provider_invocation_id TEXT PRIMARY KEY,run_id TEXT,attempt_id TEXT);INSERT INTO provider_invocations VALUES(?,'run','attempt')`, r.Owner.InvocationID); e != nil {
+					t.Fatal(e)
+				}
+				if e = RequireWorkspaceOutputApplied(ctx, db, r.Owner, r.Reference); e == nil {
+					t.Fatal("sealed export without application accepted")
+				}
+				_, e = db.Exec(`CREATE TABLE filesystem_snapshots(snapshot_id TEXT PRIMARY KEY,run_id TEXT,snapshot_kind TEXT,parent_snapshot_id TEXT);INSERT INTO filesystem_snapshots VALUES('output','run','attempt_result',NULL)`)
+				if e != nil {
+					t.Fatal(e)
+				}
+				_, e = db.Exec(`INSERT INTO remote_workspace_output_intents(operation_id,allocation,purpose,archive_sha256,manifest_sha256,snapshot_id,run_id,created_at) VALUES(?,?,?,?,?,'output','run','now')`, identity.RequestId, r.Reference.Allocation, r.Owner.Kind, strings.Repeat("a", 64), strings.Repeat("b", 64))
+				if e != nil {
+					t.Fatal(e)
+				}
+				if e = RequireWorkspaceOutputApplied(ctx, db, r.Owner, r.Reference); e == nil {
+					t.Fatal("partial restore intent accepted")
+				}
+				_, e = db.Exec(`INSERT INTO remote_workspace_output_applications VALUES(?,'output','now')`, identity.RequestId)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if e = RequireWorkspaceOutputApplied(ctx, db, r.Owner, r.Reference); e != nil {
+					t.Fatal(e)
+				}
+
+				if _, e = db.Exec(`UPDATE provider_invocations SET run_id='foreign'`); e != nil {
+					t.Fatal(e)
+				}
+				if e = RequireWorkspaceOutputApplied(ctx, db, r.Owner, r.Reference); e == nil {
+					t.Fatal("foreign run output accepted")
+				}
+				if _, e = db.Exec(`UPDATE remote_workspace_output_applications SET applied_at='later'`); e == nil {
+					t.Fatal("application proof mutable")
+				}
 			}
 			if mode != "valid" && e == nil {
 				t.Fatal("invalid download accepted")

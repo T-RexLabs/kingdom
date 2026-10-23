@@ -102,7 +102,7 @@ func SettleCompletionTx(ctx context.Context, tx *sql.Tx, owner Owner, lease Leas
 		if err != nil {
 			return err
 		}
-		if err = remote.RequireWorkspaceExport(ctx, q, r.Owner, r.Reference); err != nil {
+		if err = remote.RequireWorkspaceOutputApplied(ctx, q, r.Owner, r.Reference); err != nil {
 			return err
 		}
 	}
