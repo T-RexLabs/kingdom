@@ -15,6 +15,7 @@ import (
 	"kingdom/internal/core/executionoutput"
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
+	"kingdom/internal/execution/remote"
 	"kingdom/internal/sqlitex"
 )
 
@@ -272,6 +273,8 @@ type providerInvocationOpening struct {
 }
 
 type ActivateProviderInvocationRequest struct {
+	Backend              providerexecution.Backend
+	RemoteRuntime        remote.Reference
 	RequestIdentity      providerexecution.RequestIdentity
 	ProviderInvocationID string
 	AttemptID            string
@@ -1329,11 +1332,12 @@ func (s *Store) ActivateProviderInvocation(ctx context.Context, req ActivateProv
 		if bodyErr = activateProviderInvocationTx(ctx, tx, invocation, openReq, expectedLeaseOwner, expectedLeaseVersion); bodyErr != nil {
 			return bodyErr
 		}
-		if err := providerrequest.BindTx(ctx, tx, providerrequest.Binding{
-			ID: createReq.ProviderInvocationID, Identity: req.RequestIdentity,
+		if err := providerrequest.BindBackendTx(ctx, tx, providerrequest.Binding{
+			Backend: req.Backend,
+			ID:      createReq.ProviderInvocationID, Identity: req.RequestIdentity,
 			Owner: providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: createReq.ProviderInvocationID},
 			Lease: providerrequest.Lease{Owner: expectedLeaseOwner, Version: expectedLeaseVersion},
-		}, s.currentTime()); err != nil {
+		}, req.RemoteRuntime, s.currentTime()); err != nil {
 			return err
 		}
 		var found bool
@@ -1347,12 +1351,12 @@ func (s *Store) ActivateProviderInvocation(ctx context.Context, req ActivateProv
 		return nil
 	}, sqlitex.Options{})
 	if err != nil {
-		return s.reconcileProviderInvocationActivationFailure(ctx, createReq, invocation, expectedLeaseOwner, expectedLeaseVersion, req.RequestIdentity, err)
+		return s.reconcileProviderInvocationActivationFailure(ctx, createReq, invocation, expectedLeaseOwner, expectedLeaseVersion, req.RequestIdentity, req.Backend, req.RemoteRuntime, err)
 	}
 	return invocation, nil
 }
 
-func (s *Store) reconcileProviderInvocationActivationFailure(ctx context.Context, req CreateProviderInvocationRequest, expected ProviderInvocation, expectedLeaseOwner string, expectedLeaseVersion int64, identity providerexecution.RequestIdentity, activationErr error) (ProviderInvocation, error) {
+func (s *Store) reconcileProviderInvocationActivationFailure(ctx context.Context, req CreateProviderInvocationRequest, expected ProviderInvocation, expectedLeaseOwner string, expectedLeaseVersion int64, identity providerexecution.RequestIdentity, backend providerexecution.Backend, ref remote.Reference, activationErr error) (ProviderInvocation, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1362,7 +1366,7 @@ func (s *Store) reconcileProviderInvocationActivationFailure(ctx context.Context
 	invocationID := strings.TrimSpace(req.ProviderInvocationID)
 	var readbackErrs []error
 	for attempt := 0; attempt < 2; attempt++ {
-		actual, committed, err := s.confirmProviderInvocationActivation(readbackCtx, req, expected, expectedLeaseOwner, expectedLeaseVersion, identity)
+		actual, committed, err := s.confirmProviderInvocationActivation(readbackCtx, req, expected, expectedLeaseOwner, expectedLeaseVersion, identity, backend, ref)
 		if err != nil {
 			readbackErrs = append(readbackErrs, err)
 			continue
@@ -1375,7 +1379,7 @@ func (s *Store) reconcileProviderInvocationActivationFailure(ctx context.Context
 	return expected, providerInvocationActivationOutcomeUnknown(invocationID, activationErr, errors.Join(readbackErrs...))
 }
 
-func (s *Store) confirmProviderInvocationActivation(ctx context.Context, req CreateProviderInvocationRequest, expected ProviderInvocation, expectedLeaseOwner string, expectedLeaseVersion int64, identity providerexecution.RequestIdentity) (ProviderInvocation, bool, error) {
+func (s *Store) confirmProviderInvocationActivation(ctx context.Context, req CreateProviderInvocationRequest, expected ProviderInvocation, expectedLeaseOwner string, expectedLeaseVersion int64, identity providerexecution.RequestIdentity, backend providerexecution.Backend, ref remote.Reference) (ProviderInvocation, bool, error) {
 	invocationID := strings.TrimSpace(req.ProviderInvocationID)
 	actual, found, err := s.GetProviderInvocation(ctx, invocationID)
 	if err != nil {
@@ -1416,6 +1420,23 @@ func (s *Store) confirmProviderInvocationActivation(ctx context.Context, req Cre
 	}
 	if !bound || binding.Identity != identity || binding.Lease != (providerrequest.Lease{Owner: expectedLeaseOwner, Version: expectedLeaseVersion}) {
 		return actual, false, fmt.Errorf("durable provider request does not match the attempted activation")
+	}
+	if backend == "" {
+		backend = providerexecution.BackendLocal
+	}
+	if binding.Backend != backend {
+		return actual, false, fmt.Errorf("durable activation backend differs")
+	}
+	if backend == providerexecution.BackendOpenShell {
+		r, e := remote.ReadRuntime(ctx, s.db, binding.RemoteAllocation)
+		if e != nil {
+			return actual, false, e
+		}
+		if r.Reference != ref || r.Owner.BindingID != binding.ID || r.Owner.InvocationID != binding.Owner.InvocationID || r.Owner.Kind != string(binding.Owner.Kind) || r.Owner.LeaseOwner != binding.Lease.Owner || r.Owner.LeaseVersion != binding.Lease.Version {
+			return actual, false, fmt.Errorf("durable remote activation differs")
+		}
+	} else if ref != (remote.Reference{}) || binding.RemoteAllocation != 0 {
+		return actual, false, fmt.Errorf("local activation contains remote identity")
 	}
 	return actual, true, nil
 }

@@ -50,6 +50,7 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 		return fmt.Errorf("execution store is required for provider invocation activation")
 	}
 	_, err := o.executionStore.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{
+		Backend: prepared.Backend, RemoteRuntime: prepared.RemoteRuntime,
 		RequestIdentity:      prepared.Identity,
 		ProviderInvocationID: providerInvocationID,
 		AttemptID:            attemptID,

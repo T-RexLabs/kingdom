@@ -10,6 +10,7 @@ import (
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
+	"kingdom/internal/execution/remote"
 	"kingdom/internal/sqlitex"
 	"kingdom/internal/timestamporder"
 )
@@ -110,6 +111,8 @@ type planningProviderInvocationOpening struct {
 }
 
 type ActivatePlanningProviderInvocationRequest struct {
+	Backend                      providerexecution.Backend
+	RemoteRuntime                remote.Reference
 	RequestIdentity              providerexecution.RequestIdentity
 	PlanningProviderInvocationID string
 	PlanningOperationID          string
@@ -218,9 +221,10 @@ func (s *PlanningStore) ActivatePlanningProviderInvocation(ctx context.Context, 
 	if err := activatePlanningProviderInvocationTx(ctx, tx, invocation, openReq); err != nil {
 		return PlanningProviderInvocation{}, err
 	}
-	if err := providerrequest.BindTx(ctx, tx, providerrequest.Binding{
-		ID: invocation.PlanningProviderInvocationID, Identity: req.RequestIdentity, Owner: owner, Lease: lease,
-	}, s.leaseNow()); err != nil {
+	if err := providerrequest.BindBackendTx(ctx, tx, providerrequest.Binding{
+		Backend: req.Backend,
+		ID:      invocation.PlanningProviderInvocationID, Identity: req.RequestIdentity, Owner: owner, Lease: lease,
+	}, req.RemoteRuntime, s.leaseNow()); err != nil {
 		return PlanningProviderInvocation{}, err
 	}
 	invocation, found, err := loadPlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID)

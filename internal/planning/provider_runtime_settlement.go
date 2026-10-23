@@ -69,6 +69,7 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 		},
 		Activate: func(activateCtx context.Context, prepared opencode.Prepared) error {
 			if _, err := r.deps.store.ActivatePlanningProviderInvocation(activateCtx, state.ActivatePlanningProviderInvocationRequest{
+				Backend: prepared.Backend, RemoteRuntime: prepared.RemoteRuntime,
 				RequestIdentity:              prepared.Identity,
 				PlanningProviderInvocationID: invocationID,
 				PlanningOperationID:          operation.OperationID,

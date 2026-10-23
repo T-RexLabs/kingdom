@@ -91,14 +91,15 @@ func validate(cfg Config) error {
 		if cfg.ProviderService.ExecutionBackend() != providerexecution.BackendOpenShell || cfg.ProviderModelCatalog == nil {
 			return ErrHostedProviderUnavailable
 		}
-		// A reported backend kind is necessary but is not proof of verified remote
-		// closure. Hosted activation stays disabled until that path is integrated.
-		return ErrHostedProviderUnavailable
+		managed, ok := cfg.ProviderService.(*opencode.ManagedService)
+		if !ok || managed.ValidateConfiguration() != nil {
+			return ErrHostedProviderUnavailable
+		}
 	}
-	if cfg.ProviderService != nil && cfg.ProviderService.ExecutionBackend() != providerexecution.BackendLocal {
+	if cfg.Mode == Local && cfg.ProviderService != nil && cfg.ProviderService.ExecutionBackend() != providerexecution.BackendLocal {
 		return errors.New("local project requires a local provider backend")
 	}
-	if cfg.Authenticator != nil {
+	if cfg.Mode == Local && cfg.Authenticator != nil {
 		return errors.New("local project cannot use hosted authentication")
 	}
 	if cfg.DB == nil || cfg.ThemeStore == nil || cfg.ProjectRoot == "" || cfg.RuntimeRoot == "" {

@@ -55,6 +55,14 @@ func NewOpenCodeAgent(executor plannerExecutor, idGenerator func(prefix string) 
 	return agent
 }
 
+// RequiresFreshSession keeps managed invocations independent of disposed runtimes.
+func (a *OpenCodeAgent) RequiresFreshSession() bool {
+	backend, ok := a.executor.(interface {
+		ExecutionBackend() providerexecution.Backend
+	})
+	return ok && backend.ExecutionBackend() == providerexecution.BackendOpenShell
+}
+
 func (a *OpenCodeAgent) ContinueTurnStream(ctx context.Context, input AgentContext, onChunk func(text string)) (AgentTurn, error) {
 	prompts := promptWriters{bootstrap: writeContinuePrompt, continuation: writeContinuationPrompt}
 	sanitizer := newStreamingQuestionSanitizer(onChunk)
@@ -168,7 +176,7 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompts
 		return ProviderExecutionMetadata{}, fmt.Errorf("external planner context requires matching immutable snapshot bindings")
 	}
 	reusable := strings.TrimSpace(providerInvocation.ReusableProviderSessionID)
-	if forceNew {
+	if forceNew || a.RequiresFreshSession() {
 		reusable = ""
 	}
 	// Complete and verify immutable inputs before provider dispatch. Prompt

@@ -63,6 +63,20 @@ func (*ManagedService) ExecutionBackend() providerexecution.Backend {
 	return providerexecution.BackendOpenShell
 }
 
+// ValidateConfiguration rejects an uninitialized or closed managed backend before
+// a hosted runtime takes ownership. Execution still requires canonical authority.
+func (s *ManagedService) ValidateConfiguration() error {
+	if s == nil {
+		return errors.New("managed provider is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if nilManagedDependency(s.worker) || s.authority == nil || s.captureRoot == "" || s.stopLimit <= 0 || s.entries == nil || s.attempts == nil || s.closed {
+		return errors.New("initialized open managed provider is required")
+	}
+	return nil
+}
+
 func (s *ManagedService) Prepare(ctx context.Context, req ExecuteRequest) (result Prepared, err error) {
 	if err := requirePrepareRequest(req); err != nil {
 		return result, err

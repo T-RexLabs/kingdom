@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
@@ -19,6 +20,11 @@ func (o *orchestrationLoop) loadDispatchResume(ctx context.Context, nodeRunID st
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load resume checkpoint: %w", err)
+	}
+	if backend, ok := o.provider.(interface {
+		ExecutionBackend() providerexecution.Backend
+	}); ok && backend.ExecutionBackend() == providerexecution.BackendOpenShell {
+		return nil, fmt.Errorf("Resume is unavailable for managed execution; use Rerun to start fresh. The saved checkpoint remains retained")
 	}
 	return &input, nil
 }

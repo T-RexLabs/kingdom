@@ -35,11 +35,15 @@ func requestActivationFixture(t *testing.T, db *sql.DB) (*Store, ActivateProvide
 }
 
 func TestProviderRequestActivationIsAtomicAndIdentityFenced(t *testing.T) {
-	for _, mutation := range []string{"none", "session", "lease", "invalid identity", "omitted identity", "expired"} {
+	for _, mutation := range []string{"none", "session", "lease", "invalid identity", "omitted identity", "expired", "remote without reservation", "local with remote reference"} {
 		t.Run(mutation, func(t *testing.T) {
 			db := openTestDB(t)
 			s, req := requestActivationFixture(t, db)
 			switch mutation {
+			case "remote without reservation":
+				req.Backend = providerexecution.BackendOpenShell
+			case "local with remote reference":
+				req.RemoteRuntime.Allocation = 1
 			case "session":
 				req.RequestIdentity.SessionID = "foreign"
 			case "lease":
