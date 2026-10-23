@@ -23,6 +23,7 @@ func TestModelFailureOperatorOutputIsBoundedAndAtomic(t *testing.T) {
 	report(project, modelproxy.Failure{Phase: modelproxy.PhaseUpstreamStatus, UpstreamStatus: 999})
 	report(project, modelproxy.Failure{Phase: modelproxy.PhaseResponseContract, UpstreamStatus: 200, ContractReason: modelproxy.ContractReason(secret)})
 	report(project, modelproxy.Failure{Phase: modelproxy.PhaseResponseContract, UpstreamStatus: 200, ContractReason: modelproxy.ContractContentEncoding, ContentEncoding: modelproxy.ContentEncoding(secret)})
+	report(project, modelproxy.Failure{Phase: modelproxy.PhaseResponseContract, UpstreamStatus: 200, ContractReason: modelproxy.ContractMediaType, MediaType: modelproxy.MediaType(secret)})
 	if output.Len() != 0 {
 		t.Fatal("unbounded diagnostic admitted")
 	}
@@ -59,5 +60,15 @@ func TestModelContractDiagnosticHasOnlyBoundedValues(t *testing.T) {
 	var event map[string]any
 	if json.Unmarshal(output.Bytes(), &event) != nil || len(event) != 6 || event["contract_reason"] != "content_encoding" || event["content_encoding"] != "gzip" {
 		t.Fatal("unexpected contract diagnostic", output.String())
+	}
+}
+
+func TestModelMediaDiagnosticHasOnlyBoundedCategory(t *testing.T) {
+	var output bytes.Buffer
+	report := modelFailureLogger(synchronizedOutput(&output))
+	report(uuid.NewString(), modelproxy.Failure{Phase: modelproxy.PhaseResponseContract, UpstreamStatus: 200, ContractReason: modelproxy.ContractMediaType, MediaType: modelproxy.MediaHTML})
+	var event map[string]any
+	if json.Unmarshal(output.Bytes(), &event) != nil || len(event) != 6 || event["contract_reason"] != "media_type" || event["media_type"] != "html" {
+		t.Fatal("unexpected media diagnostic", output.String())
 	}
 }

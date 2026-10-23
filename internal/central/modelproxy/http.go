@@ -177,7 +177,7 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	responseType, _, e := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if e != nil || (responseType != "application/json" && responseType != "text/event-stream") {
-		b.reportFailure(Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode, ContractReason: ContractMediaType})
+		b.reportFailure(Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode, ContractReason: ContractMediaType, MediaType: classifyMediaType(response.Header.Get("Content-Type"))})
 		deny(http.StatusBadGateway)
 		return
 	}

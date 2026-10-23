@@ -219,5 +219,9 @@ record excludes upstream errors, bodies, headers, endpoints, and credentials.
 Response contract failures have `contract_reason`: `media_type`,
 `content_encoding`, or `size_limit`. An encoding failure also has a bounded
 `content_encoding`: `gzip`, `br`, `deflate`, `zstd`, `identity`, or `other`.
+A media type failure also has `media_type`: `missing`, `invalid`, `json`, `sse`,
+`html`, `plain`, `octet_stream`, `ndjson`, `problem_json`, or `other`. These are
+fixed categories, not raw header values. The accepted response types remain
+`application/json` and `text/event-stream`.
 The proxy requests `Accept-Encoding: identity` and rejects encoded responses.
 Keep this output in the operator log; do not expose it through project APIs.

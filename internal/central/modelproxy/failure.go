@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"mime"
 	"net"
 	"strings"
 )
@@ -36,6 +37,21 @@ const (
 	ContractSizeLimit       ContractReason = "size_limit"
 )
 
+type MediaType string
+
+const (
+	MediaMissing     MediaType = "missing"
+	MediaInvalid     MediaType = "invalid"
+	MediaJSON        MediaType = "json"
+	MediaSSE         MediaType = "sse"
+	MediaHTML        MediaType = "html"
+	MediaPlain       MediaType = "plain"
+	MediaOctetStream MediaType = "octet_stream"
+	MediaNDJSON      MediaType = "ndjson"
+	MediaProblemJSON MediaType = "problem_json"
+	MediaOther       MediaType = "other"
+)
+
 type ContentEncoding string
 
 const (
@@ -54,13 +70,14 @@ type Failure struct {
 	TransportClass  TransportClass  `json:"transport_class,omitempty"`
 	ContractReason  ContractReason  `json:"contract_reason,omitempty"`
 	ContentEncoding ContentEncoding `json:"content_encoding,omitempty"`
+	MediaType       MediaType       `json:"media_type,omitempty"`
 }
 
 // Valid also bounds data at an operator sink, including explicit enum casts.
 func (f Failure) Valid() bool {
 	switch f.Phase {
 	case PhaseTransport:
-		if f.UpstreamStatus != 0 || f.ContractReason != "" || f.ContentEncoding != "" {
+		if f.UpstreamStatus != 0 || f.ContractReason != "" || f.ContentEncoding != "" || f.MediaType != "" {
 			return false
 		}
 		switch f.TransportClass {
@@ -68,15 +85,26 @@ func (f Failure) Valid() bool {
 			return true
 		}
 	case PhaseUpstreamStatus:
-		return f.TransportClass == "" && f.ContractReason == "" && f.ContentEncoding == "" && f.UpstreamStatus >= 100 && f.UpstreamStatus <= 599 && (f.UpstreamStatus < 200 || f.UpstreamStatus >= 300)
+		return f.TransportClass == "" && f.ContractReason == "" && f.ContentEncoding == "" && f.MediaType == "" && f.UpstreamStatus >= 100 && f.UpstreamStatus <= 599 && (f.UpstreamStatus < 200 || f.UpstreamStatus >= 300)
 	case PhaseResponseContract:
 		if f.TransportClass != "" || f.UpstreamStatus < 200 || f.UpstreamStatus > 299 {
 			return false
 		}
 		switch f.ContractReason {
-		case ContractMediaType, ContractSizeLimit:
-			return f.ContentEncoding == ""
+		case ContractMediaType:
+			if f.ContentEncoding != "" {
+				return false
+			}
+			switch f.MediaType {
+			case MediaMissing, MediaInvalid, MediaJSON, MediaSSE, MediaHTML, MediaPlain, MediaOctetStream, MediaNDJSON, MediaProblemJSON, MediaOther:
+				return true
+			}
+		case ContractSizeLimit:
+			return f.ContentEncoding == "" && f.MediaType == ""
 		case ContractContentEncoding:
+			if f.MediaType != "" {
+				return false
+			}
 			switch f.ContentEncoding {
 			case EncodingGzip, EncodingBrotli, EncodingDeflate, EncodingZstd, EncodingIdentity, EncodingOther:
 				return true
@@ -132,5 +160,33 @@ func classifyEncoding(value string) ContentEncoding {
 		return EncodingIdentity
 	default:
 		return EncodingOther
+	}
+}
+
+func classifyMediaType(value string) MediaType {
+	if strings.TrimSpace(value) == "" {
+		return MediaMissing
+	}
+	media, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		return MediaInvalid
+	}
+	switch media {
+	case "application/json":
+		return MediaJSON
+	case "text/event-stream":
+		return MediaSSE
+	case "text/html":
+		return MediaHTML
+	case "text/plain":
+		return MediaPlain
+	case "application/octet-stream":
+		return MediaOctetStream
+	case "application/x-ndjson", "application/ndjson":
+		return MediaNDJSON
+	case "application/problem+json":
+		return MediaProblemJSON
+	default:
+		return MediaOther
 	}
 }

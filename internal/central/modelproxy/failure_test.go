@@ -23,7 +23,7 @@ func TestPrivateFailureDiagnostics(t *testing.T) {
 		want        *Failure
 	}{
 		{"upstream_status", 429, "application/json", false, &Failure{Phase: PhaseUpstreamStatus, UpstreamStatus: 429}},
-		{"response_contract", 200, "text/plain", false, &Failure{Phase: PhaseResponseContract, UpstreamStatus: 200, ContractReason: ContractMediaType}},
+		{"response_contract", 200, "text/plain", false, &Failure{Phase: PhaseResponseContract, UpstreamStatus: 200, ContractReason: ContractMediaType, MediaType: MediaPlain}},
 		{"timeout", 200, "application/json", true, &Failure{Phase: PhaseTransport, TransportClass: TransportTimeout}},
 		{"success", 200, "application/json", false, nil},
 	} {
@@ -101,5 +101,59 @@ func TestTransportFailureClasses(t *testing.T) {
 		if got := classifyTransport(fmt.Errorf("private-upstream-secret: %w", tc.err)); got != tc.want {
 			t.Errorf("class %s, want %s", got, tc.want)
 		}
+	}
+}
+
+func TestMediaTypeCategories(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want MediaType
+	}{
+		{"", MediaMissing}, {" ", MediaMissing}, {"text/html; charset=utf-8", MediaHTML},
+		{"application/json", MediaJSON}, {"text/event-stream", MediaSSE}, {"text/plain", MediaPlain},
+		{"application/octet-stream", MediaOctetStream}, {"application/x-ndjson", MediaNDJSON},
+		{"application/ndjson", MediaNDJSON}, {"application/problem+json", MediaProblemJSON},
+		{"application/private-upstream-secret", MediaOther}, {"private-upstream-secret;;;", MediaInvalid},
+	} {
+		if got := classifyMediaType(tc.raw); got != tc.want {
+			t.Fatalf("category %q, want %q", got, tc.want)
+		}
+	}
+}
+
+func TestRejectedMediaTypeDiagnostic(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw string
+		want      MediaType
+	}{
+		{"missing", "", MediaMissing}, {"invalid", "private-upstream-secret;;;", MediaInvalid},
+		{"html", "text/html; charset=utf-8", MediaHTML}, {"plain", "text/plain", MediaPlain},
+		{"binary", "application/octet-stream", MediaOctetStream}, {"ndjson", "application/x-ndjson", MediaNDJSON},
+		{"problem", "application/problem+json", MediaProblemJSON}, {"other", "application/private-upstream-secret", MediaOther},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker, lease, server, authority, _ := proxyFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header()["Content-Type"] = []string{tc.raw}
+				io.WriteString(w, "private-upstream-secret")
+			}, true)
+			failures := make(chan Failure, 1)
+			broker.cfg.OnFailure = func(f Failure) { failures <- f }
+			authority.active.Store(true)
+			response := proxyRequest(t, server, lease, `{"model":"model"}`)
+			body, _ := io.ReadAll(response.Body)
+			response.Body.Close()
+			if response.StatusCode != 502 || string(body) != "Model request unavailable.\n" {
+				t.Fatalf("public error changed: %d %q", response.StatusCode, body)
+			}
+			select {
+			case f := <-failures:
+				want := Failure{Phase: PhaseResponseContract, UpstreamStatus: 200, ContractReason: ContractMediaType, MediaType: tc.want}
+				if f != want || !f.Valid() {
+					t.Fatalf("media diagnostic %+v, want %+v", f, want)
+				}
+			default:
+				t.Fatal("missing media category")
+			}
+		})
 	}
 }
