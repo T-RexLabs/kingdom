@@ -247,12 +247,12 @@ func TestServerPublishWorkflowDistinguishesExactAndDifferentExistingDefinitions(
 	}
 }
 
-func TestPersistWorkflowGraphRejectsInvalidDefinitionJSON(t *testing.T) {
+func TestWorkflowCompilerRejectsInvalidDefinitionJSON(t *testing.T) {
 	t.Parallel()
 
-	err := (&Server{}).persistWorkflowGraph(context.Background(), "wfdef-invalid", []byte("{"), "2026-03-02T09:00:00Z")
+	_, err := workflow.NewCompiler(nil, nil).CompileJSON("wfdef-invalid", []byte("{"))
 	if err == nil {
-		t.Fatal("expected persistWorkflowGraph to reject invalid workflow definition JSON")
+		t.Fatal("expected workflow compiler to reject invalid workflow definition JSON")
 	}
 }
 
@@ -1154,5 +1154,20 @@ func seedAPIWorkOrderLineage(t *testing.T, db *sql.DB) {
 	}
 	for _, operation := range []struct{ id, kind, status, result, context string }{{"operation-good", "formalize", "succeeded", "draft-a", "context-a"}, {"operation-failed", "formalize", "failed", "draft-failed", "context-a"}, {"operation-reply", "reply", "succeeded", "draft-reply", "context-a"}, {"operation-unbound", "formalize", "succeeded", "draft-unbound", ""}} {
 		mustExecSQL(t, db, `INSERT INTO planning_operations (operation_id,acp_run_id,planning_session_id,planning_context_snapshot_id,type,status,request_payload_json,lease_owner,lease_version,observed_output_text,result_ref,created_at) VALUES (?,?, 'session-a',NULLIF(?,''),?,?, '{}','',0,'',?,?)`, operation.id, operation.id, operation.context, operation.kind, operation.status, operation.result, at)
+	}
+}
+
+func TestWorkflowPublicationRollsBackGraphFailure(t *testing.T) {
+	handler, db := newAPIServerForTest(t)
+	if _, err := db.Exec(`CREATE TRIGGER fail_workflow_node BEFORE INSERT ON workflow_nodes BEGIN SELECT RAISE(ABORT,'injected graph failure'); END;`); err != nil {
+		t.Fatal(err)
+	}
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/workflows/publish", idempotencyKey: "atomic-graph-failure", body: map[string]any{"workflow_id": "wf-atomic-v1", "version": "v1", "definition_json": map[string]any{"workflow_id": "wf-atomic-v1", "version": "v1", "nodes": []map[string]any{{"node_id": "kickoff", "required_role": "plan-author", "node_class": "execution_kickoff"}}, "edges": []map[string]any{}}}})
+	if response.Code != http.StatusInternalServerError {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM workflow_definitions WHERE workflow_name='wf-atomic-v1'`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("partial workflow retained", count, err)
 	}
 }

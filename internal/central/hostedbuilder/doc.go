@@ -1,5 +1,5 @@
 // Package hostedbuilder owns project database and provider assembly for the
-// central host. It does not enable the hosted execution gate in projectruntime.
+// central host. It supplies the initialized managed provider required by projectruntime.
 //
 // CatalogDB, Connections, Registry, and model catalog lifecycle belong to the
 // caller. RequestKey must return an owned 32-byte per-project key; Build clears

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -26,7 +25,6 @@ import (
 
 	"kingdom/internal/api"
 	"kingdom/internal/bootstrapassets"
-	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/dbmigrations"
 	"kingdom/internal/external"
 	githubexternal "kingdom/internal/external/github"
@@ -51,7 +49,6 @@ const (
 	defaultSummonRegistryFileName = "summon_registry.json"
 
 	defaultWorkflowSeedName = "work-order-v1.json"
-	defaultWorkflowVersion  = "seed-v1"
 
 	defaultSummonReadyTimeout = 30 * time.Second
 
@@ -689,12 +686,6 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 	warmResult, stopWarm := startSummonWarm(startupCtx, apiHandler.Warm)
 	defer func() { err = errors.Join(err, stopWarm()) }()
 
-	if err := ensureWorkflowSeeds(startupCtx, cfg); err != nil {
-		if startupStopWasRequested() {
-			return nil
-		}
-		return fmt.Errorf("ensure workflow seeds: %w", err)
-	}
 	select {
 	case elapsed := <-warmResult:
 		_, _ = fmt.Fprintf(stderr, "summon: provider surfaces warmed in %s\n", elapsed.Round(time.Millisecond))
@@ -1872,127 +1863,6 @@ func summonDetachedProgressText(state summonStateRecord) string {
 		return ""
 	}
 	return fmt.Sprintf("[startup] %s", phase)
-}
-
-func ensureWorkflowSeeds(ctx context.Context, cfg installConfig) error {
-	seeds, err := bootstrapassets.ListWorkflowSeeds()
-	if err != nil {
-		return err
-	}
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	for _, seed := range seeds {
-		body := map[string]any{
-			"workflow_id":     seed.WorkflowID,
-			"version":         defaultWorkflowVersion,
-			"definition_json": seed.Definition,
-		}
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("encode workflow seed %q publish payload: %w", seed.Name, err)
-		}
-
-		credential, err := localauth.ReadCredential(localauth.CredentialPath(cfg.KingdomHome))
-		if err != nil {
-			return err
-		}
-		idempotencyKey, err := newIdempotencyKey("summon-seed-workflow")
-		if err != nil {
-			return err
-		}
-		published := false
-		for attempt := 0; attempt < 3; attempt++ {
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, summonAPIURL(cfg)+"/workflows/publish", bytes.NewReader(encoded))
-			if err != nil {
-				return err
-			}
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Accept", "application/json")
-			req.Header.Set("Authorization", "Bearer "+string(credential))
-			req.Header.Set("Idempotency-Key", idempotencyKey)
-
-			resp, err := client.Do(req)
-			if err != nil {
-				if attempt < 2 {
-					if err := waitForRetry(ctx, 100*time.Millisecond); err != nil {
-						return err
-					}
-					continue
-				}
-				return fmt.Errorf("publish workflow seed %q outcome is ambiguous: %w", seed.Name, err)
-			}
-			bodyRaw, readErr := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
-			if readErr != nil {
-				if attempt < 2 {
-					if err := waitForRetry(ctx, 100*time.Millisecond); err != nil {
-						return err
-					}
-					continue
-				}
-				return fmt.Errorf("publish workflow seed %q response is ambiguous: %w", seed.Name, readErr)
-			}
-			if resp.StatusCode == http.StatusCreated || workflowSeedAlreadyExists(resp.StatusCode, bodyRaw) {
-				published = true
-				break
-			}
-			if resp.StatusCode == http.StatusConflict && canonicalErrorCode(bodyRaw) == string(errorcatalog.CodeIdempotencyPending) && attempt < 2 {
-				if err := waitForRetry(ctx, 100*time.Millisecond); err != nil {
-					return err
-				}
-				continue
-			}
-			return fmt.Errorf("publish workflow seed %q failed: status=%d body=%s", seed.Name, resp.StatusCode, strings.TrimSpace(string(bodyRaw)))
-		}
-		if !published {
-			return fmt.Errorf("publish workflow seed %q remained pending", seed.Name)
-		}
-	}
-
-	return nil
-}
-
-func waitForRetry(ctx context.Context, delay time.Duration) error {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-func canonicalErrorCode(body []byte) string {
-	return parseCanonicalError(body).Code
-}
-
-type canonicalErrorSummary struct {
-	Code          string
-	Message       string
-	CorrelationID string
-}
-
-func parseCanonicalError(body []byte) canonicalErrorSummary {
-	var envelope struct {
-		Error struct {
-			Code          string `json:"code"`
-			Message       string `json:"message"`
-			CorrelationID string `json:"correlation_id"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(body, &envelope) != nil {
-		return canonicalErrorSummary{}
-	}
-	return canonicalErrorSummary{Code: envelope.Error.Code, Message: envelope.Error.Message, CorrelationID: envelope.Error.CorrelationID}
-}
-
-func workflowSeedAlreadyExists(status int, body []byte) bool {
-	errorSummary := parseCanonicalError(body)
-	return status == http.StatusConflict &&
-		errorSummary.Code == string(errorcatalog.CodeIdempotencyConflict) &&
-		errorSummary.CorrelationID == "api.publish_workflow" &&
-		errorSummary.Message == "workflow version already exists"
 }
 
 func withSummonAccessLog(next http.Handler, writer io.Writer) http.Handler {
