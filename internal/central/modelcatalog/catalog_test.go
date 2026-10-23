@@ -268,3 +268,33 @@ func TestDiscoveryTransportRejectsRedirectsAndUnapprovedPrivateAddresses(t *test
 		t.Fatal("redirect followed")
 	}
 }
+
+func TestCatalogEvictsExpiredEntriesAndBoundsRevisionCache(t *testing.T) {
+	f := setup(t)
+	for i := 0; i < 10000; i++ {
+		metadata := f.connection
+		metadata.Revision = int64(i + 2)
+		f.service.cache[key(metadata)] = entry{metadata: metadata, snapshot: Snapshot{ExpiresAt: f.now.Add(time.Minute)}}
+	}
+	if _, err := f.refresh(); err == nil {
+		t.Fatal("new revision exceeded cache bound")
+	}
+	if len(f.service.cache) != 10000 {
+		t.Fatal("cache bound changed")
+	}
+	f.now = f.now.Add(2 * time.Minute)
+	if _, err := f.refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.service.cache) != 1 {
+		t.Fatal("expired revisions retained")
+	}
+	if err := f.service.Validate(context.Background(), f.connection, "custom/model", "medium"); err != nil {
+		t.Fatal(err)
+	}
+	metadata := f.connection
+	metadata.Revision = 2
+	if err := f.service.Validate(context.Background(), metadata, "custom/model", "medium"); err == nil {
+		t.Fatal("expired foreign revision accepted")
+	}
+}
