@@ -53,21 +53,23 @@ type Models struct {
 }
 type Config struct {
 	RootDir, PublicOrigin, GatewayID, WorkerID string
-	CatalogDB                                  *sql.DB
-	Catalog                                    *catalog.Store
-	Connections                                *connections.Store
-	Registry                                   *capability.Registry
-	RequestKey                                 func(context.Context, string) ([]byte, error)
-	Models                                     func(context.Context, string) (Models, error)
-	Endpoint                                   worker.Endpoint
-	Image                                      string
-	ProfileSHA256                              []byte
-	Server                                     worker.ServerProfile
-	HelperSHA256, FileToolSHA256               string
-	AllowedIPs                                 []string
-	ModelOrigins                               []modelproxy.OriginPolicy
-	ModelTLSRoots                              *x509.CertPool
-	TransferTimeout, StopTimeout               time.Duration
+	// WorkerOrigin is the sandbox-reachable TLS origin. Empty uses PublicOrigin.
+	WorkerOrigin                 string
+	CatalogDB                    *sql.DB
+	Catalog                      *catalog.Store
+	Connections                  *connections.Store
+	Registry                     *capability.Registry
+	RequestKey                   func(context.Context, string) ([]byte, error)
+	Models                       func(context.Context, string) (Models, error)
+	Endpoint                     worker.Endpoint
+	Image                        string
+	ProfileSHA256                []byte
+	Server                       worker.ServerProfile
+	HelperSHA256, FileToolSHA256 string
+	AllowedIPs                   []string
+	ModelOrigins                 []modelproxy.OriginPolicy
+	ModelTLSRoots                *x509.CertPool
+	TransferTimeout, StopTimeout time.Duration
 }
 type Service struct {
 	c        Config
@@ -76,8 +78,11 @@ type Service struct {
 }
 
 func New(ctx context.Context, c Config) (*Service, error) {
-	u, e := url.Parse(c.PublicOrigin)
-	if c.CatalogDB == nil || c.Catalog == nil || c.Connections == nil || c.Registry == nil || c.RequestKey == nil || c.Models == nil || !filepath.IsAbs(c.RootDir) || c.GatewayID == "" || c.WorkerID == "" || e != nil || u.Scheme != "https" || u.Hostname() == "" || u.Path != "" || u.RawPath != "" || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+	var e error
+	if c.WorkerOrigin == "" {
+		c.WorkerOrigin = c.PublicOrigin
+	}
+	if c.CatalogDB == nil || c.Catalog == nil || c.Connections == nil || c.Registry == nil || c.RequestKey == nil || c.Models == nil || !filepath.IsAbs(c.RootDir) || c.GatewayID == "" || c.WorkerID == "" || !validOrigin(c.PublicOrigin) || !validOrigin(c.WorkerOrigin) {
 		return nil, errors.New("explicit hosted builder configuration required")
 	}
 	if !digest(c.HelperSHA256) || !digest(c.FileToolSHA256) || !digest(c.Server.LauncherSHA256) || !digest(c.Server.OpenCodeSHA256) || len(c.ProfileSHA256) != 32 || strings.Count(c.Image, "@sha256:") != 1 || !digest(strings.Split(c.Image, "@sha256:")[1]) || c.Server.Lifetime <= 0 || c.Server.ContextLimit <= 0 || c.Server.OutputLimit <= 0 {
@@ -97,6 +102,19 @@ func New(ctx context.Context, c Config) (*Service, error) {
 	}
 	return &Service{c: c, handlers: map[string]http.Handler{}}, nil
 }
+func (c Config) workerBase(project string) string {
+	origin := c.WorkerOrigin
+	if origin == "" {
+		origin = c.PublicOrigin
+	}
+	return origin + "/worker/projects/" + project
+}
+
+func validOrigin(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.Path == "" && u.RawPath == "" && u.Opaque == "" && u.User == nil && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && !strings.Contains(raw, "#")
+}
+
 func privateDir(path string) error {
 	if e := os.MkdirAll(path, 0700); e != nil {
 		return e
@@ -249,7 +267,7 @@ func (s *Service) Build(b projects.BuildContext, id string, auth api.Authenticat
 	if e != nil {
 		return nil, e
 	}
-	base := s.c.PublicOrigin + "/worker/projects/" + id
+	base := s.c.workerBase(id)
 	modelURL := base + "/model/v1"
 	pluginURL := base + "/plugin"
 	target := remote.Target{WorkerID: s.c.WorkerID, GatewayID: s.c.GatewayID, WorkspaceID: mapping.ID}
