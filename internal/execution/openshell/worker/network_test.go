@@ -28,7 +28,7 @@ func TestFixedEgressRejectsBroadOrUntrustedEndpoints(t *testing.T) {
 			t.Fatal("egress binary not pinned")
 		}
 		for _, endpoint := range rule.Endpoints {
-			if endpoint.Enforcement != policy.NetworkEnforcementMode_NETWORK_ENFORCEMENT_MODE_ENFORCE || endpoint.Tls != policy.NetworkTlsMode_NETWORK_TLS_MODE_TERMINATE {
+			if endpoint.Enforcement != policy.NetworkEnforcementMode_NETWORK_ENFORCEMENT_MODE_ENFORCE || endpoint.Tls != policy.NetworkTlsMode_NETWORK_TLS_MODE_UNSPECIFIED {
 				t.Fatal("egress not enforced")
 			}
 			for _, r := range endpoint.Rules {
@@ -38,7 +38,10 @@ func TestFixedEgressRejectsBroadOrUntrustedEndpoints(t *testing.T) {
 			}
 		}
 	}
-	if p["model"].Endpoints[0].Rules[0].Allow.Path != "/api/v1/responses" || p["callback"].Endpoints[0].Rules[0].Allow.Path != "/callback/v1/native/admit" {
+	if len(p["callback"].Endpoints[0].Rules) != 3 {
+		t.Fatal("unsupported callback route retained")
+	}
+	if p["model"].Endpoints[0].Rules[0].Allow.Path != "/api/v1/responses" || p["callback"].Endpoints[0].Rules[0].Allow.Path != "/callback/v1/native/invoke" {
 		t.Fatal("fixed paths changed")
 	}
 }

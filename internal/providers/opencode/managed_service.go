@@ -229,14 +229,32 @@ func (s *ManagedService) closeEntry(ctx context.Context, e *managedEntry) error 
 	s.mu.Unlock()
 	return nil
 }
+// Drain closes writers and capabilities without attempting final runtime deletion.
+// Durable worker ownership is used when preparation or a process restart lost
+// the in-memory handle.
+func (s *ManagedService) Drain(ctx context.Context, invocation string) error {
+	s.mu.Lock()
+	entry := s.entries[invocation]
+	s.mu.Unlock()
+	if entry != nil {
+		return s.closeEntry(ctx, entry)
+	}
+	return s.worker.CloseInvocation(ctx, invocation)
+}
+
 func (s *ManagedService) Discard(ctx context.Context, invocation string) error {
 	s.mu.Lock()
 	entry := s.entries[invocation]
 	s.mu.Unlock()
-	if entry == nil {
-		return nil
+	if entry != nil {
+		if err := s.closeEntry(ctx, entry); err != nil {
+			return err
+		}
+		if !nilManagedDependency(entry.handle) {
+			return entry.handle.Discard(ctx)
+		}
 	}
-	return s.closeEntry(ctx, entry)
+	return s.worker.DiscardInvocation(ctx, invocation)
 }
 func (s *ManagedService) Cancel(ctx context.Context, attempt string) error {
 	s.mu.Lock()

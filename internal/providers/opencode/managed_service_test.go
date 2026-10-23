@@ -26,6 +26,7 @@ import (
 type testManagedWorker struct {
 	provision func(context.Context, ManagedProvision) (ManagedHandle, error)
 	close     func(context.Context, string) error
+	discard   func(context.Context, string) error
 }
 
 func (w *testManagedWorker) Provision(ctx context.Context, p ManagedProvision) (ManagedHandle, error) {
@@ -33,6 +34,13 @@ func (w *testManagedWorker) Provision(ctx context.Context, p ManagedProvision) (
 }
 func (w *testManagedWorker) CloseInvocation(ctx context.Context, id string) error {
 	return w.close(ctx, id)
+}
+
+func (w *testManagedWorker) DiscardInvocation(ctx context.Context, id string) error {
+	if w.discard != nil {
+		return w.discard(ctx, id)
+	}
+	return nil
 }
 
 type testManagedHandle struct {
@@ -50,6 +58,11 @@ func (h *testManagedHandle) AuthorizeRequest(ctx context.Context, id providerexe
 func (*testManagedHandle) RecoverReceipts(context.Context, providerexecution.RequestIdentity) error {
 	return nil
 }
+func (*testManagedHandle) CancelTools(context.Context, providerexecution.RequestIdentity) error {
+	return nil
+}
+func (*testManagedHandle) Export(context.Context) error      { return nil }
+func (*testManagedHandle) Discard(context.Context) error     { return nil }
 func (h *testManagedHandle) Close(ctx context.Context) error { return h.close(ctx) }
 
 func managedOwner(t *testing.T, snapshots ...access.Snapshot) (*ownerFixture, *providerrequest.Authority, ExecuteRequest) {
@@ -411,5 +424,57 @@ func TestManagedPrepareRejectsAlreadyTerminatedServer(t *testing.T) {
 	if _, err := s.Prepare(context.Background(), req); err == nil {
 		s.CloseContext(context.Background())
 		t.Fatal("terminated server accepted as prepared")
+	}
+}
+
+func TestManagedDiscardRecoversDurableDisposalWithoutInMemoryHandle(t *testing.T) {
+	_, a, _ := managedOwner(t)
+	denied := errors.New("canonical settlement unavailable")
+	calls := 0
+	worker := &testManagedWorker{discard: func(_ context.Context, id string) error {
+		calls++
+		if id != "invocation" {
+			t.Fatal("foreign disposal identity")
+		}
+		if calls == 1 {
+			return denied
+		}
+		return nil
+	}}
+	s := serviceManaged(t, a, worker)
+	if err := s.Discard(context.Background(), "invocation"); !errors.Is(err, denied) {
+		t.Fatal("lost disposal debt", err)
+	}
+	if err := s.Discard(context.Background(), "invocation"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatal("missing durable disposal replay")
+	}
+}
+
+func TestManagedDrainRecoversClosureWithoutDisposing(t *testing.T) {
+	_, a, _ := managedOwner(t)
+	closed, disposed := 0, 0
+	expected := errors.New("writers unresolved")
+	worker := &testManagedWorker{close: func(_ context.Context, id string) error {
+		closed++
+		if id != "invocation" {
+			t.Fatal(id)
+		}
+		if closed == 1 {
+			return expected
+		}
+		return nil
+	}, discard: func(context.Context, string) error { disposed++; return nil }}
+	s := serviceManaged(t, a, worker)
+	if err := s.Drain(context.Background(), "invocation"); !errors.Is(err, expected) {
+		t.Fatal(err)
+	}
+	if err := s.Drain(context.Background(), "invocation"); err != nil {
+		t.Fatal(err)
+	}
+	if closed != 2 || disposed != 0 {
+		t.Fatalf("close=%d discard=%d", closed, disposed)
 	}
 }

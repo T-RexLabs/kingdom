@@ -32,7 +32,7 @@ func (e Egress) policy() (map[string]*policy.NetworkPolicyRule, error) {
 	for _, service := range []struct {
 		name, base string
 		paths      []string
-	}{{"model", e.ModelURL, []string{"/responses", "/chat/completions"}}, {"callback", e.CallbackURL, []string{"/v1/native/admit", "/v1/native/finish", "/v1/command/invoke", "/v1/command/cancel"}}} {
+	}{{"model", e.ModelURL, []string{"/responses", "/chat/completions"}}, {"callback", e.CallbackURL, []string{"/v1/native/invoke", "/v1/command/invoke", "/v1/command/cancel"}}} {
 		u, err := url.Parse(service.base)
 		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || u.Opaque != "" || strings.ContainsAny(u.Hostname(), "*?[] \\%") || strings.HasSuffix(u.Path, "/") || strings.ContainsAny(u.Path, "*?\\") || strings.Contains(u.Path, "..") || service.name == "model" && !strings.HasSuffix(u.Path, "/v1") {
 			return nil, errors.New("invalid worker service endpoint pin")
@@ -48,7 +48,9 @@ func (e Egress) policy() (map[string]*policy.NetworkPolicyRule, error) {
 		for _, path := range service.paths {
 			rules = append(rules, &policy.L7Rule{Allow: &policy.L7Allow{Method: "POST", Path: u.Path + path}})
 		}
-		endpoint := &policy.NetworkEndpoint{Host: u.Hostname(), Port: uint32(port), Protocol: "rest", Tls: policy.NetworkTlsMode_NETWORK_TLS_MODE_TERMINATE, Enforcement: policy.NetworkEnforcementMode_NETWORK_ENFORCEMENT_MODE_ENFORCE, Rules: rules, AllowedIps: append([]string(nil), e.AllowedIPs...)}
+		// Current OpenShell performs TLS termination by default. The legacy
+		// explicit TERMINATE enum is rejected by the native policy validator.
+		endpoint := &policy.NetworkEndpoint{Host: u.Hostname(), Port: uint32(port), Protocol: "rest", Enforcement: policy.NetworkEnforcementMode_NETWORK_ENFORCEMENT_MODE_ENFORCE, Rules: rules, AllowedIps: append([]string(nil), e.AllowedIPs...)}
 		result[service.name] = &policy.NetworkPolicyRule{Name: "kingdom-" + service.name, Endpoints: []*policy.NetworkEndpoint{endpoint}, Binaries: []*policy.NetworkBinary{{Path: providerlauncher.OpenCodePath}}}
 	}
 	return result, nil
