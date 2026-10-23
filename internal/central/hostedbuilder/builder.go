@@ -308,7 +308,7 @@ func (s *Service) Build(b projects.BuildContext, id string, auth api.Authenticat
 	s.handlers[id] = mux
 	owned.registered = true
 	s.mu.Unlock()
-	instance, e := runtime.New(b.Startup, runtime.Config{Mode: runtime.Hosted, LifetimeContext: b.Lifetime, DB: db, ThemeStore: themes, Paths: paths(home), ProjectRoot: projectRoot, RuntimeRoot: home, BasePath: "/api/v1", PublicAPIBase: "/api/projects/" + id + "/api/v1", ProviderEngine: "opencode", GovernanceMode: "autonomous", PublishMode: "direct", Authenticator: auth, ProviderService: managed, ProviderModelCatalog: modelConfig.Catalog, HostedSelection: &api.HostedSelectionConfig{ProjectID: id, Resolver: selection}})
+	instance, e := runtime.New(b.Startup, runtime.Config{Mode: runtime.Hosted, LifetimeContext: b.Lifetime, DB: db, ThemeStore: themes, Paths: paths(home), ProjectRoot: projectRoot, YoloOutputRoot: projectRoot, RuntimeRoot: home, BasePath: "/api/v1", PublicAPIBase: "/api/projects/" + id + "/api/v1", ProviderEngine: "opencode", GovernanceMode: "autonomous", PublishMode: "direct", Authenticator: auth, ProviderService: managed, ProviderModelCatalog: modelConfig.Catalog, HostedSelection: &api.HostedSelectionConfig{ProjectID: id, Resolver: selection}})
 	owned.instance = instance
 	if e != nil {
 		return nil, e

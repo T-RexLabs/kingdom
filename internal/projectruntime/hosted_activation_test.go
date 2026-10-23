@@ -2,8 +2,11 @@ package projectruntime
 
 import (
 	"context"
+	"database/sql"
 	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/theme"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -26,5 +29,24 @@ func TestHostedManagedProviderReachesCommonValidation(t *testing.T) {
 	}
 	if e = validate(Config{Mode: Hosted, ProviderService: &opencode.ManagedService{}, Authenticator: authStub{}, ProviderModelCatalog: explicitCatalog{}}); e == nil {
 		t.Fatal("zero managed service accepted")
+	}
+}
+
+func TestHostedExecutionRequiresMappedPublicationRoot(t *testing.T) {
+	p, err := opencode.NewManagedService(opencode.ManagedServiceConfig{Worker: hostedWorkerStub{}, Requests: providerrequest.NewAuthority(nil, nil), CaptureRoot: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	cfg := Config{Mode: Hosted, ProviderService: p, Authenticator: authStub{}, ProviderModelCatalog: explicitCatalog{}, DB: &sql.DB{}, ThemeStore: &theme.Store{}, ProjectRoot: root, RuntimeRoot: filepath.Join(root, "runtime"), BasePath: "/api/v1"}
+	for _, output := range []string{"", filepath.Join(root, "other")} {
+		cfg.YoloOutputRoot = output
+		if err := validate(cfg); err == nil {
+			t.Fatalf("accepted hosted publication root %q", output)
+		}
+	}
+	cfg.YoloOutputRoot = root
+	if err := validate(cfg); err != nil {
+		t.Fatal(err)
 	}
 }

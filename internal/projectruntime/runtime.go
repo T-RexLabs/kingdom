@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"time"
 
@@ -121,6 +122,9 @@ func validate(cfg Config) error {
 	}
 	if cfg.DB == nil || cfg.ThemeStore == nil || cfg.ProjectRoot == "" || cfg.RuntimeRoot == "" {
 		return errors.New("project runtime requires database, theme store, project and runtime roots")
+	}
+	if cfg.Mode == Hosted && (cfg.YoloOutputRoot == "" || filepath.Clean(cfg.YoloOutputRoot) != filepath.Clean(cfg.ProjectRoot)) {
+		return errors.New("hosted execution must publish to its mapped project root")
 	}
 	if _, err := api.ValidateBasePath(cfg.BasePath); err != nil {
 		return err
