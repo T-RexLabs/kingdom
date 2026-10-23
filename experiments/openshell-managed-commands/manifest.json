@@ -1,11 +1,11 @@
 {
-  "profile": "kingdom-openshell-managed-commands-experiment/v4",
+  "profile": "kingdom-openshell-managed-commands-experiment/v5",
   "upstream_version": "v0.1.5",
   "upstream_revision": "bdb956f2cd65",
   "source_url": "https://github.com/NVIDIA/OpenShell/tree/bdb956f2cd65",
   "source_tree_sha256": "9ce4ae8323cfd5645b8b3d0275768bcf52bab8c2ac1e6361352fa041c33ed22e",
-  "patched_tree_sha256": "12aaffc7b9eae0bf56f823f6e295d5f2be7621a2523f30aae163cca055a0e254",
-  "patch_sha256": "0077571b5a59bb19a8093109e695c10bae2f785c7ed6cd7cfc4de189347ab5cb",
+  "patched_tree_sha256": "06395b2072846bc175634024fb339db1c516ed281b40fbc1d62c21bfcfd42633",
+  "patch_sha256": "bb5366d386a4e586d7cd30d10582aeca2ae2e44042da0f486c02136b90fb6019",
   "cargo_feature": "kingdom-managed-commands",
   "rust_toolchain": "1.95.0",
   "verified_target": "aarch64-unknown-linux-musl",
@@ -16,6 +16,7 @@
     "crates/openshell-driver-docker/src/isolation.rs",
     "crates/openshell-driver-docker/src/lib.rs",
     "crates/openshell-driver-docker/src/tests.rs",
+    "crates/openshell-isolation-interface/src/contract.rs",
     "crates/openshell-sandbox-backend/src/boundary_protocol.rs",
     "crates/openshell-sandbox-backend/src/kingdom_managed.rs",
     "crates/openshell-sandbox-backend/src/kingdom_managed_profile.rs",
@@ -23,9 +24,11 @@
     "crates/openshell-sandbox-backend/src/lib.rs",
     "crates/openshell-sandbox-backend/src/protobuf.rs",
     "crates/openshell-sandbox-backend/src/runtime.rs",
+    "crates/openshell-sandbox-backend/src/runtime/test_support.rs",
     "crates/openshell-sandbox-backend/src/runtime_managed.rs",
     "crates/openshell-sandbox/Cargo.toml",
     "crates/openshell-sandbox/src/boundary_exec.rs",
+    "crates/openshell-sandbox/src/boundary_exec/project_tool.rs",
     "crates/openshell-sandbox/src/boundary_server.rs",
     "crates/openshell-sandbox/src/kingdom_exec_journal.rs",
     "crates/openshell-sandbox/src/kingdom_managed.rs",
@@ -33,6 +36,9 @@
     "crates/openshell-sandbox/src/lib.rs",
     "crates/openshell-sandbox/src/linux/child_seccomp.rs",
     "crates/openshell-sandbox/src/native_api.rs",
+    "crates/openshell-sandbox/src/sandbox/linux/landlock.rs",
+    "crates/openshell-sandbox/src/sandbox/linux/mod.rs",
+    "crates/openshell-sandbox/src/sandbox/linux/tool_roots.rs",
     "crates/openshell-server/Cargo.toml",
     "crates/openshell-server/src/auth/descriptor_authz.rs",
     "crates/openshell-server/src/compute/managed_retention.rs",
@@ -41,6 +47,7 @@
     "crates/openshell-server/src/grpc/interactive_exec_tests.rs",
     "crates/openshell-server/src/grpc/managed.rs",
     "crates/openshell-server/src/grpc/managed_archive.rs",
+    "crates/openshell-server/src/grpc/managed_delete.rs",
     "crates/openshell-server/src/grpc/mod.rs",
     "crates/openshell-server/src/grpc/mutation_replay/streaming/tests.rs",
     "crates/openshell-server/src/grpc/sandbox.rs",
@@ -49,13 +56,14 @@
     "crates/openshell-server/src/supervisor_session.rs",
     "crates/openshell-supervisor-process/src/lib.rs",
     "crates/openshell-supervisor-process/src/managed_relay.rs",
+    "crates/openshell-supervisor-process/src/ssh.rs",
     "crates/openshell-supervisor-process/src/supervisor_session.rs",
     "proto/kingdom_managed.proto",
     "proto/kingdom_managed_internal.proto",
     "proto/openshell.proto",
     "proto/sandbox_protocol.proto"
   ],
-  "verification_date": "2026-10-21",
+  "verification_date": "2026-10-23",
   "gateway": {
     "target": "aarch64-unknown-linux-gnu",
     "features": [
@@ -64,21 +72,18 @@
     ],
     "base_image": "ghcr.io/nvidia/openshell/gateway@sha256:4ae2d75c30d1a767a322e17147bb5e3c82da6a2755d6494a6a315f261da78191",
     "z3_library_sha256": "6a1f171b6a6b040ffa0bf7e8048c50a7a7984720eabb488bf21780d9cdc0738a",
-    "binary_sha256": "7cf4a581fe3224667fe3882b2dc6553ee4b9b551026c6b6336c5bb1077de92df",
-    "verified_image": "kingdom-managed-gateway@sha256:e4689b44f7b5d3d2914d5c91ef647e0be26c410cbee8ff56bb954bcfb4ca1793"
+    "binary_sha256": "b1c00a41ed3f0cd4fafd189d581eef104d741e20c8877616a8701fdce9a49416",
+    "verified_image": "kingdom-managed-gateway@sha256:87b615d8ee57bfe75b6782a162d286deadeb6fd6a313c68a548de0c94ab6d721"
   },
   "supervisor": {
     "target": "aarch64-unknown-linux-gnu",
     "base_image": "ghcr.io/nvidia/openshell/supervisor@sha256:650c791fb00320561612a892e86c5d23d8cfd30a16d07dc530ee57e6bcbbbb6b",
     "gcc_runtime_sha256": "046856f95f4636f1fc7c3a12bf4f3cd5634c2fc5145c3fdf7395d4f349fa69c7",
-    "binary_sha256": "ac32b29898e9c84d81691bdb9fec1bc6db2b49c59f3813a828f5ae687ca3e4b0",
-    "verified_image": "kingdom-managed-supervisor@sha256:6419ba187f169f569e3cc596821b218f1438c08064d63dfc5e9f8472dbdb74a5"
+    "binary_sha256": "fe1a7eb899fa00b8339a80a58e483b0b8609ed79b9108ff8392529a0edb6076e",
+    "verified_image": "kingdom-managed-supervisor@sha256:76c98301bccef38272ddd1075cc4b36000dc15f558734c61906dec59178b893b"
   },
-  "artifact_verification": "live authenticated managed protocol and workspace transfer passed; hosted execution not active",
-  "sandbox_runtime_binary_sha256": "eceb24adcf95166477e1b5cf1691cfbed1317f861ff3b2bf49791575d5320a2e",
-  "sandbox_runtime_image": "kingdom-managed-runtime@sha256:2a75806501e6ea2022fd366ffa0ef0ed852d5b4d44917c290ff9d877eac8ec35",
-  "live_evidence": [
-    "kd-sandbox/central-openshell-20261021-managed-live/acceptance-06",
-    "kd-sandbox/workspace-transfer/acceptance-02"
-  ]
+  "artifact_verification": "Final v5 source reproduced; scoped kernel, managed gateway and native lifecycle regression suites passed; all three ARM64 binaries built and gateway/supervisor image startup checked. Live v5 acceptance pending.",
+  "live_evidence": [],
+  "sandbox_runtime_binary_sha256": "f62d83df3b53d945ac5d7123e41cd6179833c9a051cb00cf42182d6cf5df2a59",
+  "sandbox_runtime_image": "kingdom-managed-runtime@sha256:84f26534b8721b08e8c6c8604bcf97d42cdc511bd1b36b0f23c8532df78d9e7e"
 }

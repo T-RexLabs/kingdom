@@ -588,6 +588,17 @@
 +    assert!(require_created_image(&expected, None).is_err());
 +    assert!(require_created_image("image:latest", Some("image:latest")).is_err());
 +}
+--- a/crates/openshell-isolation-interface/src/contract.rs
++++ b/crates/openshell-isolation-interface/src/contract.rs
+@@ -336,6 +336,8 @@
+     /// Trusted helper implemented by the sandbox runtime. This intent is set
+     /// only by supervisor-owned protocol adapters, never by public exec APIs.
+     pub runtime_helper: Option<RuntimeHelper>,
++    /// Restrict managed tools to the fixed project tree and clean environment.
++    pub project_tool: bool,
+     /// Extra environment over the boundary's base.
+     pub env: Vec<(String, String)>,
+     /// Working directory, if any.
 --- a/crates/openshell-sandbox-backend/src/boundary_protocol.rs
 +++ b/crates/openshell-sandbox-backend/src/boundary_protocol.rs
 @@ -715,6 +715,10 @@
@@ -619,9 +630,49 @@
      ImagePolicy {
          yaml: Option<String>,
          invalid: bool,
+@@ -1024,6 +1032,7 @@
+     pub shell: Option<ShellSpecWire>,
+     #[serde(default)]
+     pub runtime_helper: Option<RuntimeHelperWire>,
++    pub project_tool: bool,
+     pub env: Vec<(String, String)>,
+     pub workdir: Option<String>,
+     pub pty: bool,
+@@ -1065,6 +1074,7 @@
+             program: spec.program,
+             args: spec.args,
+             shell: spec.shell.map(ShellSpecWire::from),
++            project_tool: spec.project_tool,
+             runtime_helper: spec.runtime_helper.map(|helper| match helper {
+                 openshell_isolation_interface::contract::RuntimeHelper::Sftp => {
+                     RuntimeHelperWire::Sftp
+@@ -1083,6 +1093,7 @@
+             program: spec.program,
+             args: spec.args,
+             shell: spec.shell.map(ShellSpec::from),
++            project_tool: spec.project_tool,
+             runtime_helper: spec.runtime_helper.map(|helper| match helper {
+                 RuntimeHelperWire::Sftp => {
+                     openshell_isolation_interface::contract::RuntimeHelper::Sftp
+@@ -1575,6 +1586,7 @@
+                 program: "/bin/true".to_string(),
+                 args: Vec::new(),
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: None,
+                 env: Vec::new(),
+                 workdir: None,
+@@ -1793,6 +1805,7 @@
+             program: String::new(),
+             args: Vec::new(),
+             shell: None,
++            project_tool: false,
+             runtime_helper: Some(openshell_isolation_interface::contract::RuntimeHelper::Sftp),
+             env: Vec::new(),
+             workdir: None,
 --- /dev/null
 +++ b/crates/openshell-sandbox-backend/src/kingdom_managed.rs
-@@ -0,0 +1,778 @@
+@@ -0,0 +1,821 @@
 +// SPDX-License-Identifier: Apache-2.0
 +//! Checked identities and receipts for the opt-in managed execution extension.
 +//! Validation cannot substitute for authentication or a trusted deployment pin.
@@ -631,7 +682,7 @@
 +use openshell_isolation_interface::contract::BackendError;
 +use prost::Message;
 +
-+pub const CAPABILITY: &str = "openshell.kingdom.managed-execution.v1";
++pub const CAPABILITY: &str = "openshell.kingdom.managed-execution.v2";
 +pub const START_METHOD: &str = "/kingdom.openshell.managed.v1.ManagedExecutions/StartExecution";
 +pub const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 +pub const MAX_CHUNK_BYTES: usize = 64 * 1024;
@@ -693,6 +744,21 @@
 +        .command
 +        .as_ref()
 +        .ok_or_else(|| invalid("managed command missing"))?;
++    match p::CommandScope::try_from(command.scope) {
++        Ok(p::CommandScope::Sandbox) => {}
++        Ok(p::CommandScope::ProjectTool) => {
++            if !command.environment.is_empty()
++                || !(command.workdir == "/workspace/project"
++                    || command.workdir.starts_with("/workspace/project/"))
++                || command.workdir[1..]
++                    .split('/')
++                    .any(|part| part.is_empty() || part == "." || part == "..")
++            {
++                return Err(invalid("invalid project tool scope"));
++            }
++        }
++        Err(_) => return Err(invalid("unknown managed command scope")),
++    }
 +    if command.argv.is_empty()
 +        || command.argv.len() > 4096
 +        || command.argv[0].is_empty()
@@ -1012,6 +1078,34 @@
 +            }),
 +        }
 +    }
++    #[test]
++    fn project_scope_rejects_environment_and_directory_widening() {
++        let mut value = request(runtime());
++        let command = value.command.as_mut().unwrap();
++        command.scope = p::CommandScope::ProjectTool as i32;
++        command.workdir = "/workspace/project".into();
++        assert!(validate_start(&value).is_ok());
++        value
++            .command
++            .as_mut()
++            .unwrap()
++            .environment
++            .insert("TOKEN".into(), "secret".into());
++        assert!(validate_start(&value).is_err());
++        value.command.as_mut().unwrap().environment.clear();
++        for directory in [
++            "/workspace",
++            "/workspace/project/../.kingdom-provider",
++            "/workspace/project/./sub",
++            "/workspace/project-other",
++        ] {
++            value.command.as_mut().unwrap().workdir = directory.into();
++            assert!(validate_start(&value).is_err(), "{directory}");
++        }
++        value.command.as_mut().unwrap().scope = 99;
++        assert!(validate_start(&value).is_err());
++    }
++
 +    #[test]
 +    fn missing_capability_is_rejected_before_dispatch() {
 +        assert!(require_capability(&crate::isolation_protocol::metadata("old-runtime")).is_err());
@@ -2306,7 +2400,23 @@
  /// Stable isolation backend name implemented by `openshell-sandbox`.
 --- a/crates/openshell-sandbox-backend/src/protobuf.rs
 +++ b/crates/openshell-sandbox-backend/src/protobuf.rs
-@@ -510,6 +510,7 @@
+@@ -190,6 +190,7 @@
+                 command: s.command.clone(),
+                 login: s.login,
+             }),
++            project_tool: self.project_tool,
+             runtime_helper: self
+                 .runtime_helper
+                 .as_ref()
+@@ -216,6 +217,7 @@
+                 command: s.command,
+                 login: s.login,
+             }),
++            project_tool: v.project_tool,
+             runtime_helper: v
+                 .runtime_helper
+                 .map(|v| w::RuntimeHelperWire::from_proto(enum_value(v)?))
+@@ -510,6 +512,7 @@
              }),
              W::OpenMediation => P::OpenMediation(p::OpenMediation {}),
              W::AcceptNetwork => P::AcceptNetwork(p::AcceptNetwork {}),
@@ -2314,7 +2424,7 @@
          };
          Ok(p::RequestEnvelope {
              request_id: self.request_id.clone(),
-@@ -573,6 +574,9 @@
+@@ -573,6 +576,9 @@
              },
              P::OpenMediation(_) => W::OpenMediation,
              P::AcceptNetwork(_) => W::AcceptNetwork,
@@ -2324,7 +2434,7 @@
          };
          // The server derives a fingerprint from decoded typed fields. Clients
          // supply only the random ID; protobuf map order never changes a replay.
-@@ -593,6 +597,7 @@
+@@ -593,6 +599,7 @@
          use p::response_envelope::Response as P;
          use w::Response as W;
          let response = match &self.response {
@@ -2332,7 +2442,7 @@
              W::ImagePolicy { yaml, invalid } => P::ImagePolicy(p::ImagePolicy {
                  yaml: yaml.clone(),
                  invalid: *invalid,
-@@ -668,6 +673,9 @@
+@@ -668,6 +675,9 @@
          use p::response_envelope::Response as P;
          use w::Response as W;
          let response = match required(v.response)? {
@@ -2342,6 +2452,14 @@
              P::ImagePolicy(v) => W::ImagePolicy {
                  yaml: v.yaml,
                  invalid: v.invalid,
+@@ -814,6 +824,7 @@
+                 program: "/bin/true".into(),
+                 args: vec![],
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: None,
+                 env: vec![],
+                 workdir: None,
 --- a/crates/openshell-sandbox-backend/src/runtime.rs
 +++ b/crates/openshell-sandbox-backend/src/runtime.rs
 @@ -707,6 +707,10 @@
@@ -2424,14 +2542,10 @@
                              Request::AcceptNetwork => Response::Error {
                                  kind: crate::boundary_protocol::BoundaryErrorKind::Unavailable,
                                  message: "no pending network request".to_string(),
-@@ -3586,6 +3617,37 @@
-                 confirmation: Box::new(test_confirmation())
-             }
-         );
-+        server.abort();
-+    }
-+
-+    #[tokio::test]
+@@ -3590,6 +3621,37 @@
+     }
+ 
+     #[tokio::test]
 +    async fn managed_peer_without_capability_rejects_before_command_dispatch() {
 +        let certificate = test_certificate();
 +        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2459,9 +2573,31 @@
 +        .await
 +        .unwrap();
 +        assert!(matches!(response, Err(BackendError::Unsupported(_))));
-         server.abort();
-     }
- 
++        server.abort();
++    }
++
++    #[tokio::test]
+     async fn custom_transport_cannot_bypass_tls_peer_verification() {
+         let server_certificate = test_certificate();
+         let different_trust = test_certificate();
+@@ -3650,6 +3712,7 @@
+                 program: "/bin/true".to_string(),
+                 args: Vec::new(),
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: None,
+                 env: Vec::new(),
+                 workdir: None,
+--- a/crates/openshell-sandbox-backend/src/runtime/test_support.rs
++++ b/crates/openshell-sandbox-backend/src/runtime/test_support.rs
+@@ -893,6 +893,7 @@
+                 program: "/bin/true".into(),
+                 args: Vec::new(),
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: None,
+                 env: Vec::new(),
+                 workdir: None,
 --- /dev/null
 +++ b/crates/openshell-sandbox-backend/src/runtime_managed.rs
 @@ -0,0 +1,251 @@
@@ -2729,18 +2865,20 @@
  [dependencies]
 --- a/crates/openshell-sandbox/src/boundary_exec.rs
 +++ b/crates/openshell-sandbox/src/boundary_exec.rs
-@@ -3,7 +3,9 @@
+@@ -3,7 +3,11 @@
  
  //! Workload-side implementation of RFC 0012 sandbox exec.
  
 -use crate::native_api::{BoundaryExec, BoundaryProcess, BoundaryTerminal, ExecSession};
++mod project_tool;
++
 +use crate::native_api::{
 +    BoundaryExec, BoundaryProcess, BoundaryTerminal, ExecSession, ManagedCommandCompletion,
 +};
  
  use std::collections::HashMap;
  #[cfg(target_os = "linux")]
-@@ -32,6 +34,8 @@
+@@ -32,6 +36,8 @@
  #[derive(Clone)]
  pub struct LocalBoundaryExec {
      policy: SandboxPolicy,
@@ -2749,7 +2887,7 @@
      base_workdir: Option<String>,
      ca_file_paths: Option<Arc<(std::path::PathBuf, std::path::PathBuf)>>,
      provider_credentials: ProviderCredentialState,
-@@ -54,6 +58,8 @@
+@@ -54,6 +60,8 @@
          #[cfg(target_os = "linux")] launcher: crate::linux::workload_launcher::WorkloadLauncher,
      ) -> Self {
          Self {
@@ -2758,9 +2896,73 @@
              policy,
              base_workdir,
              ca_file_paths,
-@@ -216,8 +222,11 @@
+@@ -69,6 +77,7 @@
+     fn runtime_helper(&self, spec: ExecSpec) -> Result<ExecSession, BackendError> {
+         self.runtime.ensure_active()?;
+         if spec.pty
++            || spec.project_tool
+             || spec.runtime_helper
+                 != Some(openshell_isolation_interface::contract::RuntimeHelper::Sftp)
+         {
+@@ -152,6 +161,26 @@
+         }
+         let mut command = Command::new(&program);
+         command.args(&args);
++        if spec.project_tool {
++            if !spec.env.is_empty() || spec.runtime_helper.is_some() || spec.pty {
++                return Err(BackendError::Denied(
++                    "invalid project tool execution".into(),
++                ));
++            }
++            command
++                .env_clear()
++                .env("PATH", "/usr/local/bin:/usr/bin:/bin")
++                .env("HOME", "/workspace/project")
++                .env("TMPDIR", "/tmp")
++                .env("LANG", "C.UTF-8")
++                .env("TERM", "dumb");
++            command.current_dir(
++                spec.workdir.as_deref().ok_or_else(|| {
++                    BackendError::Denied("project tool directory required".into())
++                })?,
++            );
++            return Ok(command);
++        }
+         let effective_workdir = spec.workdir.as_deref().or(self.base_workdir.as_deref());
+         let (session_user, session_home) =
+             crate::process::session_user_and_home(&self.policy, effective_workdir);
+@@ -196,12 +225,19 @@
+     #[cfg(target_os = "linux")]
+     fn prepare_sandbox(
+         &self,
++        policy: &SandboxPolicy,
+         workdir: Option<&str>,
++        roots: Option<&crate::sandbox::linux::PinnedToolRoots>,
+     ) -> Result<Option<crate::sandbox::linux::PreparedSandbox>, BackendError> {
+-        crate::sandbox::linux::log_sandbox_readiness(&self.policy, workdir);
++        crate::sandbox::linux::log_sandbox_readiness(policy, workdir);
++        if let Some(roots) = roots {
++            return crate::sandbox::linux::prepare_project_tool(policy, workdir, roots)
++                .map(Some)
++                .map_err(|error| BackendError::Process(error.to_string()));
++        }
+         let runtime_read_only =
+             crate::process::ca_runtime_read_only_paths(self.ca_file_paths.as_deref());
+-        crate::process::prepare_child_sandbox(&self.policy, workdir, &runtime_read_only)
++        crate::process::prepare_child_sandbox(policy, workdir, &runtime_read_only)
+             .map_err(|error| BackendError::Process(error.to_string()))
+     }
+ 
+@@ -213,15 +249,21 @@
+             .stdout(Stdio::piped())
+             .stderr(Stdio::piped());
+         let effective_workdir = spec.workdir.as_deref().or(self.base_workdir.as_deref());
++        let scoped = project_tool::policy(&self.policy, spec)?;
          #[cfg(target_os = "linux")]
-         let prepared = self.prepare_sandbox(effective_workdir)?;
+-        let prepared = self.prepare_sandbox(effective_workdir)?;
++        let prepared =
++            self.prepare_sandbox(&scoped.policy, effective_workdir, scoped.roots.as_ref())?;
++        let policy = scoped.policy;
          #[cfg(target_os = "linux")]
 -        let child_hardening = crate::linux::child_seccomp::prepare(std::process::id())
 -            .map_err(|error| BackendError::Process(error.to_string()))?;
@@ -2772,7 +2974,12 @@
          crate::pty::install_dedicated_process_group(&mut command);
          crate::pty::install_pre_exec_no_pty(
              &mut command,
-@@ -281,6 +290,8 @@
+-            self.policy.clone(),
++            policy,
+             effective_workdir.map(str::to_string),
+             #[cfg(target_os = "linux")]
+             prepared,
+@@ -281,6 +323,8 @@
              signal_lock,
              #[cfg(target_os = "linux")]
              managed_child,
@@ -2781,9 +2988,16 @@
          ));
          Ok(SpawnedExec {
              session: Some(ExecSession {
-@@ -326,8 +337,11 @@
+@@ -323,14 +367,20 @@
+         let mut command = self.command(spec)?;
+         command.stdin(stdin).stdout(stdout).stderr(slave);
+         let effective_workdir = spec.workdir.as_deref().or(self.base_workdir.as_deref());
++        let scoped = project_tool::policy(&self.policy, spec)?;
          #[cfg(target_os = "linux")]
-         let prepared = self.prepare_sandbox(effective_workdir)?;
+-        let prepared = self.prepare_sandbox(effective_workdir)?;
++        let prepared =
++            self.prepare_sandbox(&scoped.policy, effective_workdir, scoped.roots.as_ref())?;
++        let policy = scoped.policy;
          #[cfg(target_os = "linux")]
 -        let child_hardening = crate::linux::child_seccomp::prepare(std::process::id())
 -            .map_err(|error| BackendError::Process(error.to_string()))?;
@@ -2794,8 +3008,12 @@
 +        .map_err(|error| BackendError::Process(error.to_string()))?;
          crate::pty::install_pre_exec(
              &mut command,
-             self.policy.clone(),
-@@ -376,6 +390,8 @@
+-            self.policy.clone(),
++            policy,
+             effective_workdir.map(str::to_string),
+             slave_fd,
+             #[cfg(target_os = "linux")]
+@@ -376,6 +426,8 @@
              signal_lock,
              #[cfg(target_os = "linux")]
              managed_child,
@@ -2804,7 +3022,7 @@
          ));
          Ok(SpawnedExec {
              session: Some(ExecSession {
-@@ -541,13 +557,20 @@
+@@ -541,13 +593,20 @@
      }
  }
  
@@ -2826,7 +3044,7 @@
  }
  
  impl LocalExecProcess {
-@@ -558,7 +581,10 @@
+@@ -558,7 +617,10 @@
          terminal: Arc<std::sync::atomic::AtomicBool>,
          signal_lock: Arc<std::sync::Mutex<()>>,
          #[cfg(target_os = "linux")] managed_child: Option<crate::managed_children::ManagedChild>,
@@ -2837,7 +3055,7 @@
          let result = Arc::new(std::sync::Mutex::new(None));
          let exited = Arc::new(tokio::sync::Notify::new());
          let result_for_wait = result.clone();
-@@ -577,7 +603,20 @@
+@@ -577,7 +639,20 @@
                      let _signal_guard = signal_lock_for_wait
                          .lock()
                          .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2859,7 +3077,7 @@
                      terminal_for_wait.store(true, std::sync::atomic::Ordering::Release);
                      if let Some(managed_child) = managed_child {
                          crate::managed_children::unregister(managed_child);
-@@ -594,7 +633,7 @@
+@@ -594,7 +669,7 @@
                  }
                  #[cfg(not(target_os = "linux"))]
                  {
@@ -2868,7 +3086,7 @@
                      terminal_for_wait.store(true, std::sync::atomic::Ordering::Release);
                      result
                  }
-@@ -602,16 +641,22 @@
+@@ -602,16 +677,22 @@
              .await
              .map_err(|error| error.to_string())
              .and_then(|status| status.map_err(|error| error.to_string()))
@@ -2900,7 +3118,7 @@
              runtime_for_wait.unregister_process_group(pid, &registration_terminal);
              if let Ok(mut slot) = result_for_wait.lock() {
                  *slot = Some(waited);
-@@ -625,26 +670,11 @@
+@@ -625,26 +706,11 @@
              runtime,
              terminal,
              signal_lock,
@@ -2932,7 +3150,7 @@
          loop {
              let notified = self.exited.notified();
              let result = self
-@@ -657,6 +687,38 @@
+@@ -657,6 +723,38 @@
              }
              notified.await;
          }
@@ -2971,7 +3189,7 @@
      }
  
      async fn signal(&self, signal: BoundarySignal) -> Result<(), BackendError> {
-@@ -718,6 +780,98 @@
+@@ -718,6 +816,101 @@
          )
      }
  
@@ -2989,6 +3207,7 @@
 +                program: "/bin/sh".into(),
 +                args: vec!["-c".into(), "exit 7".into()],
 +                shell: None,
++                project_tool: false,
 +                runtime_helper: None,
 +                env: vec![],
 +                workdir: None,
@@ -3016,6 +3235,7 @@
 +                program: "/bin/sh".into(),
 +                args: vec!["-c".into(), "sleep 60 & exit 0".into()],
 +                shell: None,
++                project_tool: false,
 +                runtime_helper: None,
 +                env: vec![],
 +                workdir: None,
@@ -3050,6 +3270,7 @@
 +                    "trap 'exit 0' TERM; printf r; while :; do :; done".into(),
 +                ],
 +                shell: None,
++                project_tool: false,
 +                runtime_helper: None,
 +                env: vec![],
 +                workdir: None,
@@ -3070,6 +3291,420 @@
      #[test]
      fn shell_requests_are_resolved_by_the_workload_executor() {
          let executor = executor();
+@@ -729,6 +922,7 @@
+                     command: Some("printf ready".to_string()),
+                     login: true,
+                 }),
++                project_tool: false,
+                 runtime_helper: None,
+                 env: vec![],
+                 workdir: None,
+@@ -759,6 +953,7 @@
+                     command: None,
+                     login: true,
+                 }),
++                project_tool: false,
+                 runtime_helper: None,
+                 env: vec![],
+                 workdir: None,
+@@ -780,6 +975,7 @@
+                         .to_string(),
+                 ],
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: None,
+                 env: vec![],
+                 workdir: None,
+@@ -822,6 +1018,7 @@
+                 program: String::new(),
+                 args: Vec::new(),
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: Some(openshell_isolation_interface::contract::RuntimeHelper::Sftp),
+                 env: Vec::new(),
+                 workdir: None,
+@@ -866,6 +1063,7 @@
+                 program: String::new(),
+                 args: Vec::new(),
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: Some(openshell_isolation_interface::contract::RuntimeHelper::Sftp),
+                 env: Vec::new(),
+                 workdir: None,
+@@ -907,6 +1105,7 @@
+                 program: "/bin/sh".to_string(),
+                 args: vec!["-c".to_string(), "exit 0".to_string()],
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: None,
+                 env: vec![],
+                 workdir: None,
+@@ -925,6 +1124,7 @@
+                 program: "/definitely/missing/openshell-exec".to_string(),
+                 args: vec![],
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: None,
+                 env: vec![],
+                 workdir: None,
+@@ -946,6 +1146,7 @@
+                     program: "/bin/sleep".to_string(),
+                     args: vec!["30".to_string()],
+                     shell: None,
++                    project_tool: false,
+                     runtime_helper: None,
+                     env: vec![],
+                     workdir: None,
+@@ -979,6 +1180,7 @@
+                 program: "/bin/sleep".to_string(),
+                 args: vec!["30".to_string()],
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: None,
+                 env: vec![],
+                 workdir: None,
+@@ -1012,6 +1214,7 @@
+                 program: "/bin/sh".to_string(),
+                 args: vec!["-c".to_string(), "exit 0".to_string()],
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: None,
+                 env: vec![],
+                 workdir: None,
+@@ -1033,6 +1236,7 @@
+                 program: "/bin/sh".to_string(),
+                 args: vec!["-c".to_string(), "exit 7".to_string()],
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: None,
+                 env: vec![],
+                 workdir: None,
+@@ -1056,4 +1260,163 @@
+             BoundaryExitStatus::Exited(7)
+         );
+     }
+-}
++    fn project_scope_lock() -> std::fs::File {
++        let file = std::fs::OpenOptions::new()
++            .create(true)
++            .truncate(false)
++            .read(true)
++            .write(true)
++            .open("/tmp/kingdom-project-scope-test.lock")
++            .unwrap();
++        file.lock().unwrap();
++        file
++    }
++    #[test]
++    fn project_tool_rejects_root_replacement_between_policy_and_rules() {
++        if !crate::kingdom_managed::isolated_subreaper(
++            "boundary_exec::tests::project_tool_rejects_root_replacement_between_policy_and_rules",
++        ) {
++            return;
++        }
++        let _fixture_lock = project_scope_lock();
++        std::fs::create_dir_all("/workspace/project").unwrap();
++        let private = tempfile::tempdir_in("/workspace").unwrap();
++        let original = format!("/workspace/project-original-{}", std::process::id());
++        let mut executor = executor();
++        executor.policy.filesystem.read_only = ["/usr", "/bin", "/lib", "/lib64", "/etc"]
++            .into_iter()
++            .map(Into::into)
++            .collect();
++        executor.policy.filesystem.read_write = ["/workspace", "/tmp", "/dev/null"]
++            .into_iter()
++            .map(Into::into)
++            .collect();
++        let spec = ExecSpec {
++            program: "/bin/true".into(),
++            shell: None,
++            args: vec![],
++            env: vec![],
++            workdir: Some("/workspace/project".into()),
++            pty: false,
++            runtime_helper: None,
++            project_tool: true,
++        };
++        let policy = project_tool::policy(&executor.policy, &spec).unwrap();
++        std::fs::rename("/workspace/project", &original).unwrap();
++        std::os::unix::fs::symlink(private.path(), "/workspace/project").unwrap();
++        let result = executor.prepare_sandbox(
++            &policy.policy,
++            spec.workdir.as_deref(),
++            policy.roots.as_ref(),
++        );
++        std::fs::remove_file("/workspace/project").unwrap();
++        std::fs::rename(&original, "/workspace/project").unwrap();
++        assert!(
++            result.is_err(),
++            "raced private runtime alias was accepted as writable project"
++        );
++        // Rename a directory, not only a symlink, between capture and use.
++        let policy = project_tool::policy(&executor.policy, &spec).unwrap();
++        std::fs::rename("/workspace/project", &original).unwrap();
++        std::fs::rename(private.path(), "/workspace/project").unwrap();
++        let result = executor.prepare_sandbox(
++            &policy.policy,
++            spec.workdir.as_deref(),
++            policy.roots.as_ref(),
++        );
++        std::fs::rename("/workspace/project", private.path()).unwrap();
++        std::fs::rename(&original, "/workspace/project").unwrap();
++        assert!(result.is_err(), "raced directory inode was accepted");
++
++        // A change after rule preparation must still use the original inode.
++        let policy = project_tool::policy(&executor.policy, &spec).unwrap();
++        let prepared = executor
++            .prepare_sandbox(&policy.policy, None, policy.roots.as_ref())
++            .unwrap();
++        std::fs::write(private.path().join("secret"), b"private-runtime").unwrap();
++        std::fs::rename("/workspace/project", &original).unwrap();
++        std::os::unix::fs::symlink(private.path(), "/workspace/project").unwrap();
++        let mut command = Command::new("/bin/sh");
++        command.args([
++            "-c",
++            "if cat /workspace/project/secret >/dev/null 2>&1; then exit 23; fi; echo confined",
++        ]);
++        let hardening =
++            crate::linux::child_seccomp::prepare_with_managed_groups(std::process::id(), true)
++                .unwrap();
++        crate::pty::install_pre_exec_no_pty(&mut command, policy.policy, None, prepared, hardening)
++            .unwrap();
++        let output = command.output();
++        std::fs::remove_file("/workspace/project").unwrap();
++        std::fs::rename(&original, "/workspace/project").unwrap();
++        let output = output.unwrap();
++        assert!(
++            output.status.success(),
++            "prepared rules followed a later root replacement"
++        );
++        assert_eq!(output.stdout, b"confined\n");
++    }
++
++    #[tokio::test]
++    async fn project_tool_denies_runtime_symlink_and_supervisor_proc() {
++        if !crate::kingdom_managed::isolated_subreaper(
++            "boundary_exec::tests::project_tool_denies_runtime_symlink_and_supervisor_proc",
++        ) {
++            return;
++        }
++        let _fixture_lock = project_scope_lock();
++        std::fs::create_dir_all("/workspace/project").unwrap();
++        std::fs::create_dir_all("/workspace/.kingdom-provider").unwrap();
++        let private = tempfile::NamedTempFile::new_in("/workspace/.kingdom-provider").unwrap();
++        std::fs::write(private.path(), b"private-runtime").unwrap();
++        let temporary = tempfile::tempdir_in("/tmp").unwrap();
++        let alias = temporary.path().join("private-alias");
++        std::os::unix::fs::symlink(private.path(), &alias).unwrap();
++        let mut executor = executor();
++        executor.managed_commands = true;
++        executor.user_environment.insert(
++            "KINGDOM_PRIVATE_CAPABILITY".into(),
++            "private-fixture".into(),
++        );
++        executor.ca_file_paths = Some(Arc::new((
++            private.path().to_path_buf(),
++            private.path().to_path_buf(),
++        )));
++        executor.policy.filesystem.read_only = ["/usr", "/bin", "/lib", "/lib64", "/etc", "/proc"]
++            .into_iter()
++            .map(Into::into)
++            .collect();
++        executor.policy.filesystem.read_write = ["/workspace", "/tmp", "/dev/null"]
++            .into_iter()
++            .map(Into::into)
++            .collect();
++        let script = format!(
++            "test -z \"$KINGDOM_PRIVATE_CAPABILITY\" || exit 25; if cat /proc/{}/environ >/dev/null 2>&1; then exit 21; fi; if cat /proc/{}/fd/{} >/dev/null 2>&1; then exit 22; fi; if cat {} >/dev/null 2>&1; then exit 23; fi; if cat {} >/dev/null 2>&1; then exit 24; fi; echo confined",
++            std::process::id(),
++            std::process::id(),
++            private.as_raw_fd(),
++            private.path().display(),
++            alias.display()
++        );
++        let mut session = executor
++            .exec(ExecSpec {
++                program: "/bin/sh".into(),
++                args: vec!["-c".into(), script],
++                shell: None,
++                project_tool: true,
++                runtime_helper: None,
++                env: vec![],
++                workdir: Some("/workspace/project".into()),
++                pty: false,
++            })
++            .await
++            .unwrap();
++        let mut output = String::new();
++        session.stdout.read_to_string(&mut output).await.unwrap();
++        assert_eq!(
++            session.process.wait().await.unwrap(),
++            BoundaryExitStatus::Exited(0)
++        );
++        assert_eq!(output, "confined\n");
++    }
++}
+--- /dev/null
++++ b/crates/openshell-sandbox/src/boundary_exec/project_tool.rs
+@@ -0,0 +1,158 @@
++use openshell_core::policy::SandboxPolicy;
++use openshell_isolation_interface::contract::{BackendError, ExecSpec};
++use std::path::{Component, Path, PathBuf};
++
++const PROJECT: &str = "/workspace/project";
++
++pub(super) struct PreparedPolicy {
++    pub policy: SandboxPolicy,
++    #[cfg(target_os = "linux")]
++    pub roots: Option<crate::sandbox::linux::PinnedToolRoots>,
++}
++pub(super) fn policy(
++    base: &SandboxPolicy,
++    spec: &ExecSpec,
++) -> Result<PreparedPolicy, BackendError> {
++    if !spec.project_tool {
++        return Ok(PreparedPolicy {
++            policy: base.clone(),
++            #[cfg(target_os = "linux")]
++            roots: None,
++        });
++    }
++    let cwd = spec
++        .workdir
++        .as_deref()
++        .ok_or_else(|| denied("project directory required"))?;
++    if spec.pty || spec.runtime_helper.is_some() || !spec.env.is_empty() {
++        return Err(denied(
++            "project tool cannot inherit helper, terminal or environment authority",
++        ));
++    }
++    let root = Path::new(PROJECT);
++    let directory = Path::new(cwd);
++    if !directory.starts_with(root)
++        || directory
++            .components()
++            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
++    {
++        return Err(denied("project tool directory is outside its project"));
++    }
++    #[cfg(target_os = "linux")]
++    let roots = crate::sandbox::linux::PinnedToolRoots::open()
++        .map_err(|_| denied("project tool roots unavailable"))?;
++    let root_info =
++        std::fs::symlink_metadata(root).map_err(|_| denied("project root unavailable"))?;
++    if !root_info.is_dir()
++        || std::fs::canonicalize(root).map_err(|_| denied("project root unavailable"))? != root
++    {
++        return Err(denied("project root must not traverse a symlink"));
++    }
++    let resolved =
++        std::fs::canonicalize(directory).map_err(|_| denied("project directory unavailable"))?;
++    if !resolved.starts_with(root) {
++        return Err(denied("project tool directory escapes through a symlink"));
++    }
++    Ok(PreparedPolicy {
++        policy: narrow(base)?,
++        #[cfg(target_os = "linux")]
++        roots: Some(roots),
++    })
++}
++
++fn denied(message: &str) -> BackendError {
++    BackendError::Denied(message.into())
++}
++
++// Intersect fixed tool access with the admitted sandbox policy. In particular,
++// an ancestor allowance for /workspace never reaches the derived policy.
++fn narrow(base: &SandboxPolicy) -> Result<SandboxPolicy, BackendError> {
++    let writable = |path: &Path| {
++        base.filesystem
++            .read_write
++            .iter()
++            .any(|allowed| path.starts_with(allowed))
++    };
++    let readable = |path: &Path| {
++        writable(path)
++            || base
++                .filesystem
++                .read_only
++                .iter()
++                .any(|allowed| path.starts_with(allowed))
++    };
++    if !writable(Path::new(PROJECT)) {
++        return Err(denied("sandbox does not grant project writes"));
++    }
++    let mut derived = base.clone();
++    derived.landlock.compatibility = openshell_core::policy::LandlockCompatibility::HardRequirement;
++    derived.filesystem.include_workdir = false;
++    derived.filesystem.read_only = ["/usr", "/bin", "/lib", "/lib64", "/etc", "/dev/urandom"]
++        .iter()
++        .map(PathBuf::from)
++        .filter(|path| readable(path))
++        .collect();
++    derived.filesystem.read_write = [PROJECT, "/tmp", "/dev/null"]
++        .iter()
++        .map(PathBuf::from)
++        .filter(|path| writable(path))
++        .collect();
++    Ok(derived)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn base_policy() -> SandboxPolicy {
++        SandboxPolicy {
++            version: 1,
++            filesystem: Default::default(),
++            network: Default::default(),
++            landlock: Default::default(),
++            process: Default::default(),
++        }
++    }
++    #[test]
++    fn project_tool_intersection_never_retains_runtime_ancestor() {
++        let mut base = base_policy();
++        base.filesystem.read_only = vec!["/".into()];
++        base.filesystem.read_write = vec!["/workspace".into(), "/tmp".into(), "/dev/null".into()];
++        base.filesystem.include_workdir = true;
++        let scoped = narrow(&base).unwrap();
++        assert!(!scoped.filesystem.include_workdir);
++        assert!(matches!(
++            scoped.landlock.compatibility,
++            openshell_core::policy::LandlockCompatibility::HardRequirement
++        ));
++        assert_eq!(
++            scoped.filesystem.read_write,
++            vec![PathBuf::from(PROJECT), "/tmp".into(), "/dev/null".into()]
++        );
++        let private = Path::new("/workspace/.kingdom-provider/outbox");
++        assert!(
++            !scoped
++                .filesystem
++                .read_only
++                .iter()
++                .chain(scoped.filesystem.read_write.iter())
++                .any(|p| private.starts_with(p))
++        );
++        assert!(
++            scoped
++                .filesystem
++                .read_only
++                .iter()
++                .all(|p| !p.starts_with("/proc"))
++        );
++    }
++    #[test]
++    fn project_tool_intersection_cannot_widen_read_only_project() {
++        let mut base = base_policy();
++        base.filesystem.read_only = vec!["/workspace".into(), "/usr".into()];
++        assert!(narrow(&base).is_err());
++        base.filesystem.read_write = vec![PROJECT.into()];
++        let scoped = narrow(&base).unwrap();
++        assert_eq!(scoped.filesystem.read_only, vec![PathBuf::from("/usr")]);
++        assert_eq!(scoped.filesystem.read_write, vec![PathBuf::from(PROJECT)]);
++    }
++}
 --- a/crates/openshell-sandbox/src/boundary_server.rs
 +++ b/crates/openshell-sandbox/src/boundary_server.rs
 @@ -219,6 +219,7 @@
@@ -3601,6 +4236,38 @@
          }
  
          #[tokio::test(flavor = "multi_thread")]
+@@ -6243,6 +6620,7 @@
+                 program: "/bin/sh".to_string(),
+                 args: vec!["-c".to_string(), "printf '%s' \"$REPLAY_TEST\"".to_string()],
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: None,
+                 env: Vec::new(),
+                 workdir: None,
+@@ -6539,6 +6917,7 @@
+                 program: "/bin/sleep".to_string(),
+                 args: vec!["30".to_string()],
+                 shell: None,
++                project_tool: false,
+                 runtime_helper: None,
+                 env: Vec::new(),
+                 workdir: None,
+@@ -6638,6 +7017,7 @@
+                     program: "/bin/sh".to_string(),
+                     args: vec!["-c".to_string(), format!("exit {exit_code}")],
+                     shell: None,
++                    project_tool: false,
+                     runtime_helper: None,
+                     env: Vec::new(),
+                     workdir: None,
+@@ -6682,6 +7062,7 @@
+                                     .to_string(),
+                             ],
+                             shell: None,
++                            project_tool: false,
+                             runtime_helper: None,
+                             env: Vec::new(),
+                             workdir: None,
 --- /dev/null
 +++ b/crates/openshell-sandbox/src/kingdom_exec_journal.rs
 @@ -0,0 +1,349 @@
@@ -4191,7 +4858,7 @@
 +}
 --- /dev/null
 +++ b/crates/openshell-sandbox/src/kingdom_managed_service.rs
-@@ -0,0 +1,914 @@
+@@ -0,0 +1,915 @@
 +// SPDX-License-Identifier: Apache-2.0
 +//! Durable command owner behind the authenticated SandboxProtocol extension.
 +use crate::native_api::{BoundaryExec, BoundaryProcess, ExecSession, ManagedCommandCompletion};
@@ -4404,6 +5071,7 @@
 +            program: spec.argv[0].clone(),
 +            args: spec.argv[1..].to_vec(),
 +            shell: None,
++            project_tool: spec.scope == p::CommandScope::ProjectTool as i32,
 +            runtime_helper: None,
 +            env: spec.environment.into_iter().collect(),
 +            workdir: Some(spec.workdir),
@@ -5185,6 +5853,167 @@
      /// Deliver a signal to the process or its group.
      async fn signal(&self, signal: BoundarySignal) -> Result<(), BackendError>;
      /// Terminate the process and its backend-owned process group.
+--- a/crates/openshell-sandbox/src/sandbox/linux/landlock.rs
++++ b/crates/openshell-sandbox/src/sandbox/linux/landlock.rs
+@@ -112,7 +112,7 @@
+ /// Returns `None` if there are no filesystem paths to restrict (no-op).
+ /// Returns `Some(PreparedRuleset)` on success, or an error.
+ pub fn prepare(policy: &SandboxPolicy, workdir: Option<&str>) -> Result<Option<PreparedRuleset>> {
+-    prepare_with_path_open_mode(policy, workdir, PathOpenMode::Privileged)
++    prepare_with_path_open_mode(policy, workdir, PathOpenMode::Privileged, None)
+ }
+ 
+ /// Phase 1 for already-unprivileged workloads.
+@@ -125,7 +125,7 @@
+     policy: &SandboxPolicy,
+     workdir: Option<&str>,
+ ) -> Result<Option<PreparedRuleset>> {
+-    prepare_with_path_open_mode(policy, workdir, PathOpenMode::CurrentUser)
++    prepare_with_path_open_mode(policy, workdir, PathOpenMode::CurrentUser, None)
+ }
+ 
+ /// Build the mandatory same-UID self-protection baseline.
+@@ -236,10 +236,19 @@
+     }))
+ }
+ 
++pub(super) fn prepare_project_tool(
++    policy: &SandboxPolicy,
++    workdir: Option<&str>,
++    roots: &super::PinnedToolRoots,
++) -> Result<Option<PreparedRuleset>> {
++    prepare_with_path_open_mode(policy, workdir, PathOpenMode::CurrentUser, Some(roots))
++}
++
+ fn prepare_with_path_open_mode(
+     policy: &SandboxPolicy,
+     workdir: Option<&str>,
+     path_open_mode: PathOpenMode,
++    roots: Option<&super::PinnedToolRoots>,
+ ) -> Result<Option<PreparedRuleset>> {
+     let read_only = policy.filesystem.read_only.clone();
+     let mut read_write = policy.filesystem.read_write.clone();
+@@ -340,6 +349,14 @@
+         }
+ 
+         for path in &read_write {
++            if let Some(fd) = roots.and_then(|roots| roots.fd(path)) {
++                let allowed_access = access_for_path_fd(fd, access_all, abi)?;
++                ruleset = ruleset
++                    .add_rule(PathBeneath::new(fd, allowed_access))
++                    .into_diagnostic()?;
++                rules_applied += 1;
++                continue;
++            }
+             if let Some(path_fd) = try_open_path(path, compatibility, path_open_mode)? {
+                 let allowed_access = access_for_path_fd(&path_fd, access_all, abi)?;
+                 debug!(path = %path.display(), "Landlock allow read-write");
+--- a/crates/openshell-sandbox/src/sandbox/linux/mod.rs
++++ b/crates/openshell-sandbox/src/sandbox/linux/mod.rs
+@@ -5,6 +5,8 @@
+ 
+ mod landlock;
+ mod seccomp;
++mod tool_roots;
++pub use tool_roots::PinnedToolRoots;
+ 
+ use miette::Result;
+ use openshell_core::policy::SandboxPolicy;
+@@ -61,6 +63,24 @@
+ ) -> Result<PreparedSandbox> {
+     let baseline = landlock::prepare_capability_free_baseline()?;
+     let user = landlock::prepare_current_user(policy, workdir)?;
++    let mut landlock = vec![baseline];
++    landlock.extend(user);
++    Ok(PreparedSandbox {
++        landlock,
++        policy: policy.clone(),
++    })
++}
++
++/// Prepare fixed tool policy using root descriptors captured before validation.
++pub fn prepare_project_tool(
++    policy: &SandboxPolicy,
++    workdir: Option<&str>,
++    roots: &PinnedToolRoots,
++) -> Result<PreparedSandbox> {
++    roots.verify()?;
++    let baseline = landlock::prepare_capability_free_baseline()?;
++    let user = landlock::prepare_project_tool(policy, workdir, roots)?;
++    roots.verify()?;
+     let mut landlock = vec![baseline];
+     landlock.extend(user);
+     Ok(PreparedSandbox {
+--- /dev/null
++++ b/crates/openshell-sandbox/src/sandbox/linux/tool_roots.rs
+@@ -0,0 +1,67 @@
++//! Descriptor-pinned mutable roots for the fixed project tool scope.
++use miette::{IntoDiagnostic, Result};
++use rustix::fs::{Mode, OFlags, fstat, open, openat};
++use std::os::fd::OwnedFd;
++use std::path::{Component, Path};
++
++pub struct PinnedToolRoots {
++    project: OwnedFd,
++    temporary: OwnedFd,
++}
++fn directory(path: &Path) -> Result<OwnedFd> {
++    let flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
++    let mut fd = open("/", flags, Mode::empty()).into_diagnostic()?;
++    for component in path.components() {
++        match component {
++            Component::RootDir => (),
++            Component::Normal(name) => {
++                fd = openat(&fd, name, flags, Mode::empty()).into_diagnostic()?
++            }
++            _ => return Err(miette::miette!("noncanonical project tool root")),
++        }
++    }
++    Ok(fd)
++}
++impl PinnedToolRoots {
++    pub fn open() -> Result<Self> {
++        let roots = Self {
++            project: directory(Path::new("/workspace/project"))?,
++            temporary: directory(Path::new("/tmp"))?,
++        };
++        // The workload may write temporary entries, but must not own the root
++        // or its parent and replace the allowance with another hierarchy.
++        let root = directory(Path::new("/"))?;
++        let root_stat = fstat(&root).into_diagnostic()?;
++        let tmp_stat = fstat(&roots.temporary).into_diagnostic()?;
++        if root_stat.st_uid != 0 || root_stat.st_mode & 0o022 != 0 || tmp_stat.st_uid != 0 {
++            return Err(miette::miette!(
++                "project tool requires immutable system roots"
++            ));
++        }
++        roots.verify()?;
++        Ok(roots)
++    }
++    pub(super) fn fd(&self, path: &Path) -> Option<&OwnedFd> {
++        match path.to_str()? {
++            "/workspace/project" => Some(&self.project),
++            "/tmp" => Some(&self.temporary),
++            _ => None,
++        }
++    }
++    pub fn verify(&self) -> Result<()> {
++        for (path, fd) in [
++            ("/workspace/project", &self.project),
++            ("/tmp", &self.temporary),
++        ] {
++            let current = directory(Path::new(path))?;
++            let original = fstat(fd).into_diagnostic()?;
++            let observed = fstat(&current).into_diagnostic()?;
++            if original.st_dev != observed.st_dev || original.st_ino != observed.st_ino {
++                return Err(miette::miette!(
++                    "project tool root changed during preparation"
++                ));
++            }
++        }
++        Ok(())
++    }
++}
 --- a/crates/openshell-server/Cargo.toml
 +++ b/crates/openshell-server/Cargo.toml
 @@ -11,6 +11,7 @@
@@ -5221,7 +6050,7 @@
              for method in service.methods() {
 --- /dev/null
 +++ b/crates/openshell-server/src/compute/managed_retention.rs
-@@ -0,0 +1,352 @@
+@@ -0,0 +1,381 @@
 +// SPDX-License-Identifier: Apache-2.0
 +//! One-way runtime admission and evidence retention. Only a verified durable
 +//! archive can release native lifecycle operations; records are never deleted.
@@ -5252,6 +6081,7 @@
 +    pub binding: Vec<u8>,
 +    pub gateway_id: String,
 +    pub workspace_id: String,
++    pub subject_id: String,
 +    pub workspace_name: String,
 +    pub sandbox_name: String,
 +    pub commands: BTreeSet<String>,
@@ -5274,10 +6104,11 @@
 +}
 +pub(crate) fn verify_archive(value: &RuntimeArchive) -> Result<(), Status> {
 +    let manifest = value.manifest.as_ref().ok_or_else(bad)?;
-+    if manifest.schema_version != 1
++    if manifest.schema_version != 2
 +        || manifest.commands.len() > 64
 +        || manifest.gateway_id.is_empty()
 +        || manifest.workspace_id.is_empty()
++        || manifest.subject_id.is_empty()
 +    {
 +        return Err(bad());
 +    }
@@ -5289,6 +6120,7 @@
 +        if identity.runtime.as_ref() != Some(binding)
 +            || identity.gateway_id != manifest.gateway_id
 +            || identity.workspace_id != manifest.workspace_id
++            || identity.subject_id != manifest.subject_id
 +            || identity.boundary_request_id.as_str() <= previous
 +            || command.receipt_sha256.len() != 32
 +            || command.output.is_none()
@@ -5394,6 +6226,27 @@
 +        sandbox: &str,
 +        command_id: &str,
 +    ) -> Result<AdmissionGuard, Status> {
++        self.retain_managed_runtime_inner(binding, authority, workspace, sandbox, Some(command_id))
++            .await
++    }
++    pub(crate) async fn register_managed_runtime(
++        &self,
++        binding: &RuntimeBinding,
++        authority: &ManagedAuthority,
++        workspace: &str,
++        sandbox: &str,
++    ) -> Result<AdmissionGuard, Status> {
++        self.retain_managed_runtime_inner(binding, authority, workspace, sandbox, None)
++            .await
++    }
++    async fn retain_managed_runtime_inner(
++        &self,
++        binding: &RuntimeBinding,
++        authority: &ManagedAuthority,
++        workspace: &str,
++        sandbox: &str,
++        command_id: Option<&str>,
++    ) -> Result<AdmissionGuard, Status> {
 +        let guard = self.managed_guard(&binding.sandbox_id).await?;
 +        let current = self
 +            .store
@@ -5425,6 +6278,7 @@
 +                    binding: binding.encode_to_vec(),
 +                    gateway_id: authority.gateway_id.clone(),
 +                    workspace_id: authority.workspace_id.clone(),
++                    subject_id: authority.subject_id.clone(),
 +                    workspace_name: workspace.into(),
 +                    sandbox_name: sandbox.into(),
 +                    commands: BTreeSet::new(),
@@ -5437,6 +6291,7 @@
 +        if record.binding != binding.encode_to_vec()
 +            || record.gateway_id != authority.gateway_id
 +            || record.workspace_id != authority.workspace_id
++            || record.subject_id != authority.subject_id
 +            || record.workspace_name != workspace
 +            || record.sandbox_name != sandbox
 +            || record.phase != Phase::Active
@@ -5445,12 +6300,15 @@
 +                "managed admission is sealed or runtime identity changed",
 +            ));
 +        }
-+        if record.commands.len() >= 64 && !record.commands.contains(command_id) {
++        if command_id.is_some_and(|id| record.commands.len() >= 64 && !record.commands.contains(id))
++        {
 +            return Err(Status::resource_exhausted(
 +                "managed command capacity reached",
 +            ));
 +        }
-+        record.commands.insert(command_id.into());
++        if let Some(id) = command_id {
++            record.commands.insert(id.into());
++        }
 +        let bytes = serde_json::to_vec(&record).map_err(|_| bad())?;
 +        self.store
 +            .put_if(
@@ -6069,7 +6927,7 @@
 +}
 --- /dev/null
 +++ b/crates/openshell-server/src/grpc/managed.rs
-@@ -0,0 +1,1836 @@
+@@ -0,0 +1,2096 @@
 +// SPDX-License-Identifier: Apache-2.0
 +//! Opt-in managed execution RPCs. Durable intent precedes transport; only the
 +//! authenticated boundary's retained receipt can establish process closure.
@@ -6090,6 +6948,8 @@
 +
 +#[path = "managed_archive.rs"]
 +pub(crate) mod archive;
++#[path = "managed_delete.rs"]
++mod deletion;
 +
 +const RECORD_TYPE: &str = "KingdomManagedExecutionV1";
 +const CANCEL_TYPE: &str = "KingdomManagedCancellationV1";
@@ -6467,6 +7327,25 @@
 +
 +#[tonic::async_trait]
 +impl p::managed_executions_server::ManagedExecutions for ManagedService {
++    async fn delete_finalized_runtime(
++        &self,
++        request: Request<p::DeleteFinalizedRuntimeRequest>,
++    ) -> Result<Response<p::DeleteFinalizedRuntimeResponse>, Status> {
++        let _slot = self
++            .archive_slots
++            .clone()
++            .try_acquire_owned()
++            .map_err(|_| Status::resource_exhausted("managed deletion capacity reached"))?;
++        let principal = super::extract_principal(&request)?;
++        let response = tokio::time::timeout(
++            Duration::from_secs(120),
++            self.delete_finalized(&principal, request.into_inner()),
++        )
++        .await
++        .map_err(|_| Status::deadline_exceeded("managed deletion remains unresolved"))??;
++        Ok(Response::new(response))
++    }
++
 +    async fn finalize_runtime(
 +        &self,
 +        request: Request<p::FinalizeRuntimeRequest>,
@@ -6526,6 +7405,16 @@
 +        let req = request.into_inner();
 +        let owner = self
 +            .authorize(&principal, &req.workspace, &req.sandbox)
++            .await?;
++        let _guard = self
++            .state
++            .compute
++            .register_managed_runtime(
++                &owner.runtime,
++                &owner.authority,
++                &req.workspace,
++                &req.sandbox,
++            )
 +            .await?;
 +        Ok(Response::new(p::DescribeRuntimeResponse {
 +            runtime: Some(owner.runtime),
@@ -7188,6 +8077,15 @@
 +            .as_deref(),
 +            Some("admin")
 +        );
++        assert_eq!(
++            crate::auth::method_authz::lookup(
++                "/kingdom.openshell.managed.v1.ManagedExecutions/DeleteFinalizedRuntime"
++            )
++            .unwrap()
++            .workspace_role
++            .as_deref(),
++            Some("admin")
++        );
 +        assert!(
 +            crate::auth::method_authz::lookup(
 +                "/kingdom.openshell.managed.v1.ManagedRelay/Exchange"
@@ -7714,7 +8612,8 @@
 +        let receipt=p::TerminalReceipt::decode(hex::decode("080112ae0208011207676174657761791a09776f726b737061636522077375626a6563742a3e2f6b696e67646f6d2e6f70656e7368656c6c2e6d616e616765642e76312e4d616e61676564457865637574696f6e732f5374617274457865637574696f6e322461323361313332312d623538662d343864392d393964642d3332313832653361633539313a20c9bcf95df1ce1f9b8112047574ce721d1d1a3a84a6b7ec1a42089fee005463bc42204b43ec208a5e8fea24d997fad00e926eca9501633e0e6d96b88c95a22ed264cb4a2438353365633333312d326564372d346161362d383338392d326639616137613036623033523d0a0773616e64626f78120a67656e65726174696f6e1a046d61696e222001010101010101010101010101010101010101010101010101010101010101011800280140014a28080210081a201e8c55d0fff04ef1f61e9c7fac7c27f5a905d2786ba2fcc7d9420cfd6ca496fa20015220070732deeb113b35be8da74a684cf3c4c92ae6ecb2b2baf16f5dd7c008d60bc55801").unwrap().as_slice()).unwrap();
 +        let identity = receipt.identity.clone().unwrap();
 +        let manifest = p::RuntimeArchiveManifest {
-+            schema_version: 1,
++            schema_version: 2,
++            subject_id: identity.subject_id.clone(),
 +            gateway_id: identity.gateway_id.clone(),
 +            workspace_id: identity.workspace_id.clone(),
 +            runtime: identity.runtime.clone(),
@@ -7726,13 +8625,13 @@
 +        };
 +        assert_eq!(
 +            hex::encode(manifest.encode_to_vec()),
-+            "08011207676174657761791a09776f726b7370616365223d0a0773616e64626f78120a67656e65726174696f6e1a046d61696e222001010101010101010101010101010101010101010101010101010101010101012afd020aae0208011207676174657761791a09776f726b737061636522077375626a6563742a3e2f6b696e67646f6d2e6f70656e7368656c6c2e6d616e616765642e76312e4d616e61676564457865637574696f6e732f5374617274457865637574696f6e322461323361313332312d623538662d343864392d393964642d3332313832653361633539313a20c9bcf95df1ce1f9b8112047574ce721d1d1a3a84a6b7ec1a42089fee005463bc42204b43ec208a5e8fea24d997fad00e926eca9501633e0e6d96b88c95a22ed264cb4a2438353365633333312d326564372d346161362d383338392d326639616137613036623033523d0a0773616e64626f78120a67656e65726174696f6e1a046d61696e222001010101010101010101010101010101010101010101010101010101010101011220070732deeb113b35be8da74a684cf3c4c92ae6ecb2b2baf16f5dd7c008d60bc51a28080210081a201e8c55d0fff04ef1f61e9c7fac7c27f5a905d2786ba2fcc7d9420cfd6ca496fa2001"
++            "08021207676174657761791a09776f726b7370616365223d0a0773616e64626f78120a67656e65726174696f6e1a046d61696e222001010101010101010101010101010101010101010101010101010101010101012afd020aae0208011207676174657761791a09776f726b737061636522077375626a6563742a3e2f6b696e67646f6d2e6f70656e7368656c6c2e6d616e616765642e76312e4d616e61676564457865637574696f6e732f5374617274457865637574696f6e322461323361313332312d623538662d343864392d393964642d3332313832653361633539313a20c9bcf95df1ce1f9b8112047574ce721d1d1a3a84a6b7ec1a42089fee005463bc42204b43ec208a5e8fea24d997fad00e926eca9501633e0e6d96b88c95a22ed264cb4a2438353365633333312d326564372d346161362d383338392d326639616137613036623033523d0a0773616e64626f78120a67656e65726174696f6e1a046d61696e222001010101010101010101010101010101010101010101010101010101010101011220070732deeb113b35be8da74a684cf3c4c92ae6ecb2b2baf16f5dd7c008d60bc51a28080210081a201e8c55d0fff04ef1f61e9c7fac7c27f5a905d2786ba2fcc7d9420cfd6ca496fa200132077375626a656374"
 +        );
 +        let proof = p::RuntimeArchive {
-+            archive_id: "9cdc65e95560efb8c5e62297e155490ea4ad4fe22eca5852f455a6a381270272".into(),
++            archive_id: "a90c1d1a04ab1baddc527431a1fba5b3ffff182321cf1faaf8d82cd9efaaf65f".into(),
 +            manifest: Some(manifest),
 +            manifest_sha256: hex::decode(
-+                "9cdc65e95560efb8c5e62297e155490ea4ad4fe22eca5852f455a6a381270272",
++                "a90c1d1a04ab1baddc527431a1fba5b3ffff182321cf1faaf8d82cd9efaaf65f",
 +            )
 +            .unwrap(),
 +        };
@@ -7905,10 +8804,229 @@
 +        );
 +        relay.abort();
 +    }
++    #[tokio::test]
++    async fn managed_empty_runtime_registration_fences_native_lifecycle_and_archives() {
++        let (service, principal, req, starts, relay) = fixture().await;
++        let described = service
++            .describe_runtime(authenticated(
++                p::DescribeRuntimeRequest {
++                    workspace: "workspace".into(),
++                    sandbox: "sandbox".into(),
++                },
++                &principal,
++            ))
++            .await
++            .unwrap()
++            .into_inner();
++        assert_eq!(starts.load(Ordering::SeqCst), 0);
++        assert!(
++            service
++                .state
++                .compute
++                .stop_sandbox("workspace", "sandbox")
++                .await
++                .is_err()
++        );
++        assert!(
++            service
++                .state
++                .compute
++                .delete_sandbox("workspace", "sandbox")
++                .await
++                .is_err()
++        );
++        let archive = service
++            .finalize_runtime(authenticated(finalize_request(&req), &principal))
++            .await
++            .unwrap()
++            .into_inner();
++        let manifest = archive.manifest.as_ref().unwrap();
++        assert!(manifest.commands.is_empty());
++        assert_eq!(manifest.subject_id, described.subject_id);
++        assert_eq!(manifest.runtime, described.runtime);
++        assert_eq!(manifest.schema_version, 2);
++        assert!(
++            service
++                .start_execution(authenticated(req.clone(), &principal))
++                .await
++                .is_err()
++        );
++        service
++            .state
++            .compute
++            .stop_sandbox("workspace", "sandbox")
++            .await
++            .unwrap();
++        let request = p::DeleteFinalizedRuntimeRequest {
++            archive_id: archive.archive_id,
++            runtime: described.runtime,
++        };
++        let deleted = service
++            .delete_finalized_runtime(authenticated(request.clone(), &principal))
++            .await
++            .unwrap()
++            .into_inner();
++        assert_eq!(deleted.state, p::RuntimeDeletionState::Pending as i32);
++        assert!(deleted.receipt.is_none());
++        // The no-op driver has no controller. Simulate its exact-ID removal
++        // only after observing that acknowledgement alone is not closure.
++        service
++            .state
++            .store
++            .delete(
++                <Sandbox as crate::persistence::ObjectType>::object_type(),
++                "sandbox-id",
++            )
++            .await
++            .unwrap();
++        let deleted = service
++            .delete_finalized_runtime(authenticated(request.clone(), &principal))
++            .await
++            .unwrap()
++            .into_inner();
++        assert_eq!(deleted.state, p::RuntimeDeletionState::Absent as i32);
++        assert_eq!(
++            service
++                .delete_finalized_runtime(authenticated(request, &principal))
++                .await
++                .unwrap()
++                .into_inner(),
++            deleted
++        );
++        assert_eq!(starts.load(Ordering::SeqCst), 0);
++        relay.abort();
++    }
++
++    #[tokio::test]
++    async fn managed_finalized_delete_never_targets_reused_name_and_replays() {
++        let (service, principal, req, _, relay) = fixture().await;
++        let value = service
++            .start_execution(authenticated(req.clone(), &principal))
++            .await
++            .unwrap()
++            .into_inner();
++        boundary_terminal(&service, &value, false).await;
++        let archive = service
++            .finalize_runtime(authenticated(finalize_request(&req), &principal))
++            .await
++            .unwrap()
++            .into_inner();
++        service
++            .state
++            .compute
++            .stop_sandbox("workspace", "sandbox")
++            .await
++            .unwrap();
++        service
++            .state
++            .compute
++            .delete_sandbox("workspace", "sandbox")
++            .await
++            .unwrap();
++        // Simulate the absent driver's controller removing the old stable ID.
++        service
++            .state
++            .store
++            .delete(
++                <Sandbox as crate::persistence::ObjectType>::object_type(),
++                "sandbox-id",
++            )
++            .await
++            .unwrap();
++        service
++            .state
++            .store
++            .put_message(&Sandbox {
++                metadata: Some(ObjectMeta {
++                    id: "replacement-id".into(),
++                    name: "sandbox".into(),
++                    workspace: "workspace".into(),
++                    ..Default::default()
++                }),
++                ..Default::default()
++            })
++            .await
++            .unwrap();
++        relay.abort();
++        let deletion = p::DeleteFinalizedRuntimeRequest {
++            archive_id: archive.archive_id.clone(),
++            runtime: req.execution.as_ref().unwrap().runtime.clone(),
++        };
++        let first = service
++            .delete_finalized_runtime(authenticated(deletion.clone(), &principal))
++            .await
++            .unwrap()
++            .into_inner();
++        assert_eq!(first.state, p::RuntimeDeletionState::Absent as i32);
++        assert_eq!(first.receipt.as_ref().unwrap().runtime, deletion.runtime);
++        assert!(
++            service
++                .state
++                .store
++                .get_message::<Sandbox>("replacement-id")
++                .await
++                .unwrap()
++                .is_some()
++        );
++        let restarted = ManagedService::new(service.state.clone());
++        assert_eq!(
++            first,
++            restarted
++                .delete_finalized_runtime(authenticated(deletion.clone(), &principal))
++                .await
++                .unwrap()
++                .into_inner()
++        );
++        let mut foreign = deletion;
++        foreign.runtime.as_mut().unwrap().boundary_generation = "other-generation".into();
++        assert!(
++            service
++                .delete_finalized_runtime(authenticated(foreign, &principal))
++                .await
++                .is_err()
++        );
++        assert!(
++            service
++                .state
++                .store
++                .get_message::<Sandbox>("replacement-id")
++                .await
++                .unwrap()
++                .is_some()
++        );
++    }
++    #[tokio::test]
++    async fn managed_finalized_delete_requires_released_archive() {
++        let (service, principal, req, _, relay) = fixture().await;
++        service
++            .start_execution(authenticated(req.clone(), &principal))
++            .await
++            .unwrap();
++        let request = p::DeleteFinalizedRuntimeRequest {
++            archive_id: "a".repeat(64),
++            runtime: req.execution.as_ref().unwrap().runtime.clone(),
++        };
++        assert!(
++            service
++                .delete_finalized_runtime(authenticated(request, &principal))
++                .await
++                .is_err()
++        );
++        assert!(
++            service
++                .state
++                .store
++                .get_message::<Sandbox>("sandbox-id")
++                .await
++                .unwrap()
++                .is_some()
++        );
++        relay.abort();
++    }
 +}
 --- /dev/null
 +++ b/crates/openshell-server/src/grpc/managed_archive.rs
-@@ -0,0 +1,522 @@
+@@ -0,0 +1,523 @@
 +// SPDX-License-Identifier: Apache-2.0
 +//! Trusted, resumable evidence archival. No public input can assert closure or
 +//! release retention. Immutable chunks and command records precede the manifest.
@@ -7947,7 +9065,7 @@
 +        &identity.request_id,
 +    ])
 +}
-+async fn immutable(
++pub(super) async fn immutable(
 +    store: &crate::persistence::Store,
 +    kind: &str,
 +    id: &str,
@@ -7983,7 +9101,7 @@
 +        .ok_or_else(|| Status::failed_precondition("managed execution closure remains unresolved"))
 +}
 +impl ManagedService {
-+    async fn archive_authorize(
++    pub(super) async fn archive_authorize(
 +        &self,
 +        principal: &Principal,
 +        workspace_name: &str,
@@ -8095,7 +9213,8 @@
 +                .cmp(&b.identity.as_ref().map(|v| &v.boundary_request_id))
 +        });
 +        let manifest = p::RuntimeArchiveManifest {
-+            schema_version: 1,
++            schema_version: 2,
++            subject_id: sealed.subject_id.clone(),
 +            gateway_id: sealed.gateway_id.clone(),
 +            workspace_id: sealed.workspace_id.clone(),
 +            runtime: Some(binding.clone()),
@@ -8429,6 +9548,160 @@
 +        )
 +        .map_err(|_| corrupt())?;
 +        Ok(chunks)
++    }
++}
+--- /dev/null
++++ b/crates/openshell-server/src/grpc/managed_delete.rs
+@@ -0,0 +1,151 @@
++// SPDX-License-Identifier: Apache-2.0
++//! Deletion of finalized immutable runtime identities. A reusable name is never
++//! used to select the object, including after restart or a lost response.
++use super::*;
++use crate::compute::managed_retention as retention;
++use openshell_core::proto::DeletionOutcome;
++
++const DELETION_TYPE: &str = "KingdomManagedRuntimeDeletionV1";
++const DOMAIN: &[u8] = b"kingdom.openshell.runtime-deletion.v1\0";
++fn deletion_key(archive: &str) -> String {
++    format!("kingdom-managed-deletion:{archive}")
++}
++fn digest(receipt: &p::RuntimeDeletionReceipt) -> Result<Vec<u8>, Status> {
++    let mut value = receipt.clone();
++    value.receipt_sha256.clear();
++    let mut bytes = DOMAIN.to_vec();
++    bytes.extend(value.encode_to_vec());
++    Ok(openshell_crypto::sha256(&bytes)
++        .map_err(unavailable)?
++        .to_vec())
++}
++impl ManagedService {
++    pub(super) async fn delete_finalized(
++        &self,
++        principal: &Principal,
++        request: p::DeleteFinalizedRuntimeRequest,
++    ) -> Result<p::DeleteFinalizedRuntimeResponse, Status> {
++        let binding = request.runtime.as_ref().ok_or_else(|| invalid("runtime"))?;
++        checked::validate_runtime(binding).map_err(invalid)?;
++        let stored = retention::read_archive(&self.state.store, &request.archive_id).await?;
++        let archive = p::RuntimeArchive::decode(stored.proof.as_slice()).map_err(|_| corrupt())?;
++        let manifest = archive.manifest.as_ref().ok_or_else(corrupt)?;
++        if manifest.runtime.as_ref() != Some(binding) {
++            return Err(Status::failed_precondition(
++                "managed runtime identity changed",
++            ));
++        }
++        let subject = self
++            .archive_authorize(
++                principal,
++                &stored.workspace_name,
++                &manifest.workspace_id,
++                &manifest.gateway_id,
++                MinWorkspaceRole::Admin,
++            )
++            .await?;
++        if manifest.subject_id != subject
++            || manifest.commands.iter().any(|command| {
++                command
++                    .identity
++                    .as_ref()
++                    .is_none_or(|id| id.subject_id != subject)
++            })
++        {
++            return Err(Status::permission_denied(
++                "archive subject identity mismatch",
++            ));
++        }
++        let (retained, _) = retention::read_retention(&self.state.store, &binding.sandbox_id)
++            .await?
++            .ok_or_else(corrupt)?;
++        if retained.phase != retention::Phase::Released
++            || retained.binding != binding.encode_to_vec()
++            || retained.archive_id.as_deref() != Some(request.archive_id.as_str())
++            || retained.subject_id != manifest.subject_id
++            || retained.workspace_id != manifest.workspace_id
++            || retained.gateway_id != manifest.gateway_id
++            || retained.workspace_name != stored.workspace_name
++            || retained.sandbox_name != stored.sandbox_name
++        {
++            return Err(Status::failed_precondition(
++                "managed runtime archive not released",
++            ));
++        }
++        let mut receipt = p::RuntimeDeletionReceipt {
++            schema_version: 1,
++            gateway_id: manifest.gateway_id.clone(),
++            workspace_id: manifest.workspace_id.clone(),
++            subject_id: subject,
++            runtime: Some(binding.clone()),
++            archive_id: request.archive_id.clone(),
++            receipt_sha256: Vec::new(),
++        };
++        receipt.receipt_sha256 = digest(&receipt)?;
++        let key = deletion_key(&request.archive_id);
++        if let Some(row) = self
++            .state
++            .store
++            .get(DELETION_TYPE, &key)
++            .await
++            .map_err(unavailable)?
++        {
++            if row.payload != receipt.encode_to_vec() {
++                return Err(corrupt());
++            }
++            return Ok(p::DeleteFinalizedRuntimeResponse {
++                state: p::RuntimeDeletionState::Absent as i32,
++                receipt: Some(receipt),
++            });
++        }
++        // compute owns the immutable ID lifecycle lock and rereads that ID
++        // before mutation. A replacement with the old name is not a target.
++        let result = self
++            .state
++            .compute
++            .delete_sandbox_by_id(&binding.sandbox_id, &stored.sandbox_name)
++            .await?;
++        if result.sandbox_id != binding.sandbox_id {
++            return Err(corrupt());
++        }
++        if result.outcome != DeletionOutcome::Completed {
++            return Ok(p::DeleteFinalizedRuntimeResponse {
++                state: p::RuntimeDeletionState::Pending as i32,
++                receipt: None,
++            });
++        }
++        // Absence must survive a lost reply before any terminal result escapes.
++        archive::immutable(
++            &self.state.store,
++            DELETION_TYPE,
++            &key,
++            &receipt.encode_to_vec(),
++        )
++        .await?;
++        Ok(p::DeleteFinalizedRuntimeResponse {
++            state: p::RuntimeDeletionState::Absent as i32,
++            receipt: Some(receipt),
++        })
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn deletion_receipt_matches_go_canonical_vector() {
++        let wire = hex::decode("08011207676174657761791a09776f726b737061636522077375626a6563742a3d0a0773616e64626f78120a67656e65726174696f6e1a046d61696e222001010101010101010101010101010101010101010101010101010101010101013240613930633164316130346162316261646463353237343331613166626135623366666666313832333231636631666161663864383263643965666161663635663a20156646f2b900a29158d18158e9e82d01a4d5c16d62124d1f44859cfa4996a904").unwrap();
++        let receipt = p::RuntimeDeletionReceipt::decode(wire.as_slice()).unwrap();
++        assert_eq!(
++            hex::encode(digest(&receipt).unwrap()),
++            "156646f2b900a29158d18158e9e82d01a4d5c16d62124d1f44859cfa4996a904"
++        );
++        assert_eq!(receipt.receipt_sha256, digest(&receipt).unwrap());
++        let mut cleared = receipt;
++        cleared.receipt_sha256.clear();
++        assert_eq!(
++            hex::encode(cleared.encode_to_vec()),
++            "08011207676174657761791a09776f726b737061636522077375626a6563742a3d0a0773616e64626f78120a67656e65726174696f6e1a046d61696e22200101010101010101010101010101010101010101010101010101010101010101324061393063316431613034616231626164646335323734333161316662613562336666666631383233323163663166616166386438326364396566616166363566"
++        );
 +    }
 +}
 --- a/crates/openshell-server/src/grpc/mod.rs
@@ -9174,6 +10447,32 @@
 +        assert!(identity(None).is_err());
 +    }
 +}
+--- a/crates/openshell-supervisor-process/src/ssh.rs
++++ b/crates/openshell-supervisor-process/src/ssh.rs
+@@ -871,6 +871,7 @@
+                     program: String::new(),
+                     args: Vec::new(),
+                     shell: None,
++                    project_tool: false,
+                     runtime_helper: Some(
+                         openshell_isolation_interface::contract::RuntimeHelper::Sftp,
+                     ),
+@@ -1128,6 +1129,7 @@
+                     command: Some(command),
+                     login: !state.no_login_shell,
+                 }),
++                project_tool: false,
+                 runtime_helper: None,
+                 env: Vec::new(),
+                 workdir: None,
+@@ -1241,6 +1243,7 @@
+                     command,
+                     login: !no_login_shell,
+                 }),
++                project_tool: false,
+                 runtime_helper: None,
+                 env,
+                 workdir: None,
 --- a/crates/openshell-supervisor-process/src/supervisor_session.rs
 +++ b/crates/openshell-supervisor-process/src/supervisor_session.rs
 @@ -205,6 +205,7 @@
@@ -9205,7 +10504,7 @@
                  return Err("SSH access is not configured for this supervisor".into());
 --- /dev/null
 +++ b/proto/kingdom_managed.proto
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,246 @@
 +// SPDX-License-Identifier: Apache-2.0
 +syntax = "proto3";
 +package kingdom.openshell.managed.v1;
@@ -9223,6 +10522,9 @@
 +// Every method, including DescribeRuntime, requires gateway authentication and
 +// workspace authorization. Unsupported peers must reject before admission.
 +service ManagedExecutions {
++  rpc DeleteFinalizedRuntime(DeleteFinalizedRuntimeRequest) returns (DeleteFinalizedRuntimeResponse) {
++    option (.openshell.options.v1.authorization) = { auth_mode: "bearer" scope: "sandbox:write" workspace_role: "admin" };
++  }
 +  rpc FinalizeRuntime(FinalizeRuntimeRequest) returns (RuntimeArchive) {
 +    option (.openshell.options.v1.authorization) = { auth_mode: "bearer" scope: "sandbox:write" workspace_role: "admin" };
 +  }
@@ -9273,6 +10575,12 @@
 +  string subject_id = 6;
 +}
 +
++// Project tools receive a strictly narrower filesystem policy. Only trusted
++// provider/helper launches use the original sandbox profile.
++enum CommandScope {
++  COMMAND_SCOPE_SANDBOX = 0;
++  COMMAND_SCOPE_PROJECT_TOOL = 1;
++}
 +message CommandSpec {
 +  repeated string argv = 1;
 +  string workdir = 2;
@@ -9280,6 +10588,7 @@
 +  bytes stdin = 4;
 +  google.protobuf.Duration execution_timeout = 5;
 +  uint64 output_limit_bytes = 6;
++  CommandScope scope = 7;
 +}
 +message ExecutionSelector {
 +  string workspace = 1;
@@ -9395,6 +10704,8 @@
 +  RuntimeBinding runtime = 4;
 +  // Strict ascending boundary_request_id byte order; no duplicate identities.
 +  repeated ArchivedCommand commands = 5;
++  // Schema 2 binds an authenticated owner even for an empty runtime.
++  string subject_id = 6;
 +}
 +message RuntimeArchive {
 +  // Lowercase hex manifest_sha256, immutable and content addressed.
@@ -9411,6 +10722,34 @@
 +  ArchivedExecutionRequest execution = 1;
 +  uint64 after_sequence = 2;
 +  uint32 limit = 3;
++}
++
++// Deletion uses the immutable finalized sandbox ID, never a reusable name.
++message DeleteFinalizedRuntimeRequest {
++  string archive_id = 1;
++  RuntimeBinding runtime = 2;
++}
++enum RuntimeDeletionState {
++  RUNTIME_DELETION_STATE_UNSPECIFIED = 0;
++  RUNTIME_DELETION_STATE_PENDING = 1;
++  RUNTIME_DELETION_STATE_ABSENT = 2;
++}
++message DeleteFinalizedRuntimeResponse {
++  RuntimeDeletionState state = 1;
++  RuntimeDeletionReceipt receipt = 2;
++}
++// Created only after the trusted driver and gateway have completed deletion
++// of this exact sandbox ID. Gateway retains it before returning ABSENT.
++// Digest uses domain kingdom.openshell.runtime-deletion.v1\0 followed by
++// canonical known-field protobuf bytes with receipt_sha256 cleared.
++message RuntimeDeletionReceipt {
++  uint32 schema_version = 1;
++  string gateway_id = 2;
++  string workspace_id = 3;
++  string subject_id = 4;
++  RuntimeBinding runtime = 5;
++  string archive_id = 6;
++  bytes receipt_sha256 = 7;
 +}
 --- /dev/null
 +++ b/proto/kingdom_managed_internal.proto
@@ -9529,3 +10868,11 @@
    }
  }
  // Read-only image-policy discovery, permitted before attachment.
+@@ -265,6 +268,7 @@
+   repeated EnvironmentEntry env = 5 [(openshell.options.v1.secret) = true];
+   optional string workdir = 6;
+   bool pty = 7;
++  bool project_tool = 8;
+ }
+ message EnvironmentEntry {
+   string name = 1;
