@@ -52,6 +52,9 @@ func (w *Worker) StopServer(ctx context.Context, p providerrequest.Preparation, 
 	if e != nil {
 		return closed, e
 	}
+	if retained, err := remote.ReadProcessClosure(ctx, w.db, r.Owner, r.Reference, l.id); err == nil {
+		return retained, drainPlugins(ctx, services.Plugins, binding)
+	}
 	op, e := remote.ReadOperation(ctx, w.db, l.id)
 	if errors.Is(e, sql.ErrNoRows) {
 		closed.NotStarted = true

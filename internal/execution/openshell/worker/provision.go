@@ -186,3 +186,18 @@ func sameSpec(observed, expected *native.SandboxSpec) bool {
 	copy.ProviderAttachmentEpoch = ""
 	return proto.Equal(copy, expected)
 }
+
+// ReserveManifest joins runtime reservation to its immutable source and IDs in
+// one transaction. Recovery cannot leave an unlinked reservation behind.
+func (w *Worker) ReserveManifest(ctx context.Context, p providerrequest.Preparation, m remote.WorkerManifest) (remote.Reservation, error) {
+	var r remote.Reservation
+	e := w.transaction(ctx, func(tx *sql.Tx) error {
+		var e error
+		r, _, e = providerrequest.ReserveRecoverableRemoteRuntimeTx(ctx, tx, p.Owner, p.Lease, m.Owner.BindingID, w.config.Target, w.config.Workspace, m.CreationID, w.template(), w.requests, w.config.Now())
+		if e != nil {
+			return e
+		}
+		return remote.BindWorkerManifestAllocationTx(ctx, tx, m.Owner, r.Reference)
+	})
+	return r, e
+}

@@ -343,3 +343,16 @@ func validBinaryDigest(value string) bool {
 func launcherModel(selection access.Selection) (string, string) {
 	return selection.Connection.Provider, strings.TrimPrefix(selection.Model, selection.Connection.Provider+"/")
 }
+
+// CloseTransport joins owned forwarding streams. It proves no remote process
+// closure; callers must retain the server's typed receipt independently.
+func (s *Server) CloseTransport(ctx context.Context) error {
+	var a, b error
+	if s.provider != nil {
+		a = s.provider.Close(ctx)
+	}
+	if s.control != nil {
+		b = s.control.Close(ctx)
+	}
+	return errors.Join(a, b)
+}
