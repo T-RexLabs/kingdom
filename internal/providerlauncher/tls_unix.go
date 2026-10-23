@@ -19,11 +19,15 @@ func checkProviderTrust() error {
 				return errors.New("unsafe provider trust directory")
 			}
 			var st unix.Stat_t
-			if err = unix.Lstat(parent, &st); err != nil || st.Uid != 0 {
+			owner := uint32(0)
+			if parent == filepath.Dir(trustedCA) {
+				owner = uint32(os.Geteuid())
+			}
+			if err = unix.Lstat(parent, &st); err != nil || st.Uid != owner {
 				return errors.New("untrusted provider trust directory")
 			}
 		}
-		if err := checkTrustFile(path, 0); err != nil {
+		if err := checkTrustFile(path, uint32(os.Geteuid())); err != nil {
 			return err
 		}
 	}
