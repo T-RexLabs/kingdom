@@ -197,3 +197,21 @@ func TestRemoteDisposalDrainFailureRemainsCandidate(t *testing.T) {
 		t.Fatal(p.calls)
 	}
 }
+
+type routedDisposalProvider struct{ *disposalProvider }
+
+func (*routedDisposalProvider) SupportsRemoteCleanup() bool { return true }
+func TestRemoteDisposalUsesRetainedCapabilityAfterDefaultSwitch(t *testing.T) {
+	loop, p := disposalMaintenanceFixture(t, 1)
+	p.kind = providerexecution.BackendLocal
+	loop.provider = &routedDisposalProvider{p}
+	if n, e := loop.scheduleRemoteDisposals(context.Background()); e != nil || n != 1 {
+		t.Fatal(n, e)
+	}
+	waitMaintenanceAdmissionDrain(t, loop)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if fmt.Sprint(p.calls) != "[drain:inv-1 discard:inv-1]" {
+		t.Fatal(p.calls)
+	}
+}

@@ -16,7 +16,11 @@ func (o *orchestrationLoop) scheduleRemoteDisposals(ctx context.Context) (int, e
 	backend, ok := o.provider.(interface {
 		ExecutionBackend() providerexecution.Backend
 	})
-	if !ok || backend.ExecutionBackend() != providerexecution.BackendOpenShell {
+	supportsRemote := ok && backend.ExecutionBackend() == providerexecution.BackendOpenShell
+	if routed, ok := o.provider.(interface{ SupportsRemoteCleanup() bool }); ok {
+		supportsRemote = routed.SupportsRemoteCleanup()
+	}
+	if !supportsRemote {
 		return 0, nil
 	}
 	o.maintenance.scanMu.Lock()
