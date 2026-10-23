@@ -17,7 +17,7 @@ func TestNativeAccountProcess(t *testing.T) {
 		t.Skip("requires explicit pinned OpenCode account fixture")
 	}
 	root := filepath.Join(t.TempDir(), "private-login")
-	p, err := NewProcess(ProcessConfig{BinaryPath: binary, RuntimeRoot: root})
+	p, err := NewProcess(ProcessConfig{BinaryPath: binary, RuntimeRoot: root, GuardianExecutable: os.Getenv("KINGDOM_TEST_ACCOUNT_GUARDIAN")})
 	if err != nil {
 		t.Fatal(err)
 	}
