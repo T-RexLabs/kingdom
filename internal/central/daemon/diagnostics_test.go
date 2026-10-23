@@ -24,6 +24,7 @@ func TestModelFailureOperatorOutputIsBoundedAndAtomic(t *testing.T) {
 	report(project, modelproxy.Failure{Phase: modelproxy.PhaseResponseContract, UpstreamStatus: 200, ContractReason: modelproxy.ContractReason(secret)})
 	report(project, modelproxy.Failure{Phase: modelproxy.PhaseResponseContract, UpstreamStatus: 200, ContractReason: modelproxy.ContractContentEncoding, ContentEncoding: modelproxy.ContentEncoding(secret)})
 	report(project, modelproxy.Failure{Phase: modelproxy.PhaseResponseContract, UpstreamStatus: 200, ContractReason: modelproxy.ContractMediaType, MediaType: modelproxy.MediaType(secret)})
+	report(project, modelproxy.Failure{Phase: modelproxy.PhaseResponseContract, UpstreamStatus: 200, ContractReason: modelproxy.ContractMediaType, MediaType: modelproxy.MediaMissing, ResponseShape: modelproxy.ResponseShape(secret)})
 	if output.Len() != 0 {
 		t.Fatal("unbounded diagnostic admitted")
 	}

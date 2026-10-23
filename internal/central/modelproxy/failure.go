@@ -52,6 +52,17 @@ const (
 	MediaOther       MediaType = "other"
 )
 
+type ResponseShape string
+
+const (
+	ShapeInvalidFrame  ResponseShape = "invalid_frame"
+	ShapeTruncated     ResponseShape = "truncated"
+	ShapePreambleLimit ResponseShape = "preamble_limit"
+	ShapeHTML          ResponseShape = "html"
+	ShapeJSON          ResponseShape = "json"
+	ShapeOther         ResponseShape = "other"
+)
+
 type ContentEncoding string
 
 const (
@@ -71,13 +82,14 @@ type Failure struct {
 	ContractReason  ContractReason  `json:"contract_reason,omitempty"`
 	ContentEncoding ContentEncoding `json:"content_encoding,omitempty"`
 	MediaType       MediaType       `json:"media_type,omitempty"`
+	ResponseShape   ResponseShape   `json:"response_shape,omitempty"`
 }
 
 // Valid also bounds data at an operator sink, including explicit enum casts.
 func (f Failure) Valid() bool {
 	switch f.Phase {
 	case PhaseTransport:
-		if f.UpstreamStatus != 0 || f.ContractReason != "" || f.ContentEncoding != "" || f.MediaType != "" {
+		if f.UpstreamStatus != 0 || f.ContractReason != "" || f.ContentEncoding != "" || f.MediaType != "" || f.ResponseShape != "" {
 			return false
 		}
 		switch f.TransportClass {
@@ -85,7 +97,7 @@ func (f Failure) Valid() bool {
 			return true
 		}
 	case PhaseUpstreamStatus:
-		return f.TransportClass == "" && f.ContractReason == "" && f.ContentEncoding == "" && f.MediaType == "" && f.UpstreamStatus >= 100 && f.UpstreamStatus <= 599 && (f.UpstreamStatus < 200 || f.UpstreamStatus >= 300)
+		return f.TransportClass == "" && f.ContractReason == "" && f.ContentEncoding == "" && f.MediaType == "" && f.ResponseShape == "" && f.UpstreamStatus >= 100 && f.UpstreamStatus <= 599 && (f.UpstreamStatus < 200 || f.UpstreamStatus >= 300)
 	case PhaseResponseContract:
 		if f.TransportClass != "" || f.UpstreamStatus < 200 || f.UpstreamStatus > 299 {
 			return false
@@ -95,14 +107,24 @@ func (f Failure) Valid() bool {
 			if f.ContentEncoding != "" {
 				return false
 			}
+			if f.ResponseShape != "" {
+				if f.MediaType != MediaMissing {
+					return false
+				}
+				switch f.ResponseShape {
+				case ShapeInvalidFrame, ShapeTruncated, ShapePreambleLimit, ShapeHTML, ShapeJSON, ShapeOther:
+				default:
+					return false
+				}
+			}
 			switch f.MediaType {
 			case MediaMissing, MediaInvalid, MediaJSON, MediaSSE, MediaHTML, MediaPlain, MediaOctetStream, MediaNDJSON, MediaProblemJSON, MediaOther:
 				return true
 			}
 		case ContractSizeLimit:
-			return f.ContentEncoding == "" && f.MediaType == ""
+			return f.ContentEncoding == "" && f.MediaType == "" && f.ResponseShape == ""
 		case ContractContentEncoding:
-			if f.MediaType != "" {
+			if f.MediaType != "" || f.ResponseShape != "" {
 				return false
 			}
 			switch f.ContentEncoding {

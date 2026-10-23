@@ -224,4 +224,11 @@ A media type failure also has `media_type`: `missing`, `invalid`, `json`, `sse`,
 fixed categories, not raw header values. The accepted response types remain
 `application/json` and `text/event-stream`.
 The proxy requests `Accept-Encoding: identity` and rejects encoded responses.
+For the personal ChatGPT Responses route only, a missing or empty media type can
+be established as `text/event-stream` after a complete initial Responses SSE
+frame passes validation. The bounded preamble accepts blank lines and comments;
+all prefetched bytes count toward the response limit and are relayed unchanged.
+An unverified headerless response is rejected. Its diagnostic has a fixed
+`response_shape`: `invalid_frame`, `truncated`, `preamble_limit`, `html`, `json`,
+or `other`. The native OpenCode completion checks still apply to the full stream.
 Keep this output in the operator log; do not expose it through project APIs.

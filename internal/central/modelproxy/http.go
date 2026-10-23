@@ -175,12 +175,6 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusBadGateway)
 		return
 	}
-	responseType, _, e := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if e != nil || (responseType != "application/json" && responseType != "text/event-stream") {
-		b.reportFailure(Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode, ContractReason: ContractMediaType, MediaType: classifyMediaType(response.Header.Get("Content-Type"))})
-		deny(http.StatusBadGateway)
-		return
-	}
 	if values := response.Header.Values("Content-Encoding"); len(values) != 0 {
 		encoding := EncodingOther
 		if len(values) == 1 {
@@ -189,6 +183,31 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		b.reportFailure(Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode, ContractReason: ContractContentEncoding, ContentEncoding: encoding})
 		deny(http.StatusBadGateway)
 		return
+	}
+	var responseBody io.Reader = response.Body
+	rawType := response.Header.Get("Content-Type")
+	responseType, _, e := mime.ParseMediaType(rawType)
+	if e != nil || (responseType != "application/json" && responseType != "text/event-stream") {
+		failure := Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode, ContractReason: ContractMediaType, MediaType: classifyMediaType(rawType)}
+		if route.Protocol == ProtocolOpenAIChatGPT && object["stream"] == true && strings.TrimSpace(rawType) == "" {
+			var shape ResponseShape
+			responseBody, shape, e = chatGPTResponseStream(ctx, response.Body, b.cfg.MaxResponseBytes)
+			if e != nil {
+				if shape == "" {
+					b.reportFailure(Failure{Phase: PhaseTransport, TransportClass: classifyTransport(e)})
+				} else {
+					failure.ResponseShape = shape
+					b.reportFailure(failure)
+				}
+				deny(http.StatusBadGateway)
+				return
+			}
+			responseType = "text/event-stream"
+		} else {
+			b.reportFailure(failure)
+			deny(http.StatusBadGateway)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", responseType)
 	w.Header().Set("Cache-Control", "no-store")
@@ -201,7 +220,7 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if size > remaining {
 			size = remaining
 		}
-		n, readErr := response.Body.Read(buffer[:size])
+		n, readErr := responseBody.Read(buffer[:size])
 		if n > 0 {
 			remaining -= int64(n)
 			if _, e = w.Write(buffer[:n]); e != nil {
@@ -226,7 +245,7 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// One extra byte distinguishes a valid exact-limit response from truncation.
 	var overflow [1]byte
-	n, readErr := io.ReadFull(response.Body, overflow[:])
+	n, readErr := io.ReadFull(responseBody, overflow[:])
 	if n != 0 || readErr != io.EOF || ctx.Err() != nil {
 		if ctx.Err() != nil {
 			b.reportFailure(Failure{Phase: PhaseTransport, TransportClass: classifyTransport(ctx.Err())})
