@@ -165,6 +165,58 @@ func TestKeyDomainsRemainStableAcrossRestartAndWrongKeyCannotReplaceState(t *tes
 	}
 	_ = open(t, c)
 }
+
+func TestSharedServicesCloseAfterProjectsAndRetainStateOnFailure(t *testing.T) {
+	c, shared, runtime := config(t)
+	build := c.Projects
+	failure := errors.New("model discovery remains active")
+	calls := 0
+	c.Projects = func(s Shared) (ProjectServices, error) {
+		services, e := build(s)
+		services.Close = func(context.Context) error {
+			calls++
+			if runtime.closed.Load() == 0 {
+				t.Error("shared services closed before project consumers")
+			}
+			if e := s.CatalogDB.Ping(); e != nil {
+				t.Error("database closed before shared services", e)
+			}
+			if calls == 1 {
+				return failure
+			}
+			return nil
+		}
+		return services, e
+	}
+	a := open(t, c)
+	ctx := context.Background()
+	owner, e := shared.Catalog.BootstrapOwner(ctx, c.InitialOwners[0], "Owner")
+	if e != nil {
+		t.Fatal(e)
+	}
+	p, e := shared.Catalog.CreateProject(ctx, owner.ID, "Project")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = a.projects.Factory(ctx, p.ID, shared.Sessions.ProjectAuthenticator(p.ID)); e != nil {
+		t.Fatal(e)
+	}
+	if e = a.Close(ctx); !errors.Is(e, failure) {
+		t.Fatal("shared closure failure lost", e)
+	}
+	if e = shared.CatalogDB.Ping(); e != nil {
+		t.Fatal("shared state released before closure", e)
+	}
+	if e = a.Close(ctx); e != nil {
+		t.Fatal(e)
+	}
+	if calls != 2 || runtime.closed.Load() != 1 {
+		t.Fatal("shared cleanup did not resume without closing project twice")
+	}
+	if e = a.Close(ctx); e != nil || calls != 2 {
+		t.Fatal("shared services closed after release", e)
+	}
+}
 func TestConstructionFailureReleasesRegistryAndRejectsUnsafeStatePaths(t *testing.T) {
 	c, _, _ := config(t)
 	correct := c.Projects

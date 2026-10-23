@@ -41,6 +41,8 @@ type Shared struct {
 type ProjectServices struct {
 	Build   projects.Builder
 	Workers http.Handler
+	Models  centralserver.ModelDiscovery
+	Close   func(context.Context) error
 }
 type Config struct {
 	DataRoot, PublicOrigin string
@@ -57,14 +59,15 @@ type Config struct {
 	MaxProjects            int
 }
 type Application struct {
-	db         *sql.DB
-	registry   *capability.Registry
-	sessions   *auth.Manager
-	projects   *projects.Manager
-	handler    http.Handler
-	closed     atomic.Bool
-	closeToken chan struct{}
-	released   bool
+	db            *sql.DB
+	registry      *capability.Registry
+	sessions      *auth.Manager
+	projects      *projects.Manager
+	handler       http.Handler
+	closed        atomic.Bool
+	closeToken    chan struct{}
+	released      bool
+	closeServices func(context.Context) error
 }
 
 func New(ctx context.Context, c Config) (result *Application, err error) {
@@ -132,13 +135,14 @@ func New(ctx context.Context, c Config) (result *Application, err error) {
 	if e != nil {
 		return nil, e
 	}
+	a.closeServices = services.Close
 	if services.Workers == nil {
 		return nil, ErrConfiguration
 	}
 	if a.projects, err = projects.New(projects.Config{Build: services.Build, StartupTimeout: c.StartupTimeout, MaxProjects: c.MaxProjects}); err != nil {
 		return nil, err
 	}
-	server, e := centralserver.New(centralserver.Config{Sessions: a.sessions, Login: login, Catalog: centralCatalog, Connections: vault, ProjectFactory: a.projects.Factory})
+	server, e := centralserver.New(centralserver.Config{Sessions: a.sessions, Login: login, Catalog: centralCatalog, Connections: vault, ProjectFactory: a.projects.Factory, Models: services.Models})
 	if e != nil {
 		return nil, e
 	}
@@ -184,6 +188,12 @@ func (a *Application) Close(ctx context.Context) error {
 		if e := a.projects.Close(ctx); e != nil {
 			return e
 		}
+	}
+	if a.closeServices != nil {
+		if e := a.closeServices(ctx); e != nil {
+			return e
+		}
+		a.closeServices = nil
 	}
 	if a.registry != nil {
 		if e := a.registry.Close(ctx); e != nil {
