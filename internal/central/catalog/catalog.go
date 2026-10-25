@@ -25,7 +25,10 @@ type User struct {
 	DisplayName string `json:"display_name"`
 	TeamOwner   bool   `json:"team_owner"`
 }
-type Project struct{ ID, DisplayName string }
+type Project struct {
+	ID, DisplayName string
+	Role            Role
+}
 type Role string
 
 const (
@@ -277,7 +280,7 @@ func (s *Store) createProject(ctx context.Context, actor, displayName, key strin
 	if result, found, err := mutation.Replay[Project](ctx, tx, actor, key, "project.create", "", fingerprint); err != nil || found {
 		return result, err
 	}
-	p := Project{ID: uuid.NewString(), DisplayName: displayName}
+	p := Project{ID: uuid.NewString(), DisplayName: displayName, Role: Owner}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO central_projects(id,display_name) VALUES(?,?)`, p.ID, p.DisplayName); err != nil {
 		return Project{}, err
 	}
@@ -417,7 +420,7 @@ func retainProjectOwner(ctx context.Context, tx *sql.Tx, project, user string) e
 }
 
 func (s *Store) Projects(ctx context.Context, actor string) ([]Project, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT p.id,p.display_name FROM central_projects p JOIN central_memberships m ON m.project_id=p.id JOIN central_users u ON u.id=m.user_id WHERE m.user_id=? AND m.revoked=0 AND u.disabled=0 ORDER BY p.id`, actor)
+	rows, err := s.db.QueryContext(ctx, `SELECT p.id,p.display_name,m.role FROM central_projects p JOIN central_memberships m ON m.project_id=p.id JOIN central_users u ON u.id=m.user_id WHERE m.user_id=? AND m.revoked=0 AND u.disabled=0 ORDER BY p.id`, actor)
 	if err != nil {
 		return nil, err
 	}
@@ -425,7 +428,7 @@ func (s *Store) Projects(ctx context.Context, actor string) ([]Project, error) {
 	projects := []Project{}
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.DisplayName); err != nil {
+		if err := rows.Scan(&p.ID, &p.DisplayName, &p.Role); err != nil {
 			return nil, err
 		}
 		projects = append(projects, p)

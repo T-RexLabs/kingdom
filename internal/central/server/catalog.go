@@ -14,8 +14,9 @@ type userDTO struct {
 func userValue(u catalog.User) userDTO { return userDTO{u.ID, u.DisplayName, u.TeamOwner} }
 
 type projectDTO struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
+	ID          string       `json:"id"`
+	DisplayName string       `json:"display_name"`
+	Role        catalog.Role `json:"role"`
 }
 
 func (s *Server) projects(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +31,7 @@ func (s *Server) projects(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []projectDTO{}
 	for _, p := range v {
-		out = append(out, projectDTO{p.ID, p.DisplayName})
+		out = append(out, projectDTO{p.ID, p.DisplayName, p.Role})
 	}
 	write(w, 200, out)
 }
@@ -54,21 +55,41 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
-	write(w, 201, projectDTO{p.ID, p.DisplayName})
+	current, e := s.cfg.Catalog.Project(r.Context(), actor, p.ID)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	write(w, 201, projectDTO{current.ID, current.DisplayName, current.Role})
 }
 func (s *Server) users(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actor(w, r)
 	if !ok {
 		return
 	}
-	v, e := s.cfg.Catalog.Users(r.Context(), actor)
+	v, e := s.cfg.Catalog.UserDirectory(r.Context(), actor)
 	if e != nil {
 		fail(w, e)
 		return
 	}
-	out := []userDTO{}
-	for _, u := range v {
-		out = append(out, userValue(u))
+	type accountReference struct {
+		ProviderID string `json:"provider_id"`
+		AccountID  string `json:"account_id"`
+	}
+	type directoryUser struct {
+		userDTO
+		Accounts []accountReference `json:"accounts"`
+	}
+	out := []directoryUser{}
+	for _, entry := range v {
+		value := directoryUser{userDTO: userValue(entry.User), Accounts: []accountReference{}}
+		for _, identity := range entry.Identities {
+			provider, account, ok := s.cfg.Login.AdmissionReference(identity)
+			if ok {
+				value.Accounts = append(value.Accounts, accountReference{provider, account})
+			}
+		}
+		out = append(out, value)
 	}
 	write(w, 200, out)
 }
@@ -82,14 +103,19 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Issuer      string `json:"issuer"`
-		Subject     string `json:"subject"`
+		ProviderID  string `json:"provider_id"`
+		AccountID   string `json:"account_id"`
 		DisplayName string `json:"display_name"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	u, e := s.cfg.Catalog.CreateUserRequest(r.Context(), actor, catalog.Identity{Issuer: req.Issuer, Subject: req.Subject}, req.DisplayName, k)
+	identity, e := s.cfg.Login.AdmissionIdentity(req.ProviderID, req.AccountID)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	u, e := s.cfg.Catalog.CreateUserRequest(r.Context(), actor, identity, req.DisplayName, k)
 	if e != nil {
 		fail(w, e)
 		return
@@ -151,4 +177,17 @@ func (s *Server) revokeMembership(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(204)
+}
+
+func (s *Server) userProviders(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.actor(w, r)
+	if !ok {
+		return
+	}
+	user, err := s.cfg.Catalog.ActiveUser(r.Context(), actor)
+	if err != nil || !user.TeamOwner {
+		fail(w, catalog.ErrDenied)
+		return
+	}
+	write(w, 200, s.cfg.Login.AdmissionProviders())
 }

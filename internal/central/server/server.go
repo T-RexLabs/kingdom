@@ -61,6 +61,7 @@ func New(cfg Config) (*Server, error) {
 	central.HandleFunc("GET "+BasePath+"/projects", s.projects)
 	central.HandleFunc("POST "+BasePath+"/projects", s.createProject)
 	central.HandleFunc("GET "+BasePath+"/users", s.users)
+	central.HandleFunc("GET "+BasePath+"/users/providers", s.userProviders)
 	central.HandleFunc("POST "+BasePath+"/users", s.createUser)
 	central.HandleFunc("GET "+BasePath+"/projects/{project}/memberships", s.memberships)
 	central.HandleFunc("PUT "+BasePath+"/projects/{project}/memberships/{user}", s.setMembership)

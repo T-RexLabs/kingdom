@@ -1,0 +1,219 @@
+openapi: 3.1.0
+info:
+  title: Kingdom Central Team and Project Access
+  version: 1.0.0
+  description: Explicit provider-account preauthorization and current project membership. No self-registration or identity linking by name or email.
+  license: {name: Proprietary, url: 'https://kingdom.local/license'}
+servers:
+  - url: /
+    description: Operator-configured central HTTPS origin.
+security: [{session: []}]
+paths:
+  /api/central/v1/users/providers:
+    get:
+      operationId: listCentralAdmissionProviders
+      summary: List Configured Sign-In Providers
+      description: Team owners only. Provider aliases resolve to server-owned configured issuers; issuer URLs and credentials are not returned.
+      responses:
+        '200':
+          description: Configured provider account requirements.
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/AdmissionProvider'}}
+        '401': {$ref: '#/components/responses/SessionRequired'}
+        '403': {$ref: '#/components/responses/Denied'}
+  /api/central/v1/users:
+    get:
+      operationId: listCentralUsers
+      summary: List Authorized Team Accounts
+      description: Team owners only. Account references identify configured providers. Historical identities for unavailable providers are omitted. Project membership and session responses do not disclose account references.
+      responses:
+        '200':
+          description: Active team directory.
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/DirectoryUser'}}
+        '401': {$ref: '#/components/responses/SessionRequired'}
+        '403': {$ref: '#/components/responses/Denied'}
+    post:
+      operationId: authorizeCentralUser
+      summary: Authorize a Provider Account
+      description: Team owners only. Preauthorizes one exact immutable provider identity. This grants no project membership or team ownership. Retries retain their exact key and body. Arbitrary issuer input is unsupported. GitHub IDs are positive canonical decimal int64 values; OIDC subjects are opaque and retain exact case and bytes.
+      parameters: [{$ref: '#/components/parameters/Origin'}, {$ref: '#/components/parameters/CSRF'}, {$ref: '#/components/parameters/Key'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [provider_id, account_id, display_name]
+              properties:
+                provider_id: {type: string, enum: [github, oidc]}
+                account_id: {type: string, minLength: 1, maxLength: 512}
+                display_name: {type: string, minLength: 1, maxLength: 512}
+      responses:
+        '201':
+          description: Authorized account, including an exact replay.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/SessionRequired'}
+        '403': {$ref: '#/components/responses/Denied'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/central/v1/projects:
+    get:
+      operationId: listCentralProjects
+      summary: List Accessible Projects
+      description: Each current role is read with the actor-filtered membership. Team ownership does not imply project ownership.
+      responses:
+        '200':
+          description: Current project summaries.
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Project'}}
+        '401': {$ref: '#/components/responses/SessionRequired'}
+    post:
+      operationId: createCentralProject
+      summary: Create a Project
+      description: Team owners only. Creation grants project ownership. A retry returns the caller's current project role and cannot restore revoked access.
+      parameters: [{$ref: '#/components/parameters/Origin'}, {$ref: '#/components/parameters/CSRF'}, {$ref: '#/components/parameters/Key'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [display_name]
+              properties:
+                display_name: {type: string, minLength: 1, maxLength: 512}
+      responses:
+        '201':
+          description: Project with its current actor role.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Project'}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/SessionRequired'}
+        '403': {$ref: '#/components/responses/Denied'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/central/v1/projects/{project}/memberships:
+    parameters: [{$ref: '#/components/parameters/Project'}]
+    get:
+      operationId: listCentralProjectMemberships
+      summary: List Project Members
+      description: Current project owners only. Does not grant access to the team directory or provider account references.
+      responses:
+        '200':
+          description: Active project memberships.
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Membership'}}
+        '401': {$ref: '#/components/responses/SessionRequired'}
+        '403': {$ref: '#/components/responses/Denied'}
+  /api/central/v1/projects/{project}/memberships/{user}:
+    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/User'}]
+    put:
+      operationId: setCentralProjectMembership
+      summary: Set Project Access
+      description: Current project owners can grant or change project roles for a known active user. Project roles cannot grant team ownership. The final active project owner cannot be demoted. UI directory selection remains available only to team owners.
+      parameters: [{$ref: '#/components/parameters/Origin'}, {$ref: '#/components/parameters/CSRF'}, {$ref: '#/components/parameters/Key'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [role]
+              properties:
+                role: {$ref: '#/components/schemas/Role'}
+      responses:
+        '204': {description: Membership saved or exact replay confirmed.}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/SessionRequired'}
+        '403': {$ref: '#/components/responses/Denied'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    delete:
+      operationId: revokeCentralProjectMembership
+      summary: Remove Project Access
+      description: Current project owners only. Preserves at least one active owner. Uses the session authority to cancel active protected project requests. It does not delete the user or project.
+      parameters: [{$ref: '#/components/parameters/Origin'}, {$ref: '#/components/parameters/CSRF'}, {$ref: '#/components/parameters/Key'}]
+      responses:
+        '204': {description: Project access removed or exact replay confirmed.}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/SessionRequired'}
+        '403': {$ref: '#/components/responses/Denied'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+components:
+  securitySchemes:
+    session: {type: apiKey, in: cookie, name: __Host-kingdom-session}
+  parameters:
+    Origin: {name: Origin, in: header, required: true, schema: {type: string, format: uri}}
+    CSRF: {name: X-CSRF-Token, in: header, required: true, schema: {type: string, minLength: 43, maxLength: 43}}
+    Key: {name: Idempotency-Key, in: header, required: true, schema: {type: string, format: uuid}}
+    Project: {name: project, in: path, required: true, schema: {type: string, format: uuid}}
+    User: {name: user, in: path, required: true, schema: {type: string, format: uuid}}
+  responses:
+    Invalid: {description: "Invalid provider account, role, key, or request body."}
+    SessionRequired: {description: An active authenticated session is required.}
+    Denied: {description: "Current authority, CSRF, or last-owner protection denied the request."}
+    Conflict: {description: The retained request key has another immutable payload.}
+    Unavailable: {description: The result is unavailable or unconfirmed. Retry the exact request.}
+  schemas:
+    Role: {type: string, enum: [owner, member]}
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, display_name, team_owner]
+      properties:
+        id: {type: string, format: uuid}
+        display_name: {type: string}
+        team_owner: {type: boolean}
+    DirectoryUser:
+      type: object
+      additionalProperties: false
+      required: [id, display_name, team_owner, accounts]
+      properties:
+        id: {type: string, format: uuid}
+        display_name: {type: string}
+        team_owner: {type: boolean}
+        accounts:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [provider_id, account_id]
+            properties:
+              provider_id: {type: string, enum: [github, oidc]}
+              account_id: {type: string}
+    AdmissionProvider:
+      type: object
+      additionalProperties: false
+      required: [id, label, account_id_label, help]
+      properties:
+        id: {type: string, enum: [github, oidc]}
+        label: {type: string}
+        account_id_label: {type: string}
+        help: {type: string}
+    Project:
+      type: object
+      additionalProperties: false
+      required: [id, display_name, role]
+      properties:
+        id: {type: string, format: uuid}
+        display_name: {type: string}
+        role: {$ref: '#/components/schemas/Role'}
+    Membership:
+      type: object
+      additionalProperties: false
+      required: [user, role]
+      properties:
+        user: {$ref: '#/components/schemas/User'}
+        role: {$ref: '#/components/schemas/Role'}

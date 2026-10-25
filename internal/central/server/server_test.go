@@ -303,10 +303,10 @@ func TestCentralRoutesRejectCSRFAndPrivilegeClaims(t *testing.T) {
 	w := httptest.NewRecorder()
 	f.server.ServeHTTP(w, r)
 	checkStatus(t, w, 403)
-	body := `{"issuer":"https://issuer.example","subject":"new","display_name":"New","team_owner":true}`
+	body := `{"provider_id":"github","account_id":"42","display_name":"New","team_owner":true}`
 	checkStatus(t, f.call("POST", BasePath+"/users", body, uuid.NewString(), true), 400)
 	key := uuid.NewString()
-	body = `{"issuer":"https://issuer.example","subject":"new","display_name":"New"}`
+	body = `{"provider_id":"github","account_id":"42","display_name":"New"}`
 	first := f.call("POST", BasePath+"/users", body, key, true)
 	checkStatus(t, first, 201)
 	checkStatus(t, f.call("POST", BasePath+"/users", body, key, true), 201)
@@ -337,7 +337,7 @@ func TestRetryRecordAndMutationCommitTogether(t *testing.T) {
 		t.Fatal(e)
 	}
 	checkStatus(t, f.call("POST", BasePath+"/projects", body, key, true), 201)
-	checkStatus(t, f.call("POST", BasePath+"/users", `{"issuer":"https://issuer.example","subject":"collision","display_name":"Collision"}`, key, true), 409)
+	checkStatus(t, f.call("POST", BasePath+"/users", `{"provider_id":"github","account_id":"43","display_name":"Collision"}`, key, true), 409)
 }
 func TestFactoryAuthenticatorRemainsBoundToProject(t *testing.T) {
 	f := setup(t)
