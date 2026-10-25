@@ -10,7 +10,7 @@ import (
 )
 
 type Routes interface {
-	AccountRoute(connections.Metadata, string) (modelproxy.Route, error)
+	PinAccountRoute(context.Context, string, string, connections.Metadata, string, string) (modelproxy.Route, error)
 }
 
 // Resolver uses only trusted connection metadata to choose an authentication
@@ -22,43 +22,73 @@ type Resolver struct {
 	APIKeys     modelproxy.Resolver
 }
 
-func (r *Resolver) pin(ctx context.Context, b modelproxy.Binding) (connections.Metadata, connections.AccountReference, modelproxy.Route, error) {
-	if r == nil || r.Connections == nil || r.Accounts == nil || r.Routes == nil || b.Access.Validate() != nil || b.Access.AuthorityDomain() != access.DomainHosted {
-		return connections.Metadata{}, connections.AccountReference{}, modelproxy.Route{}, ErrDenied
+func (r *Resolver) account(ctx context.Context, b modelproxy.Binding) (connections.Metadata, connections.AccountReference, error) {
+	if r == nil || r.Connections == nil || r.Accounts == nil || b.Access.Validate() != nil || b.Access.AuthorityDomain() != access.DomainHosted {
+		return connections.Metadata{}, connections.AccountReference{}, ErrDenied
 	}
 	ctx, done, err := r.Accounts.enter(ctx)
 	if err != nil {
-		return connections.Metadata{}, connections.AccountReference{}, modelproxy.Route{}, ErrDenied
+		return connections.Metadata{}, connections.AccountReference{}, ErrDenied
 	}
 	defer done()
 	a := b.Access
 	c := a.Selection.Connection
 	m, ref, err := r.Connections.ResolveAccountForProject(ctx, a.ActorID, a.ProjectID, c.ID, c.Revision)
 	if err != nil || m.OwnerID != a.ActorID || m.OwnerID != c.OwnerID || string(m.Scope) != c.Scope || m.Definition.Provider != c.Provider {
-		return m, ref, modelproxy.Route{}, ErrDenied
-	}
-	route, err := r.Routes.AccountRoute(m, a.Selection.Model)
-	if err != nil || route.Model != strings.TrimPrefix(a.Selection.Model, c.Provider+"/") {
-		return m, ref, modelproxy.Route{}, ErrDenied
+		return m, ref, ErrDenied
 	}
 	if m.Definition.AuthKind == "copilot_oauth" && m.Definition.Provider == "github-copilot" {
-		credential, e := r.Accounts.read(ctx, a.ActorID, ref)
-		if e != nil {
-			return m, ref, route, ErrDenied
-		}
-		base, e := copilotEndpoint(credential)
-		if e != nil || route.Endpoint != base && (route.Protocol != "anthropic" || route.Endpoint != base+"/v1") {
-			return m, ref, route, ErrDenied
+		if _, e := r.Accounts.read(ctx, a.ActorID, ref); e != nil {
+			return m, ref, ErrDenied
 		}
 	} else if m.Definition.AuthKind == "openai_oauth" && m.Definition.Provider == "openai" && r.Accounts.chatgpt != nil {
 		reg, e := r.Accounts.chatgpt.Registration(ctx, a.ActorID, ref.ID)
-		if e != nil || reg.Revision != ref.Revision || reg.State != "ready" || route.Protocol != "openai_chatgpt" || route.Endpoint != "https://api.openai.com/v1" {
-			return m, ref, route, ErrDenied
+		if e != nil || reg.Revision != ref.Revision || reg.State != "ready" {
+			return m, ref, ErrDenied
 		}
 	} else {
-		return m, ref, route, ErrDenied
+		return m, ref, ErrDenied
 	}
-	return m, ref, route, nil
+	return m, ref, nil
+}
+
+// validateAccountRoute checks the registry's trusted immutable route against
+// current account metadata. It does not consult model discovery or choose a
+// replacement protocol, model, endpoint, account, or connection revision.
+func (r *Resolver) validateAccountRoute(ctx context.Context, b modelproxy.Binding, m connections.Metadata, ref connections.AccountReference, route modelproxy.Route) error {
+	if route.Model != strings.TrimPrefix(b.Access.Selection.Model, m.Definition.Provider+"/") {
+		return ErrDenied
+	}
+	switch m.Definition.AuthKind {
+	case "openai_oauth":
+		if route.Protocol != modelproxy.ProtocolOpenAIChatGPT || route.Endpoint != "https://api.openai.com/v1" {
+			return ErrDenied
+		}
+	case "copilot_oauth":
+		credential, err := r.Accounts.read(ctx, b.Access.ActorID, ref)
+		if err != nil {
+			return ErrDenied
+		}
+		base, err := copilotEndpoint(credential)
+		if err != nil {
+			return ErrDenied
+		}
+		switch route.Protocol {
+		case modelproxy.ProtocolOpenAIChat, modelproxy.ProtocolOpenAIResponses:
+			if route.Endpoint != base {
+				return ErrDenied
+			}
+		case modelproxy.ProtocolAnthropic:
+			if route.Endpoint != base+"/v1" {
+				return ErrDenied
+			}
+		default:
+			return ErrDenied
+		}
+	default:
+		return ErrDenied
+	}
+	return nil
 }
 func (r *Resolver) metadata(ctx context.Context, b modelproxy.Binding) (connections.Metadata, error) {
 	if r == nil || r.Connections == nil || b.Access.Validate() != nil || b.Access.AuthorityDomain() != access.DomainHosted {
@@ -79,8 +109,27 @@ func (r *Resolver) Pin(ctx context.Context, b modelproxy.Binding) (modelproxy.Ro
 		}
 		return r.APIKeys.Pin(ctx, b)
 	}
-	_, _, route, err := r.pin(ctx, b)
-	return route, err
+	if r.Routes == nil || r.Accounts == nil {
+		return modelproxy.Route{}, ErrDenied
+	}
+	ctx, done, err := r.Accounts.enter(ctx)
+	if err != nil {
+		return modelproxy.Route{}, ErrDenied
+	}
+	defer done()
+	m, ref, err := r.account(ctx, b)
+	if err != nil {
+		return modelproxy.Route{}, ErrDenied
+	}
+	route, err := r.Routes.PinAccountRoute(ctx, b.Access.ActorID, b.Access.ProjectID, m, b.Access.Selection.Model, b.Access.Selection.ThinkingEffort)
+	if err != nil || r.validateAccountRoute(ctx, b, m, ref, route) != nil {
+		return modelproxy.Route{}, ErrDenied
+	}
+	current, currentRef, err := r.account(ctx, b)
+	if err != nil || current != m || currentRef != ref || ctx.Err() != nil {
+		return modelproxy.Route{}, ErrDenied
+	}
+	return route, nil
 }
 func (r *Resolver) Resolve(ctx context.Context, b modelproxy.Binding, expected modelproxy.Route) (modelproxy.Credential, error) {
 	m, err := r.metadata(ctx, b)
@@ -101,8 +150,8 @@ func (r *Resolver) Resolve(ctx context.Context, b modelproxy.Binding, expected m
 		return modelproxy.Credential{}, ErrDenied
 	}
 	defer done()
-	_, ref, route, err := r.pin(ctx, b)
-	if err != nil || route != expected {
+	current, ref, err := r.account(ctx, b)
+	if err != nil || current != m || r.validateAccountRoute(ctx, b, m, ref, expected) != nil {
 		return modelproxy.Credential{}, ErrDenied
 	}
 	if m.Definition.AuthKind == "copilot_oauth" {

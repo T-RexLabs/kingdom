@@ -51,20 +51,26 @@ func TestAccountDiscoveryPinsPrivateRoutesWithoutValidationIO(t *testing.T) {
 	if err = f.service.Validate(ctx, m, "openai/account-model", "high"); err == nil {
 		t.Fatal("guessed reasoning effort accepted")
 	}
-	route, err := f.service.AccountRoute(m, "openai/account-model")
+	route, err := f.service.PinAccountRoute(ctx, f.member.ID, f.project.ID, m, "openai/account-model", "medium")
 	if err != nil || route.Protocol != "openai_chatgpt" || calls != 1 {
 		t.Fatal(route, err, calls)
 	}
-	if _, err = f.service.AccountRoute(m, "other/account-model"); err == nil {
+	if _, err = f.service.PinAccountRoute(ctx, f.member.ID, f.project.ID, m, "other/account-model", "medium"); err == nil {
 		t.Fatal("foreign provider accepted")
 	}
-	if _, err = f.service.AccountRoute(m, "openai/unknown"); err == nil {
+	if _, err = f.service.PinAccountRoute(ctx, f.member.ID, f.project.ID, m, "openai/unknown", "medium"); err == nil {
 		t.Fatal("undiscovered model accepted")
 	}
 	changed := m
 	changed.Revision++
-	if _, err = f.service.AccountRoute(changed, "openai/account-model"); err == nil {
+	if _, err = f.service.PinAccountRoute(ctx, f.member.ID, f.project.ID, changed, "openai/account-model", "medium"); err == nil {
 		t.Fatal("route reused by another revision")
+	}
+	if _, err = f.service.PinAccountRoute(ctx, f.member.ID, f.project.ID, m, "openai/account-model", "high"); err == nil {
+		t.Fatal("unsupported thinking effort admitted")
+	}
+	if calls != 1 {
+		t.Fatal("fresh selection checks repeated discovery")
 	}
 }
 

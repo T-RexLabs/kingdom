@@ -185,20 +185,26 @@ func (s *Service) Validate(ctx context.Context, m connections.Metadata, model, e
 	if err != nil {
 		return err
 	}
-	for _, item := range v.Models {
-		if m.Definition.Provider+"/"+item.ID != model {
+	if supportsSelection(v.Models, m.Definition.Provider, model, effort) {
+		return nil
+	}
+	return ErrUnavailable
+}
+func supportsSelection(models []Model, provider, model, effort string) bool {
+	for _, item := range models {
+		if provider+"/"+item.ID != model {
 			continue
 		}
 		if effort == "" {
-			return nil
+			return true
 		}
 		for _, v := range item.Efforts {
 			if effort == v {
-				return nil
+				return true
 			}
 		}
 	}
-	return ErrUnavailable
+	return false
 }
 func (s *Service) List(ctx context.Context, actor, project, id string, revision int64) (Snapshot, error) {
 	m, err := s.store.PinForProject(ctx, actor, project, id, revision)

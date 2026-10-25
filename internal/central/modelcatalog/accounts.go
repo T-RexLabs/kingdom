@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"kingdom/internal/central/connections"
 	"kingdom/internal/central/modelproxy"
@@ -20,20 +21,52 @@ type AccountDiscovery interface {
 	Discover(context.Context, string, connections.Definition, connections.AccountReference) ([]AccountModel, error)
 }
 
-// AccountRoute reads only a previously discovered exact connection revision.
-// It must not refresh an account while a project writer holds its transaction.
-func (s *Service) AccountRoute(m connections.Metadata, model string) (modelproxy.Route, error) {
+// PinAccountRoute prepares one invocation outside project writer transactions.
+// Discovery freshness governs new capabilities; it does not revoke the immutable
+// route already retained by an admitted capability. Selection validation itself
+// remains memory-only.
+func (s *Service) PinAccountRoute(ctx context.Context, actor, project string, m connections.Metadata, model, effort string) (modelproxy.Route, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return modelproxy.Route{}, ErrUnavailable
+	}
+	s.active.Add(1)
+	s.mu.Unlock()
+	defer s.active.Done()
+	stop := context.AfterFunc(s.lifetime, cancel)
+	defer stop()
+	if m.Definition.AuthKind == "api_key" || m.Scope != connections.Personal || m.OwnerID != actor {
+		return modelproxy.Route{}, ErrUnavailable
+	}
+	current, err := s.store.PinForProject(ctx, actor, project, m.ID, m.Revision)
+	if err != nil || current != m {
+		return modelproxy.Route{}, ErrUnavailable
+	}
+	if _, err = s.cached(m); err != nil {
+		if _, err = s.Refresh(ctx, actor, project, m.ID, m.Revision); err != nil {
+			return modelproxy.Route{}, ErrUnavailable
+		}
+	}
+	// Refresh and concurrent revocation can race across stores. Recheck access
+	// after discovery and retain only an exact, current metadata revision.
+	current, err = s.store.PinForProject(ctx, actor, project, m.ID, m.Revision)
+	if err != nil || current != m || ctx.Err() != nil {
+		return modelproxy.Route{}, ErrUnavailable
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e, ok := s.cache[key(m)]
-	if s.closed || !ok || e.metadata != m || m.Disabled || !s.now().Before(e.snapshot.ExpiresAt) {
+	if s.closed || !ok || e.metadata != m || m.Disabled || !s.now().Before(e.snapshot.ExpiresAt) || !supportsSelection(e.snapshot.Models, m.Definition.Provider, model, effort) {
 		return modelproxy.Route{}, ErrUnavailable
 	}
-	r, ok := e.routes[strings.TrimPrefix(model, m.Definition.Provider+"/")]
-	if !ok || !strings.HasPrefix(model, m.Definition.Provider+"/") {
+	route, ok := e.routes[strings.TrimPrefix(model, m.Definition.Provider+"/")]
+	if !ok {
 		return modelproxy.Route{}, ErrUnavailable
 	}
-	return r, nil
+	return route, nil
 }
 
 func (s *Service) refreshAccount(ctx context.Context, actor, project string, m connections.Metadata, fail func() (Snapshot, error)) (Snapshot, error) {

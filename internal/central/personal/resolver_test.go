@@ -17,7 +17,7 @@ import (
 
 type routeFunc func(connections.Metadata, string) (modelproxy.Route, error)
 
-func (f routeFunc) AccountRoute(m connections.Metadata, model string) (modelproxy.Route, error) {
+func (f routeFunc) PinAccountRoute(_ context.Context, _, _ string, m connections.Metadata, model, _ string) (modelproxy.Route, error) {
 	return f(m, model)
 }
 func TestResolverDoesNotReplacePersonalAuthorizationOrRoute(t *testing.T) {
