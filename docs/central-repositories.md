@@ -36,3 +36,27 @@ For automated registration, GitHub's [App manifest flow](https://docs.github.com
 The protected publication routes are `POST /api/central/v1/projects/{project}/repository/publish`, `GET .../repository/publications?run_id={run}`, and `POST .../repository/publications/{publication}/reconcile`. The first request requires a UUID retry key and `{"run_id":"…","base_branch":"main","title":"…","body":"…"}`. Both POST routes require CSRF and project-owner authorization. Listing and recovery are restricted to the actor who submitted the request. A configured grant alone never causes a publication.
 
 The implementation follows the [installation token API](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app), [Git trees API](https://docs.github.com/en/rest/git/trees), and [Git blobs API](https://docs.github.com/en/rest/git/blobs), with API version `2026-03-10`. Deterministic transport fixtures verify these boundaries; they do not establish live App installation compatibility.
+
+## Verification Without a GitHub Account
+
+Run the repository service and emulator checks with:
+
+```sh
+go test -race ./internal/testutil/githubemu ./internal/central/repositories
+```
+
+The test-only emulator checks signed App requests, repository-scoped installation tokens, Git object hashes, branch creation, and pull request creation. It can deny permissions, interrupt requests, and hide a committed pull request after its response is lost. These checks use generated credentials and make no requests to GitHub. The production client still uses the fixed GitHub API origin; the emulator transport is available only through a test-build helper.
+
+The opt-in managed acceptance test connects repository import, a real hosted project runtime, OpenCode execution through OpenShell, canonical result publication, and restart recovery:
+
+```sh
+KINGDOM_REPOSITORY_MANAGED_ACCEPTANCE=1 \
+KINGDOM_REPOSITORY_ACCEPTANCE_ENV=/absolute/path/to/managed-test-environment \
+KINGDOM_REPOSITORY_ACCEPTANCE_DIR="$PWD/kd-sandbox/repository-acceptance-new" \
+go test ./internal/central/repositories \
+  -run '^TestManagedRepositoryAcceptance$' -count=1 -timeout=20m -v
+```
+
+The environment directory contains `config.json` with the gateway ID and endpoint, allowed worker IP, and callback and model bind addresses and HTTPS origins. It also contains `profile.sha256`, `image-pins.json`, and a `tls/` directory with the CA, operator certificate and key, and server certificate and key. Use a dedicated managed test gateway and valid certificates. Keep private keys owner-only. The evidence directory must be a new directory under `kd-sandbox/`. The test skips when not enabled and fails if enabled prerequisites are missing.
+
+This test uses an emulated GitHub API and a deterministic model endpoint. Kingdom, OpenCode, OpenShell, file tools, command execution, and resource-closure checks run normally. Passing it does not certify a real GitHub App installation, a live model account, or production deployment.
