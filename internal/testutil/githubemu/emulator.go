@@ -409,7 +409,7 @@ func (e *Emulator) RoundTrip(r *http.Request) (*http.Response, error) {
 			e.snapshot.MainWrites++
 			return e.reject("main_write"), nil
 		}
-		if !strings.HasPrefix(ref, "kingdom/") || e.commits[input.SHA].SHA == "" {
+		if !strings.HasPrefix(input.Ref, "refs/heads/kingdom/") || ref == "kingdom/" || e.commits[input.SHA].SHA == "" {
 			return e.reject("ref_target"), nil
 		}
 		if _, ok := e.refs[ref]; ok {

@@ -145,3 +145,37 @@ func TestEmulatorUsesRealGitObjectsAndIndependentSnapshots(t *testing.T) {
 		t.Fatal("permission denial wrote", fmt.Sprint(raw))
 	}
 }
+
+func TestEmulatorRequiresFullBranchRefBeforeMutation(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emulator, err := New(Config{AppID: 1, InstallationID: 2, RepositoryID: 3, PublicKey: &key.PublicKey, Owner: "owner", Name: "repo", Files: map[string]File{"input.txt": {Data: []byte("input\n"), Mode: "100644"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued := call(t, emulator, http.MethodPost, "/app/installations/2/access_tokens", testJWT(t, key, "1", time.Now(), time.Minute), map[string]any{"repository_ids": []int64{3}, "permissions": map[string]string{"contents": "write", "pull_requests": "write"}})
+	var credential struct{ Token string }
+	if issued.StatusCode != 201 || json.NewDecoder(issued.Body).Decode(&credential) != nil {
+		t.Fatal("valid write credential not issued")
+	}
+	initial := emulator.Snapshot()
+	for _, ref := range []string{"kingdom/foo", "", "refs/heads/", "refs/heads/kingdom/", "refs/tags/kingdom/foo", "refs/heads/main"} {
+		response := call(t, emulator, http.MethodPost, "/repos/owner/repo/git/refs", credential.Token, map[string]string{"ref": ref, "sha": initial.MainCommit})
+		if response.StatusCode < 400 {
+			t.Fatalf("malformed or forbidden ref %q admitted with status%d", ref, response.StatusCode)
+		}
+		after := emulator.Snapshot()
+		if after.Writes != initial.Writes || after.RefCreates != initial.RefCreates || len(after.Refs) != 1 || after.Refs["main"] != initial.MainCommit {
+			t.Fatalf("denied ref %q mutated repository", ref)
+		}
+	}
+	response := call(t, emulator, http.MethodPost, "/repos/owner/repo/git/refs", credential.Token, map[string]string{"ref": "refs/heads/kingdom/valid", "sha": initial.MainCommit})
+	if response.StatusCode != 201 {
+		t.Fatal("complete allowed ref rejected")
+	}
+	if after := emulator.Snapshot(); after.RefCreates != 1 || after.Writes != 1 || after.Refs["kingdom/valid"] != initial.MainCommit {
+		t.Fatal("valid ref creation differs")
+	}
+}
