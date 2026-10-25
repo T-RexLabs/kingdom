@@ -467,6 +467,14 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		return fmt.Errorf("resolve --config: %w", err)
 	}
 
+	// Only the actual runtime owns the lock; the detached launcher must let its
+	// child acquire it before waiting for readiness.
+	releaseConfig, lockErr := lockSummonConfiguration(resolvedConfigPath, opts.detach)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer releaseConfig()
+
 	cfg, err := readInstallConfig(resolvedConfigPath)
 	if err != nil {
 		return err

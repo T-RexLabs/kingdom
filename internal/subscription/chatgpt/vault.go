@@ -138,8 +138,7 @@ func NewVault(ctx context.Context, db *sql.DB, key []byte) (*Vault, error) {
 		}
 		_, e = tx.ExecContext(ctx, `INSERT INTO chatgpt_vault VALUES(1,1,?,?)`, v.host, proof)
 	} else if e == nil {
-		plain, err := v.open(proof, v.host)
-		if err != nil || string(plain) != "kingdom-chatgpt-key/v1" || version != 1 || !strings.HasPrefix(v.host, "urn:uuid:") {
+		if !validVaultProof(v.aead, version, v.host, proof) {
 			return nil, ErrDenied
 		}
 	}

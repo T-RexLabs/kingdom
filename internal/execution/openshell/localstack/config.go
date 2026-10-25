@@ -12,7 +12,6 @@ import (
 	"kingdom/internal/execution/openshell/localowner"
 	"net"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -87,6 +86,21 @@ func Load(path string) (Config, error) {
 	if e != nil {
 		return c, e
 	}
+	return decodeConfig(raw)
+}
+
+// Validate checks the same operator contract used by Load, without reading files.
+func Validate(c Config) error {
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return ErrConfig
+	}
+	_, err = decodeConfig(raw)
+	return err
+}
+
+func decodeConfig(raw []byte) (Config, error) {
+	var c Config
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	if d.Decode(&c) != nil || d.Decode(new(any)) != io.EOF {
@@ -148,7 +162,7 @@ func (c Config) callbackTLS() (*tls.Config, error) {
 		return nil, e
 	}
 	defer clear(key)
-	certificate, e := os.ReadFile(c.Callback.CertificateFile)
+	certificate, e := regularFile(c.Callback.CertificateFile, 1<<20)
 	if e != nil {
 		return nil, ErrConfig
 	}
@@ -156,7 +170,7 @@ func (c Config) callbackTLS() (*tls.Config, error) {
 	if e != nil || len(cert.Certificate) == 0 {
 		return nil, ErrConfig
 	}
-	raw, e := os.ReadFile(c.Callback.CAFile)
+	raw, e := regularFile(c.Callback.CAFile, 1<<20)
 	if e != nil {
 		return nil, ErrConfig
 	}

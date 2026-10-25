@@ -75,6 +75,11 @@ func Execute(ctx context.Context, stdout io.Writer, stderr io.Writer, args []str
 		return ExitSuccess
 	}
 	switch args[0] {
+	case "openshell":
+		if err := runOpenShellCommand(ctx, stdout, args[1:]); err != nil {
+			return (&Runtime{config: Config{}, stdout: stdout, stderr: stderr}).writeError(err)
+		}
+		return ExitSuccess
 	case "chatgpt":
 		if err := runChatGPTCommand(ctx, stdout, args[1:]); err != nil {
 			return (&Runtime{config: Config{}, stdout: stdout, stderr: stderr}).writeError(err)

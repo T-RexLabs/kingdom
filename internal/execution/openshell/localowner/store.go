@@ -78,6 +78,10 @@ func New(ctx context.Context, db *sql.DB, key []byte, owner, project string) (*S
 	}
 	return &Store{db, aead, owner, project}, nil
 }
+
+// Validate checks model metadata without reading or changing credential storage.
+func (d Definition) Validate() error { return validate(d) }
+
 func validate(d Definition) error {
 	u, e := url.Parse(d.Endpoint)
 	if e != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || u.RawPath != "" || !strings.HasSuffix(u.Path, "/v1") {

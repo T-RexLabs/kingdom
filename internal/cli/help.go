@@ -43,6 +43,7 @@ var rootHelpSections = []rootHelpSection{
 			{"summon", "status"},
 			{"summon", "stop"},
 			{"chatgpt"},
+			{"openshell"},
 			{"connections", "github", "key", "provision"},
 			{"connections", "github", "key", "rotate"},
 		},
@@ -81,6 +82,11 @@ var globalHelpFlags = []globalFlagHelp{
 }
 
 var helpTopics = []*helpTopic{
+	{path: []string{"openshell"}, summary: "Configure optional local OpenShell execution.", usage: []string{"kd openshell export|configure|check [flags]"}, subcommands: [][]string{{"openshell", "export"}, {"openshell", "configure"}, {"openshell", "check"}}, notes: []string{"Uses an existing reviewed gateway. Does not build, install, or provision OpenShell. Normal local execution never reads a deployment bundle."}},
+	{path: []string{"openshell", "export"}, summary: "Export exact artifacts from an explicit Docker context.", usage: []string{"kd openshell export --docker-context CONTEXT --gateway-image REPO@sha256:DIGEST --worker-image REPO@sha256:DIGEST --profile PROFILE.json --environment ENVIRONMENT.json --out BUNDLE.json"}, notes: []string{"Reads existing pinned ARM64 images. Temporary inspection containers are never started. The private environment JSON supplies gateway and callback TLS file references, addresses, worker ID, and limits."}},
+	{path: []string{"openshell", "configure"}, summary: "Enable local OpenShell with one retained owner and key.", usage: []string{"kd openshell configure --bundle BUNDLE.json --api-key-file KEY --model MODEL [--thinking-effort EFFORT] [--config .kingdom/config.yaml] [--state-root PATH]", "kd openshell configure --bundle BUNDLE.json --api-key-file KEY --model-profile MODELS.json [--model-ca-file CA] [--model-allowed-private-address CIDR]", "kd openshell configure --bundle BUNDLE.json --chatgpt-registration ID --owner-id UUID --master-key-file KEY --state-root PATH"}, notes: []string{"Run kd init first and stop the project runtime. Exact retries preserve identities and key material. Different inputs never silently replace a retained setup. Private model CIDRs can be repeated; they are never inferred."}},
+	{path: []string{"openshell", "check"}, summary: "Check private configuration and authenticated gateway metadata.", usage: []string{"kd openshell check [--config .kingdom/config.yaml]"}, notes: []string{"Uses read-only Health and GetGatewayInfo calls. It does not create a sandbox, run a provider, refresh credentials, or attest a remote deployment. Normal managed allocation checks the actual profile and worker pins."}},
+
 	{path: []string{"chatgpt"}, summary: "Connect a local ChatGPT account.", usage: []string{"kd chatgpt sign-in|status|disconnect --state-root <path> --owner-id <uuid> --master-key-file <path> [--registration-id <uuid>]"}, notes: []string{"Uses Kingdom's own local registration. Shared hosted connections require an approved client."}},
 	{
 		path: []string{"connections"}, summary: "Manage local integration credentials.", usage: []string{"kd connections github key provision --connection-id <id> --from <pem>", "kd connections github key rotate --connection-id <id> --from <pem>"}, subcommands: [][]string{{"connections", "github", "key", "provision"}, {"connections", "github", "key", "rotate"}}, includeGlobalFlags: true,
