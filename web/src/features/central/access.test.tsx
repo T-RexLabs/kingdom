@@ -133,4 +133,17 @@ describe("team and project access", () => {
     expect(centralFetch.mock.calls.filter(call => call[1]?.method === "PUT")).toHaveLength(1);
   });
 
+  it("does not reuse a completed member-add message in a new role confirmation", async () => {
+    const user = userEvent.setup(); centralFetch.mockImplementation(reads()); view();
+    await user.click(screen.getByRole("button", { name: "Manage Project Access" })); await user.selectOptions(screen.getByLabelText("Project"), project.id);
+    await user.selectOptions(await screen.findByLabelText("Authorized Account"), "other");
+    await user.click(screen.getByRole("button", { name: "Add Member" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Project access was added.");
+    await user.click(screen.getByRole("button", { name: "Change Role for Same Name" }));
+    const dialog = screen.getByRole("dialog", { name: "Change Project Role" });
+    expect(within(dialog).queryByText("Project access was added.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Project access was added.")).not.toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Project Role")).toHaveValue("member");
+  });
+
 });
