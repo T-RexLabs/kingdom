@@ -6,7 +6,9 @@ The service stores a verified immutable archive manifest in the central catalog 
 
 ZIP uploads are limited to 128 MiB compressed, 1 GiB expanded, 64 MiB per file, 32,768 entries including directories, 64 path components, and 4,096 path bytes. Single-file uploads are limited to 64 MiB. Existing archive validation rejects links, duplicate or ambiguous names, traversal, protected project metadata, unsupported file types, and invalid paths. At most four uploads per source service are staged at once.
 
-`kingdom-central` connects the protected upload routes and the hosted builder to the same source service. The portal's Initial Project Files section selects the project and input type. Add files before opening the project. On shutdown, the application joins project startup and active HTTP requests before closing the source service. A database reference is published only after source bytes are synchronized. An uncertain database commit retains its private bytes for exact retry; it does not activate unverified input.
+`kingdom-central` connects the protected upload routes and the hosted builder to the same source service. In the portal, choose **Open Project**. If the project has no initial source, **Set Up Project** lets its owner choose an input type or confirm **Start Empty Project**. Other members wait for the owner to prepare a new project. An imported or started project opens normally. The input controller keeps an uncertain upload's exact file or repository reference and retry key when its dialog is closed and reopened. It does not open the project while that outcome is unknown. This browser guidance does not replace the API's startup and authorization checks.
+
+On shutdown, the application joins project startup and active HTTP requests before closing the source service. A database reference is published only after source bytes are synchronized. An uncertain database commit retains its private bytes for exact retry; it does not activate unverified input.
 
 ## API
 

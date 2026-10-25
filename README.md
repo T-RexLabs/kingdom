@@ -88,12 +88,17 @@ Build it with `make build-central`, then follow the
 [central service guide](docs/central-service.md) for HTTPS, identity, and worker
 configuration. Controlled ARM64 checks cover planning and complete workflows;
 real account and production deployment qualification remain separate.
-Add a new project's initial ZIP archive or file in the portal before you first
-open the project. See [initial project files](docs/central-project-input.md).
+Use the portal's team and project access controls to authorize accounts and
+share projects. Opening a new project guides its owner through adding initial
+files or confirming an empty workspace. See
+[initial project files](docs/central-project-input.md).
 An operator can also enable [GitHub repository imports and explicit result publication](docs/central-repositories.md) with a separate repository App.
 
 The local `kd init` and `kd summon` workflow does not require the central service
-or OpenShell.
+or OpenShell. To opt in to an existing reviewed gateway, use `kd openshell export`,
+`kd openshell configure`, and `kd openshell check`. See the
+[local OpenShell guide](docs/local-openshell.md) for the private deployment bundle
+and explicit model configuration.
 
 <h2 id="contribute">Build With Us</h2>
 

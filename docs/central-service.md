@@ -124,6 +124,33 @@ verified tool closure, a clean provider stop, closed capabilities, a sealed
 export, and verified output application. Sandbox disposal remains separate
 durable work after settlement.
 
+## Team and Project Access
+
+After the initial owner signs in, use **Manage Team Members** in the portal to
+authorize another account. Choose a configured sign-in provider, enter its
+permanent account ID, and set a display name. GitHub requires the numeric user
+ID, not a username or email address. Organization sign-in requires the exact
+subject supplied by the identity administrator. Kingdom does not link accounts
+by email or display name, and an arbitrary first sign-in cannot create a user.
+
+Account authorization allows sign-in but does not grant project access. Use
+**Manage Project Access**, select a project you own, and add an authorized
+account as **Member** or **Owner**. Project ownership is separate from team
+ownership. A project owner can change existing roles and remove access without
+being able to browse the team directory. The browser offers directory-based
+additions only when the caller has both team-owner and project-owner authority.
+
+Each project must retain at least one owner. Removing access revokes membership
+and cancels active protected project requests. Current authority is checked
+again before further work. An uncertain request retains its exact retry key and body. A confirmed
+change remains confirmed even if the access list cannot be reloaded; use
+**Reload Access List** to retry that read.
+
+The [access API contract](../contracts/openapi/central-access.yaml) defines
+provider-based account admission, current project roles, and memberships.
+Provider account references are visible only in the team-owner directory; they
+are not included in project membership or ordinary session responses.
+
 ## Model Connections
 
 Choose API Key or Personal Account in Model Connections. Users can add personal
@@ -166,6 +193,13 @@ Workers receive only invocation capabilities. The exact catalog model selects
 Chat Completions, Responses, or Anthropic Messages; model names do not select
 protocols. After sign-in, choose a project and refresh its models.
 
+New model selections still require a fresh cached catalog. Preparing previously
+queued personal-account work can refresh that exact account's catalog after a
+service restart or catalog expiry. Once admitted, a request retains its pinned
+model, protocol, and endpoint. Catalog expiry does not change that route or
+substitute another account. Current membership, connection, and account access
+are checked on every model request.
+
 The default API-key endpoint policy allows `https://api.openai.com`. Add custom HTTPS
 origins with `model_origins`; private addresses require explicit CIDR allowances.
 Use `provider_ca_file` to append a private CA to the system trust store for model
@@ -175,9 +209,12 @@ not infer thinking effort from a model name. See the
 
 ## Initial Project Files
 
-Create a project, then select it in Initial Project Files before you open it.
-Add a ZIP archive, one file, or an operator-approved GitHub repository. Opening a project permanently closes initial
-uploads. See [initial project files](central-project-input.md) for limits and
+Create a project, then choose **Open Project**. A new project opens **Set Up
+Project**, where its owner can add a ZIP archive, one file, or an
+operator-approved GitHub repository. To begin without files, choose **Start
+Empty Project** and confirm the choice. Starting a project permanently closes
+initial imports. A project with imported files or an existing runtime opens
+normally. See [initial project files](central-project-input.md) for limits and
 retry rules.
 
 Explicit GitHub result publication uses a separate repository App and per-project grant. It sends verified file changes from a successful run to an operation-specific branch and pull request. See [repository setup and publication](central-repositories.md).

@@ -43,10 +43,12 @@ The reviewed managed boundary and this OpenCode base are ARM64 artifacts. Both
 builds reject other target architectures. Other architectures require matching
 artifacts and their own live acceptance.
 
-Extract helper and OpenCode binaries from a stopped worker container, then
-compute their SHA-256 digests. Use those values and the immutable worker image
-reference in `service.json`. A binary built with different build flags can have
-a different digest. Do not copy pins from a different image.
+Use `kd openshell export` with an explicit Docker context, immutable gateway and
+worker image references, and the reviewed profile to export the actual binary
+digests. See the [deployment bundle procedure](../../docs/local-openshell.md#configure-an-existing-gateway).
+Copy the matching worker and profile pins into `service.json`; the central
+service still uses its own configuration. A binary built with different build
+flags can have a different digest. Do not copy pins from a different image.
 
 ## Configure
 
