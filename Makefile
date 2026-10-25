@@ -20,6 +20,7 @@ OPENAPI_SPEC ?= contracts/openapi/openapi.yaml
 OPENAPI_GENERATED ?= internal/apigen/types.gen.go
 WEB_OPENAPI_GENERATED ?= web/src/api/schema.ts
 CORE_COVERAGE_MIN ?= 72.0
+RACE_TEST_TIMEOUT ?= 30m
 
 WORKDIR_ID := $(shell printf '%s' '$(CURDIR)' | cksum | awk '{print $$1}')
 WEB_NODE_MODULES_STAMP := web/node_modules/.pnpm-ready-$(PNPM_VERSION)-$(WORKDIR_ID).stamp
@@ -76,7 +77,7 @@ lint-web: $(WEB_NODE_MODULES_STAMP) ## Run frontend lint with zero warnings
 # state. Scoped to the planning subtree to keep CI wall-clock reasonable;
 # extend to ./... if you suspect regressions outside this area.
 test-race: $(WEB_DIST_INDEX) ## Run the targeted race-enabled Go test suite
-	$(GO) test -race ./internal/state/... ./internal/planning/... ./internal/api/...
+	$(GO) test -race -timeout=$(RACE_TEST_TIMEOUT) ./internal/state/... ./internal/planning/... ./internal/api/...
 
 test-integration: $(WEB_DIST_INDEX) ## Run the integration test suite
 	$(GO) test ./tests/integration/...
