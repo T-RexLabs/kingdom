@@ -24,10 +24,11 @@ type requestObserver struct {
 	opencode.Provider
 	db *sql.DB
 
-	prepareErr   error
-	afterPrepare func(context.Context, opencode.ExecuteRequest) error
-	onDrain      func(string) error
-	onDiscard    func(string) error
+	prepareErr    error
+	beforePrepare func(context.Context, opencode.ExecuteRequest) error
+	afterPrepare  func(context.Context, opencode.ExecuteRequest) error
+	onDrain       func(string) error
+	onDiscard     func(string) error
 
 	mu                   sync.Mutex
 	events               []string
@@ -58,6 +59,11 @@ func (o *requestObserver) Prepare(ctx context.Context, req opencode.ExecuteReque
 		return opencode.Prepared{}, err
 	}
 	o.invocationsAtPrepare = invocations
+	if o.beforePrepare != nil {
+		if err := o.beforePrepare(ctx, req); err != nil {
+			return opencode.Prepared{}, err
+		}
+	}
 	if o.prepareErr != nil {
 		return opencode.Prepared{}, o.prepareErr
 	}

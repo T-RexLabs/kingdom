@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-func (o *orchestrationLoop) scheduleRemoteDisposals(ctx context.Context) (int, error) {
+func (o *orchestrationLoop) supportsRemoteCleanup() bool {
 	if o == nil || o.db == nil || o.provider == nil {
-		return 0, nil
+		return false
 	}
 	backend, ok := o.provider.(interface {
 		ExecutionBackend() providerexecution.Backend
@@ -20,7 +20,11 @@ func (o *orchestrationLoop) scheduleRemoteDisposals(ctx context.Context) (int, e
 	if routed, ok := o.provider.(interface{ SupportsRemoteCleanup() bool }); ok {
 		supportsRemote = routed.SupportsRemoteCleanup()
 	}
-	if !supportsRemote {
+	return supportsRemote
+}
+
+func (o *orchestrationLoop) scheduleRemoteDisposals(ctx context.Context) (int, error) {
+	if !o.supportsRemoteCleanup() {
 		return 0, nil
 	}
 	o.maintenance.scanMu.Lock()

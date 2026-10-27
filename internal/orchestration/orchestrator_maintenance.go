@@ -28,15 +28,17 @@ type maintenanceState struct {
 	worktreeClaims   workspace.RunWorktreeCleanupClaimCursor
 
 	// Only the admission scanner mutates cursor state; workers never do.
-	scanMu                   sync.Mutex
-	outboxCursor             executionstore.OutboxCursor
-	outboxEnd                executionstore.OutboxCursor
-	fileAwaiting             bool
-	nextCategory             int
-	remoteDisposalAllocation int64
-	remoteDisposalEnd        int64
-	worktreeCleanupAt        string
-	worktreeRunID            string
+	scanMu                     sync.Mutex
+	outboxCursor               executionstore.OutboxCursor
+	outboxEnd                  executionstore.OutboxCursor
+	fileAwaiting               bool
+	nextCategory               int
+	remoteDisposalAllocation   int64
+	remoteDisposalEnd          int64
+	issuedRemotePreparationID  string
+	issuedRemotePreparationEnd string
+	worktreeCleanupAt          string
+	worktreeRunID              string
 }
 
 type maintenanceRequest struct {
@@ -449,6 +451,7 @@ func (o *orchestrationLoop) scheduleMaintenancePass(ctx context.Context) error {
 		o.schedulePrivateWorkspaceCleanups,
 		o.scheduleProviderContentCleanups,
 		o.scheduleRemoteDisposals,
+		o.scheduleIssuedRemotePreparationRecovery,
 		o.scheduleWorktreeClaimRecovery,
 		o.scheduleWorktreeCleanups,
 	}
