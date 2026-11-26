@@ -587,7 +587,8 @@ function equalModelSelectionOverrides(
 }
 
 function equalModelSelectionEntry(left: RunModelSelectionEntry, right: RunModelSelectionEntry): boolean {
-	return left.model === right.model && left.thinking_effort === right.thinking_effort;
+	return left.model === right.model && left.thinking_effort === right.thinking_effort
+    && left.connection?.id === right.connection?.id && left.connection?.revision === right.connection?.revision;
 }
 
 function mergeRunSummary(current: RunSummary, run: RunSummary): RunSummary {

@@ -1436,6 +1436,63 @@ describe("PlanningSessionPage", () => {
     expect(titleMutateAsync).not.toHaveBeenCalled();
   });
 
+  it("preserves exact hosted connection revision during planner autosave", async () => {
+    const user = userEvent.setup();
+    const meta = document.createElement("meta"); meta.name = "kingdom-runtime-mode"; meta.content = "hosted-project"; document.head.append(meta);
+    const connection = { id: "connection-exact", revision: 3 };
+    mockUseProviderModels.mockReturnValue({ data: { catalog_status: "fresh", items: [{ id: JSON.stringify([connection.id, connection.revision, "github-copilot/gpt-5.4"]), canonical_model: "github-copilot/gpt-5.4", connection, provider_id: "github-copilot", provider_name: "Personal", model_name: "GPT-5.4", thinking_effort_options: [{ value: "medium", label: "Medium" }] }] }, isLoading: false, error: null });
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        planning_session_id: "planning-session-1",
+        title: "plan_1",
+        title_state: "placeholder",
+        lifecycle_state: "active",
+        conversation_state: "ready",
+        current_question_message_id: "assistant-1",
+        current_operation_id: undefined,
+        current_draft_id: undefined,
+        context_snapshot_id: "planning-context-1",
+        created_at: "2026-04-21T10:00:00Z",
+        updated_at: "2026-04-21T10:05:00Z",
+        project_root: "/tmp/project",
+        model_selection: {
+          model: "github-copilot/gpt-5.4",
+          connection,
+        },
+      },
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    render(<PlanningSessionPage />);
+
+    await user.click(screen.getByRole("button", { name: "Thinking Effort" }));
+    await user.click(screen.getByRole("option", { name: "Medium" }));
+
+    // Autosave fires through .mutate() (fire-and-forget) — not
+    // mutateAsync — so unhandled rejections don't leak. .mutateAsync
+    // would also work but routes errors to a returned promise the
+    // caller has to handle; .mutate routes them to hook.error and
+    // the dedicated chip, which is the surface we want.
+    await waitFor(() => {
+      expect(modelMutate).toHaveBeenCalledWith(
+        {
+          modelSelection: {
+            model: "github-copilot/gpt-5.4",
+          connection,
+            thinking_effort: "medium",
+          },
+          key: "planning-update-model-test",
+          editGeneration: 1,
+        },
+        expect.objectContaining({ onSuccess: expect.any(Function) }),
+      );
+    });
+    expect(modelMutateAsync).not.toHaveBeenCalled();
+    expect(titleMutateAsync).not.toHaveBeenCalled();
+    meta.remove();
+  });
+
 	it("consumes ?show_plan=true per session instead of once per component lifetime", async () => {
 		mockUseSearch.mockReturnValue({ show_plan: true });
 		mockUsePlanningSession.mockReturnValue({

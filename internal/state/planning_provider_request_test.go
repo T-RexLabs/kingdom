@@ -118,10 +118,14 @@ func TestPlanningProviderRequestActivationBindsExactCanonicalOwner(t *testing.T)
 }
 
 func TestPlanningProviderRequestActivationRollsBackInvalidIdentityAndOwner(t *testing.T) {
-	for _, name := range []string{"session", "blank", "omitted", "lease", "current-operation"} {
+	for _, name := range []string{"session", "blank", "omitted", "lease", "current-operation", "remote-without-reservation", "local-with-remote-reference"} {
 		t.Run(name, func(t *testing.T) {
 			store, operation, request := newPlanningRequestActivation(t)
 			switch name {
+			case "remote-without-reservation":
+				request.Backend = providerexecution.BackendOpenShell
+			case "local-with-remote-reference":
+				request.RemoteRuntime.Allocation = 1
 			case "session":
 				request.RequestIdentity.SessionID = "another-provider-session"
 			case "blank":

@@ -843,6 +843,20 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 		"0006_planning_session_owned_cascades.up.sql",
 		"0007_provider_request_ownership.up.sql",
 		"0008_attempt_resume_checkpoints.up.sql",
+		"0009_remote_runtime_reservations.up.sql",
+		"0010_provider_preparations.up.sql",
+		"0011_provider_runtime_binding.up.sql",
+		"0012_managed_execution_evidence.up.sql",
+		"0013_planning_operation_model_snapshot.up.sql",
+		"0014_execution_access_snapshots.up.sql",
+		"0015_remote_command_completion.up.sql",
+		"0016_remote_recovery_requests.up.sql",
+		"0017_workspace_import_verification.up.sql", "0018_remote_provider_launches.up.sql", "0019_remote_runtime_disposal.up.sql",
+		"0020_remote_workspace_downloads.up.sql", "0021_remote_typed_runtime_deletion.up.sql", "0022_remote_native_tools.up.sql", "0023_remote_worker_manifests.up.sql", "0024_remote_capability_closure.up.sql", "0025_remote_never_created.up.sql", "0026_provider_preparation_workspaces.up.sql",
+		"0027_remote_workspace_outputs.up.sql",
+		"0028_local_execution_ownership.up.sql",
+		"0030_execution_source_backends.up.sql",
+		"0031_execution_backend_source_ownership.up.sql",
 	}
 	if strings.Join(canonicalNames, ",") != strings.Join(expectedNames, ",") {
 		t.Fatalf("expected canonical migration sequence %v, got %v", expectedNames, canonicalNames)

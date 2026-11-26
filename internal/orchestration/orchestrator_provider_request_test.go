@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,7 +24,11 @@ type requestObserver struct {
 	opencode.Provider
 	db *sql.DB
 
-	prepareErr error
+	prepareErr    error
+	beforePrepare func(context.Context, opencode.ExecuteRequest) error
+	afterPrepare  func(context.Context, opencode.ExecuteRequest) error
+	onDrain       func(string) error
+	onDiscard     func(string) error
 
 	mu                   sync.Mutex
 	events               []string
@@ -54,11 +59,19 @@ func (o *requestObserver) Prepare(ctx context.Context, req opencode.ExecuteReque
 		return opencode.Prepared{}, err
 	}
 	o.invocationsAtPrepare = invocations
+	if o.beforePrepare != nil {
+		if err := o.beforePrepare(ctx, req); err != nil {
+			return opencode.Prepared{}, err
+		}
+	}
 	if o.prepareErr != nil {
 		return opencode.Prepared{}, o.prepareErr
 	}
 	prepared, err := o.Provider.Prepare(ctx, req)
 	o.prepared = prepared
+	if err == nil && o.afterPrepare != nil {
+		err = o.afterPrepare(ctx, req)
+	}
 	return prepared, err
 }
 
@@ -88,10 +101,27 @@ func (o *requestObserver) Cancel(ctx context.Context, attemptID string) error {
 	return o.Provider.Cancel(ctx, attemptID)
 }
 
+func (o *requestObserver) Drain(ctx context.Context, invocationID string) error {
+	o.mu.Lock()
+	o.record("drain:" + invocationID)
+	o.mu.Unlock()
+	if o.onDrain != nil {
+		if err := o.onDrain(invocationID); err != nil {
+			return err
+		}
+	}
+	return o.Provider.Drain(ctx, invocationID)
+}
+
 func (o *requestObserver) Discard(ctx context.Context, invocationID string) error {
 	o.mu.Lock()
 	o.record("discard:" + invocationID)
 	o.mu.Unlock()
+	if o.onDiscard != nil {
+		if err := o.onDiscard(invocationID); err != nil {
+			return err
+		}
+	}
 	return o.Provider.Discard(ctx, invocationID)
 }
 
@@ -189,8 +219,8 @@ func TestDispatchPreparesRequestBeforeActivatingAndBindsItsIdentityAndLease(t *t
 	if got, want := observer.eventsSnapshot(), []string{"prepare:" + invocationID, "execute:" + invocationID}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("provider calls=%v, want %v", got, want)
 	}
-	if observer.invocationsAtPrepare != 0 {
-		t.Fatalf("the provider was prepared after the canonical invocation existed (%d rows)", observer.invocationsAtPrepare)
+	if observer.invocationsAtPrepare != 1 {
+		t.Fatalf("provider startup lacked its canonical invocation (%d rows)", observer.invocationsAtPrepare)
 	}
 	if !observer.boundAtExecute {
 		t.Fatal("the request ran before its identity was bound to the canonical invocation")
@@ -220,41 +250,47 @@ func TestFailedActivationDiscardsPreparedRequestAndFailsNodeSetup(t *testing.T) 
 	dispatch.dispatchAndDrain(t)
 
 	var invocationID string
-	if events := observer.eventsSnapshot(); len(events) == 2 {
+	if events := observer.eventsSnapshot(); len(events) == 3 {
 		invocationID = events[0][len("prepare:"):]
 	}
-	if got, want := observer.eventsSnapshot(), []string{"prepare:" + invocationID, "discard:" + invocationID}; invocationID == "" || fmt.Sprint(got) != fmt.Sprint(want) {
+	if got, want := observer.eventsSnapshot(), []string{"prepare:" + invocationID, "drain:" + invocationID, "discard:" + invocationID}; invocationID == "" || fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("provider calls=%v, want a prepare followed by a discard of the same request", got)
 	}
 	assertSetupFailed(t, db, dispatch.attemptID, "create provider invocation")
-	if rows := dispatch.countRows(t, "provider_invocations"); rows != 0 {
-		t.Fatalf("failed activation left %d provider invocations", rows)
-	}
+	assertIssuedPreparationAbandoned(t, db, dispatch.attemptID)
 }
 
-func TestPrepareFailureFailsNodeSetupWithoutCreatingInvocation(t *testing.T) {
+func TestPrepareFailureRetainsAbandonedInvocationWithoutProviderEvidence(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 	applyMigration(t, db)
 	dispatch, observer := newRequestDispatch(t, db, &sequenceExecutionAdapter{outputs: []string{"must not execute"}})
 	observer.prepareErr = errors.New("provider server is unavailable")
+	observer.onDiscard = func(id string) error {
+		var state string
+		if err := db.QueryRow(`SELECT invocation_state FROM provider_invocations WHERE provider_invocation_id=?`, id).Scan(&state); err != nil {
+			return err
+		}
+		if state != "issued" {
+			t.Fatalf("issued preparation invalidated before disposal: %s", state)
+		}
+		return nil
+	}
 
 	dispatch.dispatchAndDrain(t)
 
 	events := observer.eventsSnapshot()
-	if len(events) != 1 || events[0][:len("prepare:")] != "prepare:" {
-		t.Fatalf("provider calls=%v, want a single failed prepare", events)
+	if len(events) != 3 || events[1] != "drain:"+events[0][len("prepare:"):] || events[2] != "discard:"+events[0][len("prepare:"):] {
+		t.Fatalf("provider calls=%v, want prepare, drain, discard", events)
 	}
 	assertSetupFailed(t, db, dispatch.attemptID, "prepare provider request")
-	if rows := dispatch.countRows(t, "provider_invocations"); rows != 0 {
-		t.Fatalf("prepare failure created %d provider invocations", rows)
-	}
+	assertIssuedPreparationAbandoned(t, db, dispatch.attemptID)
 	if rows := countTestRows(t, db, `SELECT COUNT(1) FROM provider_requests`); rows != 0 {
 		t.Fatalf("prepare failure bound %d provider requests", rows)
 	}
 }
 
-func TestLostLeaseBetweenPrepareAndLaunchDiscardsPreparedRequest(t *testing.T) {
+func TestLostLeaseBetweenPrepareAndLaunchDrainsPreparedRequest(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 	applyMigration(t, db)
@@ -269,8 +305,8 @@ func TestLostLeaseBetweenPrepareAndLaunchDiscardsPreparedRequest(t *testing.T) {
 	if events := observer.eventsSnapshot(); len(events) == 2 {
 		invocationID = events[0][len("prepare:"):]
 	}
-	if got, want := observer.eventsSnapshot(), []string{"prepare:" + invocationID, "discard:" + invocationID}; invocationID == "" || fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("provider calls=%v, want a prepare followed by a discard and no execute", got)
+	if got, want := observer.eventsSnapshot(), []string{"prepare:" + invocationID, "drain:" + invocationID}; invocationID == "" || fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("provider calls=%v, want a prepare followed by a drain and no disposal or execute", got)
 	}
 	if rows := countTestRows(t, db, `SELECT COUNT(1) FROM provider_requests WHERE dispatch_issued_at IS NOT NULL`); rows != 0 {
 		t.Fatalf("a request was dispatched after its lease was lost: %d", rows)
@@ -394,5 +430,88 @@ func TestRestartConsumesCompletedHandoffWithoutExecutingTheRequestAgain(t *testi
 	}
 	if got := h.requests.executions(invocation.ProviderInvocationID); got != 1 {
 		t.Fatalf("restart executed the request again: executions=%d", got)
+	}
+}
+
+func assertIssuedPreparationAbandoned(t *testing.T, db *sql.DB, attemptID string) {
+	t.Helper()
+	var state string
+	if err := db.QueryRow(`SELECT invocation_state FROM provider_invocations WHERE attempt_id=?`, attemptID).Scan(&state); err != nil || state != "invalidated" {
+		t.Fatalf("retained startup state %q: %v", state, err)
+	}
+	if n := countTestRows(t, db, `SELECT count(*) FROM provider_completion_evidence WHERE attempt_id=?`, attemptID); n != 0 {
+		t.Fatalf("preparation created %d provider evidence records", n)
+	}
+}
+
+func TestCancellationDuringPreparationDiscardsUnactivatedRequest(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	dispatch, observer := newRequestDispatch(t, db, &sequenceExecutionAdapter{outputs: []string{"must not execute"}})
+	observer.afterPrepare = func(ctx context.Context, req opencode.ExecuteRequest) error {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err = providerrequest.CloseAttemptAdmissionTx(ctx, tx, req.AttemptID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	dispatch.dispatchAndDrain(t)
+	events := observer.eventsSnapshot()
+	if len(events) != 3 || events[1] != "drain:"+events[0][len("prepare:"):] || events[2] != "discard:"+events[0][len("prepare:"):] {
+		t.Fatalf("cancellation skipped prepared cleanup: %v", events)
+	}
+}
+
+func TestBoundStartFailureDrainsBeforeInvalidationAndDisposesAfter(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	dispatch, observer := newRequestDispatch(t, db, &sequenceExecutionAdapter{outputs: []string{"must not execute"}})
+	mustExec(t, db, `CREATE TRIGGER fail_start BEFORE UPDATE OF node_status ON node_runs WHEN NEW.node_status='starting' BEGIN SELECT RAISE(FAIL,'start persistence failed'); END`)
+	observer.onDrain = func(id string) error {
+		var state string
+		if e := db.QueryRow(`SELECT invocation_state FROM provider_invocations WHERE provider_invocation_id=?`, id).Scan(&state); e != nil {
+			return e
+		}
+		if state != "open" {
+			t.Fatalf("drain state=%s", state)
+		}
+		return nil
+	}
+	observer.onDiscard = func(id string) error {
+		var state string
+		if e := db.QueryRow(`SELECT invocation_state FROM provider_invocations WHERE provider_invocation_id=?`, id).Scan(&state); e != nil {
+			return e
+		}
+		if state != "invalidated" {
+			t.Fatalf("disposal preceded invalidation: %s", state)
+		}
+		return nil
+	}
+	dispatch.dispatchAndDrain(t)
+	events := observer.eventsSnapshot()
+	if len(events) != 3 || !strings.HasPrefix(events[1], "drain:") || !strings.HasPrefix(events[2], "discard:") {
+		t.Fatal(events)
+	}
+	assertSetupFailed(t, db, dispatch.attemptID, "mark node starting")
+}
+
+func TestUnresolvedPreparationDrainRetainsCanonicalOwner(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	dispatch, observer := newRequestDispatch(t, db, &sequenceExecutionAdapter{outputs: []string{"must not execute"}})
+	observer.prepareErr = errors.New("prepare failed")
+	observer.onDrain = func(string) error { return errors.New("writers unresolved") }
+	dispatch.dispatchAndDrain(t)
+	events := observer.eventsSnapshot()
+	if len(events) != 2 || !strings.HasPrefix(events[1], "drain:") {
+		t.Fatal(events)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT invocation_state FROM provider_invocations WHERE attempt_id=?`, dispatch.attemptID).Scan(&state); err != nil || state != "issued" {
+		t.Fatalf("owner released before drain: %s %v", state, err)
 	}
 }

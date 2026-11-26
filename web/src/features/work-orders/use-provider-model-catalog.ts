@@ -1,3 +1,4 @@
+import { runtimeMode } from "@/lib/runtime-mode";
 import { useCallback, useMemo, useState } from "react";
 import { ApiError } from "@/api/client";
 import {
@@ -57,6 +58,9 @@ export function resolveProviderModelCatalogState(
     };
   }
 
+  if (error && runtimeMode() === "hosted-project") {
+    return { isLoading: false, items: [], message: "The model catalog is unavailable. Refresh the connection before selecting a model.", disableSelection: true, triggerPlaceholder: "Model catalog unavailable", emptyStateLabel: "Model catalog unavailable." };
+  }
   const items = response?.items ?? [];
   let status = response?.catalog_status ?? "fresh";
   let failureMessage = response?.failure_message ?? null;

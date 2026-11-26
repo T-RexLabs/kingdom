@@ -501,7 +501,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	forceNewSession := request.ForceNewSession || operation.AutomaticRetry
+	forceNewSession := request.ForceNewSession || operation.AutomaticRetry || requiresFreshProviderSession(ctx, r.deps.planner, operation.OperationID)
 	providerSessionID := ""
 	if !forceNewSession {
 		providerSessionID, err = providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, true)
@@ -557,7 +557,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(turn.Metadata, err), turn.Metadata.FinalText)
 	}
 	var autoTitleSession *state.PlanningSession
-	autoTitleSession, err = maybeAutoGenerateTitleForReplyFinalize(ctx, r.deps, r, session, messages, request, titleTriggerSourceAutoSecondUserMessageFinalize)
+	autoTitleSession, err = maybeAutoGenerateTitleForReplyFinalize(ctx, r.deps, r, session, messages, request, operation.OperationID, titleTriggerSourceAutoSecondUserMessageFinalize)
 	if err != nil {
 		log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceAutoSecondUserMessageFinalize, session.PlanningSessionID, err)
 		autoTitleSession = nil
@@ -764,7 +764,7 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	forceNewSession := operation.AutomaticRetry
+	forceNewSession := operation.AutomaticRetry || requiresFreshProviderSession(ctx, r.deps.planner, operation.OperationID)
 	providerSessionID := ""
 	if !forceNewSession {
 		providerSessionID, err = providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, true)
@@ -1004,7 +1004,7 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 	// A provider request that ended without terminal evidence settles as
 	// abandoned now, rather than when recovery finds the operation idle.
 	if operation.ActiveProviderInvocationID != nil && providerMetadataFromError(cause).StreamObservation.Request == nil {
-		abandoned, release, err := r.deps.abandonUnprovenRequest(ctx, operation, cause)
+		abandoned, release, err := r.deps.abandonUnprovenRequest(ctx, &operation, cause)
 		if err != nil {
 			return errors.Join(cause, err)
 		}
@@ -1544,4 +1544,15 @@ func nowTime(now string) time.Time {
 		return parsed
 	}
 	return time.Now().UTC()
+}
+
+func requiresFreshProviderSession(ctx context.Context, agent Agent, operationID string) bool {
+	if policy, ok := agent.(interface {
+		RequiresFreshSessionForOperation(context.Context, string) (bool, error)
+	}); ok {
+		fresh, err := policy.RequiresFreshSessionForOperation(ctx, operationID)
+		return err != nil || fresh
+	}
+	policy, ok := agent.(interface{ RequiresFreshSession() bool })
+	return ok && policy.RequiresFreshSession()
 }

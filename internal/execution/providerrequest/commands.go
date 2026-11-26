@@ -75,15 +75,18 @@ func CompleteCommandTx(ctx context.Context, tx *sql.Tx, id, digest, guardID stri
 	if digest != actual {
 		return fmt.Errorf("command receipt identity mismatch")
 	}
+	b, err := Get(ctx, tx, bindingID)
+	if err != nil {
+		return err
+	}
+	if err := requireLocalBinding(ctx, tx, b); err != nil {
+		return err
+	}
 	if recorded.Valid {
 		if recorded.String != guardID {
 			return fmt.Errorf("conflicting command receipt")
 		}
 		return nil
-	}
-	b, err := Get(ctx, tx, bindingID)
-	if err != nil {
-		return err
 	}
 	owner, err := loadOwner(ctx, tx, b.Owner)
 	if err != nil {
@@ -123,6 +126,9 @@ func AbortCommandTx(ctx context.Context, tx *sql.Tx, id, digest string, now time
 	}
 	b, err := Get(ctx, tx, bindingID)
 	if err != nil {
+		return err
+	}
+	if err := requireLocalBinding(ctx, tx, b); err != nil {
 		return err
 	}
 	var guardians int

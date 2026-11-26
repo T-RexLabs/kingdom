@@ -39,6 +39,10 @@ func (s *Server) handleCreatePlanningSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	if err := s.planningSelection(r.Context(), req.ModelSelection); err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
 	modelSelectionJSON := `{}`
 	if req.ModelSelection != nil {
 		raw, err := json.Marshal(req.ModelSelection)
@@ -269,6 +273,10 @@ func (s *Server) handleUpdatePlanningSession(w http.ResponseWriter, r *http.Requ
 
 	input := planning.UpdateSessionInput{TitleSource: titleSource}
 	if req.ModelSelection != nil {
+		if err := s.planningSelection(r.Context(), req.ModelSelection); err != nil {
+			s.writeBadRequest(w, err.Error())
+			return
+		}
 		raw, err := json.Marshal(req.ModelSelection)
 		if err != nil {
 			s.writeInternalError(w, "encode planning model selection failed")

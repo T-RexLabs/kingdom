@@ -1,0 +1,99 @@
+openapi: 3.1.0
+info:
+  title: Kingdom Central Model Discovery
+  version: 1.0.0
+  description: Metadata-only discovery for authorized immutable connection revisions.
+  license:
+    name: Proprietary
+    url: https://kingdom.local/license
+servers:
+  - url: /
+    description: Operator-configured central HTTPS origin.
+paths:
+  /api/central/v1/projects/{project}/connections/{connection}/revisions/{revision}/models:
+    parameters:
+      - $ref: '#/components/parameters/Project'
+      - $ref: '#/components/parameters/Connection'
+      - $ref: '#/components/parameters/Revision'
+    get:
+      operationId: listCentralConnectionModels
+      summary: Read a Fresh Cached Model Catalog
+      security: [{session: []}]
+      responses:
+        '200': {$ref: '#/components/responses/Catalog'}
+        '400': {description: Invalid reference.}
+        '401': {description: Session required.}
+        '404': {description: Catalog unavailable or access denied.}
+        '503': {description: Discovery service unavailable.}
+  /api/central/v1/projects/{project}/connections/{connection}/revisions/{revision}/models/refresh:
+    parameters:
+      - $ref: '#/components/parameters/Project'
+      - $ref: '#/components/parameters/Connection'
+      - $ref: '#/components/parameters/Revision'
+    post:
+      operationId: refreshCentralConnectionModels
+      summary: Refresh a Model Catalog
+      description: Requires the session CSRF token and same-origin request. Makes no inference request.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string, minLength: 43, maxLength: 43}
+        - name: Origin
+          in: header
+          required: true
+          schema: {type: string, format: uri}
+      security: [{session: []}]
+      responses:
+        '200': {$ref: '#/components/responses/Catalog'}
+        '400': {description: Invalid reference.}
+        '401': {description: Session required.}
+        '403': {description: Same-origin or CSRF check failed.}
+        '404': {description: Catalog unavailable or access denied.}
+        '503': {description: Discovery service unavailable.}
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: __Host-kingdom-session
+  parameters:
+    Project:
+      name: project
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    Connection:
+      name: connection
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    Revision:
+      name: revision
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+  responses:
+    Catalog:
+      description: Fresh metadata for the exact connection revision.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [connection_id, revision, models, discovered_at, expires_at]
+            properties:
+              connection_id: {type: string, format: uuid}
+              revision: {type: integer, format: int64, minimum: 1}
+              discovered_at: {type: string, format: date-time}
+              expires_at: {type: string, format: date-time}
+              models:
+                type: array
+                items:
+                  type: object
+                  required: [id, name, efforts]
+                  properties:
+                    id: {type: string}
+                    name: {type: string}
+                    efforts:
+                      type: [array, 'null']
+                      items: {type: string}

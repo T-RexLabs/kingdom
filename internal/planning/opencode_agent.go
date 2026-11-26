@@ -40,6 +40,7 @@ func WithRequestLimits(first, inactivity time.Duration) AgentOption {
 type plannerExecutor interface {
 	Prepare(context.Context, opencode.ExecuteRequest) (opencode.Prepared, error)
 	Execute(context.Context, opencode.ExecuteRequest) (opencode.ExecuteResponse, error)
+	Drain(context.Context, string) error
 	Discard(context.Context, string) error
 }
 
@@ -52,6 +53,14 @@ func NewOpenCodeAgent(executor plannerExecutor, idGenerator func(prefix string) 
 		option(agent)
 	}
 	return agent
+}
+
+// RequiresFreshSession keeps managed invocations independent of disposed runtimes.
+func (a *OpenCodeAgent) RequiresFreshSession() bool {
+	backend, ok := a.executor.(interface {
+		ExecutionBackend() providerexecution.Backend
+	})
+	return ok && backend.ExecutionBackend() == providerexecution.BackendOpenShell
 }
 
 func (a *OpenCodeAgent) ContinueTurnStream(ctx context.Context, input AgentContext, onChunk func(text string)) (AgentTurn, error) {
@@ -167,7 +176,17 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompts
 		return ProviderExecutionMetadata{}, fmt.Errorf("external planner context requires matching immutable snapshot bindings")
 	}
 	reusable := strings.TrimSpace(providerInvocation.ReusableProviderSessionID)
-	if forceNew {
+	fresh := a.RequiresFreshSession()
+	if routed, ok := a.executor.(interface {
+		InvocationBackend(context.Context, string) (providerexecution.Backend, error)
+	}); ok {
+		backend, e := routed.InvocationBackend(ctx, invocationID)
+		if e != nil {
+			return ProviderExecutionMetadata{}, e
+		}
+		fresh = backend == providerexecution.BackendOpenShell
+	}
+	if forceNew || fresh {
 		reusable = ""
 	}
 	// Complete and verify immutable inputs before provider dispatch. Prompt
@@ -207,14 +226,31 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompts
 		request.OpenContinuationPrompt = continuation.Open
 	}
 
+	if providerInvocation.Reserve != nil {
+		if err := providerInvocation.Reserve(ctx); err != nil {
+			return ProviderExecutionMetadata{}, fmt.Errorf("reserve planner preparation: %w", err)
+		}
+	}
+	cleanupPreparation := func() error {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := a.executor.Drain(cleanupCtx, invocationID); err != nil {
+			return err
+		}
+		if err := a.executor.Discard(cleanupCtx, invocationID); err != nil {
+			return err
+		}
+		if providerInvocation.AbandonPreparation != nil {
+			return providerInvocation.AbandonPreparation(cleanupCtx)
+		}
+		return nil
+	}
 	prepared, err := a.executor.Prepare(ctx, request)
 	if err != nil {
-		return ProviderExecutionMetadata{}, fmt.Errorf("prepare opencode request: %w", err)
+		return ProviderExecutionMetadata{}, errors.Join(fmt.Errorf("prepare opencode request: %w", err), cleanupPreparation())
 	}
 	if err := providerInvocation.Activate(ctx, prepared); err != nil {
-		discardCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		return ProviderExecutionMetadata{}, errors.Join(fmt.Errorf("activate planner provider invocation: %w", err), a.executor.Discard(discardCtx, invocationID))
+		return ProviderExecutionMetadata{}, errors.Join(fmt.Errorf("activate planner provider invocation: %w", err), cleanupPreparation())
 	}
 	resp, err := a.executor.Execute(ctx, request)
 	metadata := ProviderExecutionMetadata{
@@ -702,4 +738,14 @@ func appendCurrentMessage(sb *plannerPromptWriter, input AgentContext) {
 	if sb.err == nil && found != 1 {
 		sb.err = fmt.Errorf("the current planner message was found %d times in the transcript", found)
 	}
+}
+
+func (a *OpenCodeAgent) RequiresFreshSessionForOperation(ctx context.Context, id string) (bool, error) {
+	if routed, ok := a.executor.(interface {
+		SourceBackend(context.Context, string, string) (providerexecution.Backend, error)
+	}); ok {
+		backend, e := routed.SourceBackend(ctx, "planning", id)
+		return backend == providerexecution.BackendOpenShell, e
+	}
+	return a.RequiresFreshSession(), nil
 }

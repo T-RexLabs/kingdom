@@ -76,6 +76,30 @@ Connect GitHub to bring issues into Planning or a new Work Order. Pick a persona
 * [Set Up GitHub Connections](docs/github%2Dconnections%2Drunbook.md)
 * [Explore Themes and Appearance](docs/themes.md)
 
+## Shared Service
+
+The separate `kingdom-central` command adds login, shared projects, and private
+model connections. Choose an API key or sign in with your personal GitHub
+Copilot or ChatGPT account. Personal accounts stay private to their owner.
+Managed workers use the Kingdom profile for OpenShell.
+[Optional local OpenShell](docs/local-openshell.md) can use API keys or a
+[Kingdom-owned ChatGPT connection](docs/chatgpt-local-connection.md).
+Build it with `make build-central`, then follow the
+[central service guide](docs/central-service.md) for HTTPS, identity, and worker
+configuration. Controlled ARM64 checks cover planning and complete workflows;
+real account and production deployment qualification remain separate.
+Use the portal's team and project access controls to authorize accounts and
+share projects. Opening a new project guides its owner through adding initial
+files or confirming an empty workspace. See
+[initial project files](docs/central-project-input.md).
+An operator can also enable [GitHub repository imports and explicit result publication](docs/central-repositories.md) with a separate repository App.
+
+The local `kd init` and `kd summon` workflow does not require the central service
+or OpenShell. To opt in to an existing reviewed gateway, use `kd openshell export`,
+`kd openshell configure`, and `kd openshell check`. See the
+[local OpenShell guide](docs/local-openshell.md) for the private deployment bundle
+and explicit model configuration.
+
 <h2 id="contribute">Build With Us</h2>
 
 Kingdom is built with Go and TypeScript/React. From the repository root:
@@ -120,6 +144,7 @@ The Go runtime serves the embedded web app and the `kd` command. SQLite stores w
 ## Keep Exploring
 
 * Learn how Planning, Work Orders, and Runs fit together: [How Runs Work](docs/how%2Druns%2Dwork.md)
+* Run local projects in an optional sandbox: [Local OpenShell](docs/local-openshell.md)
 * Configure your local runtime: [Config Reference](docs/config%2Dreference.md)
 * Connect a GitHub App: [GitHub Connections](docs/github%2Dconnections%2Drunbook.md)
 * Build or verify Kingdom locally: [Local Setup and Verification](docs/local%2Dsetup%2Dand%2Dverification.md)

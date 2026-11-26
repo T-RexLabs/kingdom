@@ -21,6 +21,7 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
+	"kingdom/internal/securefs"
 	"kingdom/internal/state"
 )
 
@@ -117,7 +118,7 @@ func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) 
 	for _, record := range page.Items {
 		downloadURL := ""
 		if record.ArtifactAction != "delete" {
-			downloadURL = s.basePath + "/artifacts/" + url.PathEscape(record.ArtifactID) + "/content"
+			downloadURL = s.publicAPIBase + "/artifacts/" + url.PathEscape(record.ArtifactID) + "/content"
 		}
 		items = append(items, runArtifactItem{
 			NodeID:          record.NodeID,
@@ -293,7 +294,7 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
-	if _, err := io.Copy(w, staged); err != nil {
+	if _, err := securefs.Copy(r.Context(), w, staged); err != nil {
 		panic(http.ErrAbortHandler)
 	}
 }
@@ -602,7 +603,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	if record.ArtifactAction != "delete" {
 		sha256 := record.SHA256
-		downloadURL := s.artifactDownloadURL + "/" + url.PathEscape(response.ArtifactId) + "/content"
+		downloadURL := s.publicAPIBase + "/artifacts" + "/" + url.PathEscape(response.ArtifactId) + "/content"
 		mode := int(*record.ModeBits)
 		response.ModeBits = &mode
 		response.Sha256 = &sha256
@@ -644,7 +645,7 @@ func (s *Server) handleGetArtifactContent(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Length", strconv.FormatInt(record.SizeBytes, 10))
 	w.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(w, content); err != nil {
+	if _, err := securefs.Copy(r.Context(), w, content); err != nil {
 		panic(http.ErrAbortHandler)
 	}
 }

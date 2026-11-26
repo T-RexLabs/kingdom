@@ -10,6 +10,9 @@ import { ModalDialog } from "@/components/ui/modal-dialog";
 import { KingdomBrand } from "@/components/kingdom-brand";
 import { ThemeIcon, useTheme } from "@/theme";
 
+import { SharedProjectName } from "@/features/central/project-name";
+import { runtimeMode } from "@/lib/runtime-mode";
+
 const primaryNavigation = [
   { name: "Overview", href: "/", icon: "nav.overview" },
   { name: "Planning", href: "/work-orders/planning", icon: "nav.planning" },
@@ -195,13 +198,14 @@ function SidebarContent({ collapsed = false, onToggle }: { collapsed?: boolean; 
       </div>
       {!collapsed && <div
         className="ui-workspace-info mx-4 mb-7 rounded-lg border border-border bg-surface px-3 py-3"
-        title={projectPath}
+        title={runtimeMode() === "hosted-project" ? undefined : projectPath}
       >
-        <div className="truncate text-sm font-medium">{name}</div>
+        <div className="truncate text-sm font-medium">{runtimeMode() === "hosted-project" ? <SharedProjectName /> : name}</div>
         <div className="mt-1 text-xs text-foreground-muted">
-          Local Workspace
+          {runtimeMode() === "hosted-project" ? "Shared Project" : "Local Workspace"}
         </div>
       </div>}
+      {runtimeMode() === "hosted-project" && <a href="/" className="mx-4 mb-4 rounded-md px-3 py-2 text-sm text-foreground-muted hover:bg-surface-raised hover:text-foreground">All Projects</a>}
       <nav aria-label="Main" className={cn("space-y-1", collapsed ? "px-2" : "px-4")}>
         {links(primaryNavigation)}
       </nav>

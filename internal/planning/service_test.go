@@ -1595,6 +1595,9 @@ func TestServiceSecondReplyAutoGeneratesTitleInParallel(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get auto title operation: ok=%v err=%v", ok, err)
 	}
+	if titleOperation.ModelSelectionSourceOperationID != secondReply.Operation.OperationID || titleOperation.ModelSelectionJSON != secondReply.Operation.ModelSelectionJSON {
+		t.Fatalf("automatic title lost causal selection: %+v", titleOperation)
+	}
 	if titleOperation.StartedAt == nil || strings.TrimSpace(*titleOperation.StartedAt) == "" {
 		t.Fatalf("expected auto title operation to start immediately, got %+v", titleOperation)
 	}
@@ -1675,6 +1678,10 @@ func TestServiceRecoverOperationsCatchesUpEligiblePlaceholderTitles(t *testing.T
 		}
 	}
 
+	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{OperationID: "recovery-title-source", PlanningSessionID: "ps_recovery_catchup", Type: state.PlanningOperationTypeReply, Status: state.PlanningOperationStatusSucceeded, RequestPayloadJSON: `{"user_message_id":"pm_recovery_catchup_user_3"}`, CreatedAt: "2026-04-26T09:55:03Z"}); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := service.RecoverOperations(context.Background()); err != nil {
 		t.Fatalf("recover operations: %v", err)
 	}
@@ -1683,6 +1690,10 @@ func TestServiceRecoverOperationsCatchesUpEligiblePlaceholderTitles(t *testing.T
 	if latest.Type != state.PlanningOperationTypeGenerateTitle {
 		t.Fatalf("expected recovery catch-up to enqueue generate_title, got %+v", latest)
 	}
+	if latest.ModelSelectionSourceOperationID != "recovery-title-source" || latest.ModelSelectionJSON != `{"model":"test-model"}` {
+		t.Fatalf("recovery lost causal model snapshot: %+v", latest)
+	}
+
 	awaitOperationTerminal(t, store, latest.OperationID)
 
 	stored, ok, err := store.GetSession(context.Background(), "ps_recovery_catchup")

@@ -10,6 +10,7 @@ import (
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
+	"kingdom/internal/execution/remote"
 	"kingdom/internal/sqlitex"
 	"kingdom/internal/timestamporder"
 )
@@ -88,6 +89,7 @@ type PlanningProviderCompletionSettlement struct {
 }
 
 type CreatePlanningProviderInvocationRequest struct {
+	WorkspacePath                string
 	PlanningProviderInvocationID string
 	PlanningOperationID          string
 	PlanningSessionID            string
@@ -109,6 +111,8 @@ type planningProviderInvocationOpening struct {
 }
 
 type ActivatePlanningProviderInvocationRequest struct {
+	Backend                      providerexecution.Backend
+	RemoteRuntime                remote.Reference
 	RequestIdentity              providerexecution.RequestIdentity
 	PlanningProviderInvocationID string
 	PlanningOperationID          string
@@ -211,12 +215,16 @@ func (s *PlanningStore) ActivatePlanningProviderInvocation(ctx context.Context, 
 	if bound && (binding.Identity != req.RequestIdentity || binding.Lease != lease) {
 		return PlanningProviderInvocation{}, fmt.Errorf("planning provider request identity or lease conflicts with activation")
 	}
+	if err := providerrequest.RequirePreparationLeaseTx(ctx, tx, owner, lease); err != nil {
+		return PlanningProviderInvocation{}, err
+	}
 	if err := activatePlanningProviderInvocationTx(ctx, tx, invocation, openReq); err != nil {
 		return PlanningProviderInvocation{}, err
 	}
-	if err := providerrequest.BindTx(ctx, tx, providerrequest.Binding{
-		ID: invocation.PlanningProviderInvocationID, Identity: req.RequestIdentity, Owner: owner, Lease: lease,
-	}, s.leaseNow()); err != nil {
+	if err := providerrequest.BindBackendTx(ctx, tx, providerrequest.Binding{
+		Backend: req.Backend,
+		ID:      invocation.PlanningProviderInvocationID, Identity: req.RequestIdentity, Owner: owner, Lease: lease,
+	}, req.RemoteRuntime, s.leaseNow()); err != nil {
 		return PlanningProviderInvocation{}, err
 	}
 	invocation, found, err := loadPlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID)
@@ -508,6 +516,7 @@ func planningProviderError(operation, reason, invocationID, operationID, state s
 
 func normalizeCreatePlanningProviderInvocationRequest(req CreatePlanningProviderInvocationRequest) (CreatePlanningProviderInvocationRequest, error) {
 	normalized := CreatePlanningProviderInvocationRequest{
+		WorkspacePath:                req.WorkspacePath,
 		PlanningProviderInvocationID: strings.TrimSpace(req.PlanningProviderInvocationID),
 		PlanningOperationID:          strings.TrimSpace(req.PlanningOperationID),
 		PlanningSessionID:            strings.TrimSpace(req.PlanningSessionID),
@@ -659,7 +668,7 @@ func linkPlanningOperationActiveInvocationTx(ctx context.Context, tx *sql.Tx, in
 	query := fmt.Sprintf(`UPDATE planning_operations
 		SET active_provider_invocation_id = ?
 		WHERE operation_id = ?
-		  AND COALESCE(TRIM(active_provider_invocation_id), '') = ''
+		  AND (COALESCE(TRIM(active_provider_invocation_id), '') = '' OR active_provider_invocation_id = ?)
 		  AND status = 'running'
 		  AND lease_owner = ?
 		  AND lease_version = ?
@@ -667,6 +676,7 @@ func linkPlanningOperationActiveInvocationTx(ctx context.Context, tx *sql.Tx, in
 	result, err := tx.ExecContext(ctx, query,
 		invocation.PlanningProviderInvocationID,
 		invocation.PlanningOperationID,
+		invocation.PlanningProviderInvocationID,
 		req.LeaseOwner,
 		req.LeaseVersion,
 		req.OpenedAt,

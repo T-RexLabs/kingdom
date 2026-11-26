@@ -21,12 +21,11 @@ import (
 
 	"kingdom/internal/api"
 	"kingdom/internal/dbmigrations"
-	"kingdom/internal/execution/providerrequest"
 	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/localauth"
 	kingdom "kingdom/internal/orchestration"
 	"kingdom/internal/processguardian"
-	"kingdom/internal/providers/opencode"
+	"kingdom/internal/projectruntime"
 	"kingdom/internal/shutdown"
 	"kingdom/internal/state"
 	"kingdom/internal/theme"
@@ -143,69 +142,40 @@ func run() (exitCode int) {
 	}
 
 	bootstrapPaths := kingdom.DefaultBootstrapPaths(repoRoot)
-	providerServiceRoot := opencode.ServiceRuntimeRoot(filepath.Join(filepath.Dir(dbPath), "runtime"))
-	providerService, err := opencode.NewService(opencode.ServiceConfig{
-		BinaryPath:  providerBinary,
-		WorkDir:     repoRoot,
-		RuntimeRoot: providerServiceRoot,
-		Requests:    providerrequest.NewAuthority(db, nil),
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	project, err := projectruntime.New(ctx, projectruntime.Config{
+		Mode:                    projectruntime.Local,
+		DB:                      db,
+		ThemeStore:              themeStore,
+		Paths:                   bootstrapPaths,
+		ProjectRoot:             repoRoot,
+		RuntimeRoot:             filepath.Join(filepath.Dir(dbPath), "runtime"),
+		BasePath:                basePath,
+		ProviderEngine:          providerEngine,
+		ProviderBinary:          providerBinary,
+		GovernanceMode:          governanceMode,
+		AutonomousApprovals:     &autonomousApprovals,
+		OperatorCredential:      operatorCredential,
+		GitHubSharedAppSlug:     githubSharedSlug,
+		GitHubSharedAppClientID: githubSharedClientID,
 	})
 	if err != nil {
-		log.Printf("configure OpenCode service: %v", err)
+		log.Printf("configure project runtime: %v", err)
 		return exitFatalStartup
 	}
+	runtime, apiServer := project.Runtime, project.Handler
 	defer func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := providerService.CloseContext(closeCtx); err != nil {
+		if err := project.CloseProvider(closeCtx); err != nil {
 			log.Printf("OpenCode service close error: %v", err)
 			if exitCode == exitOK {
 				exitCode = exitDrainFailure
 			}
 		}
 	}()
-	runtime, err := kingdom.NewRuntime(kingdom.Config{
-		DB:                  db,
-		Paths:               bootstrapPaths,
-		ProviderEngine:      providerEngine,
-		GovernanceMode:      governanceMode,
-		AutonomousApprovals: &autonomousApprovals,
-		WorkspaceRoot:       filepath.Join(filepath.Dir(dbPath), "runtime"),
-		GuardianRuntimeRoot: providerServiceRoot,
-		Provider:            providerService,
-	})
-	if err != nil {
-		log.Printf("bootstrap runtime: %v", err)
-		return exitFatalStartup
-	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	apiServer, err := api.NewHandler(api.ServerConfig{
-		DB:                         db,
-		ThemeStore:                 themeStore,
-		StartupContext:             ctx,
-		BasePath:                   basePath,
-		AutonomousApprovalsDefault: &autonomousApprovals,
-		ProviderService:            providerService,
-		ProviderModelCatalog:       api.NewOpenCodeProviderModelCatalog(providerService, nil, api.ProviderModelCatalogTTL),
-		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
-		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
-		ProjectRoot:                repoRoot,
-		RuntimeRoot:                filepath.Join(filepath.Dir(dbPath), "runtime"),
-		RetryEngine:                runtime.RetryEngine(),
-		OperatorCredential:         operatorCredential,
-		GitHubSharedAppSlug:        githubSharedSlug,
-		GitHubSharedAppClientID:    githubSharedClientID,
-	})
-	if err != nil {
-		log.Printf("build api handler: %v", err)
-		return exitFatalStartup
-	}
-	runtime.SetPreDispatchRecovery(apiServer.RecoverPlanningOperations)
-	if err := runtime.Start(ctx); err != nil {
-		_ = apiServer.Close(context.Background())
+	if err := project.Start(ctx); err != nil {
 		log.Printf("start runtime: %v", err)
 		return exitFatalStartup
 	}
@@ -214,10 +184,7 @@ func run() (exitCode int) {
 			log.Printf("runtime close error: %v", err)
 		}
 	}()
-	runtimeCloser := shutdown.CompositeCloser{Closers: []shutdown.Closer{
-		apiServer,
-		shutdown.CloseFunc(runtime.GracefulClose),
-	}}
+	runtimeCloser := project
 
 	// Concurrent shutdown coordinator: cancel the planning service in
 	// parallel with HTTP server shutdown so a long-lived SSE/planner

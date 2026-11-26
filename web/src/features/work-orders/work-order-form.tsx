@@ -20,7 +20,7 @@ import { ChevronDown, CircleAlert, Loader2, RefreshCw, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SelectField } from "@/components/ui/select-field";
 import { ModelSelectField } from "./model-select-field";
-import { findProviderModel, normalizeThinkingEffortSelection } from "./provider-model-selection";
+import { findProviderModel, normalizeThinkingEffortSelection, selectedModelPayload } from "./provider-model-selection";
 import { ThinkingEffortField } from "./thinking-effort-field";
 import { ToggleRow } from "@/components/ui/toggle-row";
 import { ProviderModelCatalogNotice } from "./provider-model-catalog-state";
@@ -78,10 +78,7 @@ function toRunModelSelectionEntry(models: ProviderModel[], draft: ModelSelection
   if (normalized.model === "") {
     return undefined;
   }
-  if (normalized.thinkingEffort === "") {
-    return { model: normalized.model };
-  }
-  return { model: normalized.model, thinking_effort: normalized.thinkingEffort };
+  return selectedModelPayload(models, normalized.model, normalized.thinkingEffort);
 }
 
 function ErrorBanner({ message }: { message: string }) {
@@ -433,6 +430,7 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
   };
 
   const buildRunRequest = (): Omit<CreateRunRequest, "work_order_id"> | null => {
+    if (Object.values(agentSelectionsByRole).some(selection => selection.model.trim() && !toRunModelSelectionEntry(allModels, selection))) return null;
     const cleanedRoleSelections = Object.entries(agentSelectionsByRole).reduce<Record<string, RunModelSelectionEntry>>((acc, [roleId, selection]) => {
       const trimmedRole = roleId.trim();
       const entry = toRunModelSelectionEntry(allModels, selection);

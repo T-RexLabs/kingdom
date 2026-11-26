@@ -98,129 +98,47 @@ func applyMigrationTx(ctx context.Context, db *sql.DB, migration SQLMigration, n
 	return nil
 }
 
-type migrationForeignKeyReference struct {
-	id          int64
-	seq         int64
-	childColumn string
-	parentTable string
-	parentCol   string
-}
-
+// Native validation uses SQLite's parent-key, collation, and NULL semantics.
+// The separate schema check preserves rejection of missing parents even when
+// their child tables are empty, which foreign_key_check alone permits.
 func foreignKeyViolationsTx(ctx context.Context, tx *sql.Tx) ([]string, error) {
-	tables, err := migrationForeignKeyTablesTx(ctx, tx)
-	if err != nil {
+	var child, parent string
+	err := tx.QueryRowContext(ctx, `SELECT child.name, fk."table"
+  FROM main.sqlite_schema AS child
+  JOIN pragma_foreign_key_list(child.name, 'main') AS fk
+  WHERE child.type = 'table' AND child.name NOT LIKE 'sqlite_%'
+    AND fk."table" COLLATE NOCASE NOT IN (
+      SELECT name FROM main.sqlite_schema WHERE type = 'table'
+    )
+  ORDER BY child.name, fk.id LIMIT 1`).Scan(&child, &parent)
+	if err == nil {
+		return nil, fmt.Errorf("table=%s references missing parent=%s", child, parent)
+	}
+	if err != sql.ErrNoRows {
 		return nil, err
 	}
 
+	rows, err := tx.QueryContext(ctx, `SELECT "table", parent, fkid, COUNT(*)
+  FROM pragma_foreign_key_check(NULL, 'main')
+  GROUP BY "table", parent, fkid
+  ORDER BY "table", fkid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	violations := make([]string, 0)
-	for _, tableName := range tables {
-		references, err := migrationForeignKeyReferencesTx(ctx, tx, tableName)
-		if err != nil {
-			return nil, err
-		}
-		byID := make(map[int64][]migrationForeignKeyReference)
-		for _, reference := range references {
-			byID[reference.id] = append(byID[reference.id], reference)
-		}
-		foreignKeyIDs := make([]int64, 0, len(byID))
-		for id := range byID {
-			foreignKeyIDs = append(foreignKeyIDs, id)
-		}
-		sort.Slice(foreignKeyIDs, func(i, j int) bool { return foreignKeyIDs[i] < foreignKeyIDs[j] })
-		for _, id := range foreignKeyIDs {
-			group := byID[id]
-			sort.Slice(group, func(i, j int) bool { return group[i].seq < group[j].seq })
-			count, err := migrationForeignKeyViolationCountTx(ctx, tx, tableName, group)
-			if err != nil {
-				return nil, err
-			}
-			if count == 0 {
-				continue
-			}
-			violations = append(violations, fmt.Sprintf("table=%s parent=%s fk=%d count=%d", tableName, group[0].parentTable, id, count))
-		}
-	}
-	return violations, nil
-}
-
-func migrationForeignKeyTablesTx(ctx context.Context, tx *sql.Tx) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	tables := make([]string, 0)
 	for rows.Next() {
-		var tableName string
-		if err := rows.Scan(&tableName); err != nil {
+		var child, parent string
+		var id, count int64
+		if err := rows.Scan(&child, &parent, &id, &count); err != nil {
 			return nil, err
 		}
-		tables = append(tables, tableName)
+		violations = append(violations, fmt.Sprintf("table=%s parent=%s fk=%d count=%d", child, parent, id, count))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return tables, nil
-}
-
-func migrationForeignKeyReferencesTx(ctx context.Context, tx *sql.Tx, tableName string) ([]migrationForeignKeyReference, error) {
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`PRAGMA foreign_key_list(%s)`, quoteSQLiteStringLiteral(tableName)))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	references := make([]migrationForeignKeyReference, 0)
-	for rows.Next() {
-		var reference migrationForeignKeyReference
-		var onUpdate string
-		var onDelete string
-		var match string
-		if err := rows.Scan(&reference.id, &reference.seq, &reference.parentTable, &reference.childColumn, &reference.parentCol, &onUpdate, &onDelete, &match); err != nil {
-			return nil, err
-		}
-		references = append(references, reference)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return references, nil
-}
-
-func migrationForeignKeyViolationCountTx(ctx context.Context, tx *sql.Tx, tableName string, references []migrationForeignKeyReference) (int, error) {
-	if len(references) == 0 {
-		return 0, nil
-	}
-	nonNullChecks := make([]string, 0, len(references))
-	parentMatches := make([]string, 0, len(references))
-	for _, reference := range references {
-		childColumn := quoteSQLiteIdentifier(reference.childColumn)
-		parentColumn := quoteSQLiteIdentifier(reference.parentCol)
-		nonNullChecks = append(nonNullChecks, fmt.Sprintf("child.%s IS NOT NULL", childColumn))
-		parentMatches = append(parentMatches, fmt.Sprintf("parent.%s = child.%s", parentColumn, childColumn))
-	}
-	query := fmt.Sprintf(`SELECT COUNT(1)
-		FROM %s AS child
-		WHERE %s
-		  AND NOT EXISTS (
-		    SELECT 1
-		    FROM %s AS parent
-		    WHERE %s
-		  )`, quoteSQLiteIdentifier(tableName), strings.Join(nonNullChecks, " AND "), quoteSQLiteIdentifier(references[0].parentTable), strings.Join(parentMatches, " AND "))
-	var count int
-	if err := tx.QueryRowContext(ctx, query).Scan(&count); err != nil {
-		return 0, err
-	}
-	return count, nil
-}
-
-func quoteSQLiteIdentifier(identifier string) string {
-	return `"` + strings.ReplaceAll(strings.TrimSpace(identifier), `"`, `""`) + `"`
-}
-
-func quoteSQLiteStringLiteral(value string) string {
-	return `'` + strings.ReplaceAll(strings.TrimSpace(value), `'`, `''`) + `'`
+	return violations, rows.Close()
 }
 
 func migrationChecksum(raw []byte) string {

@@ -109,6 +109,17 @@ func AdmitNativeTx(ctx context.Context, tx *sql.Tx, call NativeCall, now time.Ti
 // FinishNativeTx records observed native completion, including after the lease
 // expires or admission closes. It cannot grant new execution authority.
 func FinishNativeTx(ctx context.Context, tx *sql.Tx, receipt NativeReceipt, now time.Time) error {
+	var linked int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM remote_native_tools WHERE grant_id=?`, receipt.GrantID).Scan(&linked); err != nil {
+		return err
+	}
+	if linked != 0 {
+		return fmt.Errorf("managed native helper requires retained process evidence")
+	}
+	return finishNativeTx(ctx, tx, receipt, now)
+}
+
+func finishNativeTx(ctx context.Context, tx *sql.Tx, receipt NativeReceipt, now time.Time) error {
 	if receipt.GrantID == "" || receipt.Digest == "" || receipt.Started == nil || now.IsZero() {
 		return fmt.Errorf("explicit native receipt identity and started state are required")
 	}

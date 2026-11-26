@@ -107,7 +107,10 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 	if cleanRoot == "" {
 		return nil, fmt.Errorf("runtime fs root is required")
 	}
-	cleanRoot = filepath.Clean(cleanRoot)
+	cleanRoot, err := filepath.Abs(cleanRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve runtime fs root: %w", err)
+	}
 	blobRoot := filepath.Join(cleanRoot, "snapshot-blobs")
 	tempRoot := filepath.Join(cleanRoot, "snapshot-tmp")
 	for _, path := range []string{cleanRoot, blobRoot, tempRoot} {
@@ -688,6 +691,20 @@ func (s *Store) CountChangesAgainstSnapshot(ctx context.Context, rootPath, snaps
 }
 
 func (s *Store) RestoreSnapshot(ctx context.Context, snapshotID, rootPath string) error {
+	root, err := securefs.OpenRoot(rootPath)
+	if err != nil {
+		return fmt.Errorf("open restore root: %w", err)
+	}
+	defer root.Close()
+	return s.RestoreSnapshotRoot(ctx, snapshotID, root)
+}
+
+// RestoreSnapshotRoot restores through an already verified directory descriptor.
+// The caller retains ownership of root. It never reopens a mutable host path.
+func (s *Store) RestoreSnapshotRoot(ctx context.Context, snapshotID string, secureRoot *securefs.Root) error {
+	if secureRoot == nil {
+		return fmt.Errorf("restore root is required")
+	}
 	index, err := s.newWorkspaceIndex(ctx)
 	if err != nil {
 		return err
@@ -696,11 +713,6 @@ func (s *Store) RestoreSnapshot(ctx context.Context, snapshotID, rootPath string
 	if _, err := s.loadSnapshotIndex(ctx, index, 0, snapshotID); err != nil {
 		return err
 	}
-	secureRoot, err := securefs.OpenRoot(rootPath)
-	if err != nil {
-		return fmt.Errorf("open restore root: %w", err)
-	}
-	defer secureRoot.Close()
 	verifier, err := s.newBlobVerifier()
 	if err != nil {
 		return err

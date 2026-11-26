@@ -278,8 +278,8 @@ func TestOpenCodeAgentDiscardsPreparedRequestWhenActivationFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "persist invocation: sqlite busy") {
 		t.Fatalf("expected activation error, got %v", err)
 	}
-	if got := strings.Join(adapter.recorded(), ","); got != "prepare,activate,discard" {
-		t.Fatalf("provider phases ran as %q, want prepare,activate,discard with no execute", got)
+	if got := strings.Join(adapter.recorded(), ","); got != "prepare,activate,drain,discard" {
+		t.Fatalf("provider phases ran as %q, want prepare,activate,drain,discard with no execute", got)
 	}
 	if len(adapter.discarded) != 1 || adapter.discarded[0] != invocation.InvocationID || invocation.activated {
 		t.Fatalf("discarded=%v activated=%v, want %q discarded and not activated", adapter.discarded, invocation.activated, invocation.InvocationID)
@@ -963,8 +963,8 @@ func TestOpenCodeAgentLeavesNothingToSettleWhenPrepareFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "server unavailable") {
 		t.Fatalf("expected prepare error, got %v", err)
 	}
-	if got := strings.Join(adapter.recorded(), ","); got != "prepare" || invocation.activated {
-		t.Fatalf("provider phases ran as %q (activated=%v), want only prepare", got, invocation.activated)
+	if got := strings.Join(adapter.recorded(), ","); got != "prepare,drain,discard" || invocation.activated {
+		t.Fatalf("provider phases ran as %q (activated=%v), want prepare, drain, discard", got, invocation.activated)
 	}
 }
 
@@ -982,5 +982,29 @@ func TestPlannerReportsTheProviderFailureInsteadOfTheMissingStop(t *testing.T) {
 	}
 	if metadata := providerMetadataFromError(err); metadata.FailureReasonCode != "provider_auth_failed" {
 		t.Fatalf("the provider's failure code must be kept: %q", metadata.FailureReasonCode)
+	}
+}
+
+func TestPlannerPreparationCleanupStopsAtUnresolvedDebt(t *testing.T) {
+	for _, stage := range []string{"drain", "discard", "complete"} {
+		t.Run(stage, func(t *testing.T) {
+			adapter := &recordingPlannerAdapter{preparer: preparer{prepareErr: errors.New("prepare failed")}}
+			if stage == "drain" {
+				adapter.drainErr = errors.New("writers remain")
+			}
+			if stage == "discard" {
+				adapter.discardErr = errors.New("deletion unresolved")
+			}
+			invocation := adapter.invocation("")
+			invocation.AbandonPreparation = func(context.Context) error { adapter.record("abandon"); return nil }
+			_, err := NewOpenCodeAgent(adapter, deterministicID()).ContinueTurnStream(context.Background(), AgentContext{PromptCatalog: testPromptCatalog(t), SessionID: "session", ProviderInvocation: invocation}, nil)
+			if err == nil {
+				t.Fatal("prepare failure lost")
+			}
+			want := map[string]string{"drain": "prepare,drain", "discard": "prepare,drain,discard", "complete": "prepare,drain,discard,abandon"}[stage]
+			if got := strings.Join(adapter.recorded(), ","); got != want {
+				t.Fatalf("%s != %s", got, want)
+			}
+		})
 	}
 }

@@ -216,6 +216,10 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		return nil, fmt.Errorf("seed canonical roles: %w", err)
 	}
 
+	if err := initializeBundledWorkflows(startupCtx, cfg.DB, schemaSet, time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("initialize bundled workflows: %w", err)
+	}
+
 	sessionManager := state.NewSessionManager(cfg.DB, state.NewSessionLifecycleMetrics())
 
 	workspaceRoot := strings.TrimSpace(cfg.WorkspaceRoot)

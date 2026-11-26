@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/execution/remote"
 )
 
 // SettleCompletionTx checks stored request facts within the canonical
@@ -88,6 +89,22 @@ func SettleCompletionTx(ctx context.Context, tx *sql.Tx, owner Owner, lease Leas
 		}
 	default:
 		return fmt.Errorf("unknown canonical provider completion outcome")
+	}
+	if binding.Backend == providerexecution.BackendOpenShell && outcome == "success" {
+		closed, err := ReadRemoteWriterClosure(ctx, q, binding.ID)
+		if err != nil {
+			return err
+		}
+		if !closed.SuccessEligible {
+			return fmt.Errorf("remote writer facts cannot support success")
+		}
+		r, err := remoteBindingOwner(ctx, q, binding)
+		if err != nil {
+			return err
+		}
+		if err = remote.RequireWorkspaceOutputApplied(ctx, q, r.Owner, r.Reference); err != nil {
+			return err
+		}
 	}
 	return RequireResourcesClosedTx(ctx, q, binding.ID)
 }

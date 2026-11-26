@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, apiFetch, currentAuthBinding, currentAuthGeneration, resolveAPIBase, setCSRFToken, shouldRetryApiMutation, shouldRetryApiQuery, signalUnauthorized, subscribeToUnauthorized } from "./client";
+import { ApiError, apiFetch, centralFetch, currentAuthBinding, currentAuthGeneration, resolveAPIBase, setCSRFToken, shouldRetryApiMutation, shouldRetryApiQuery, signalUnauthorized, subscribeToUnauthorized } from "./client";
 
 describe("resolveAPIBase", () => {
   it("uses the API base path injected by the runtime", () => {
@@ -285,5 +285,19 @@ describe("apiFetch", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(listener).toHaveBeenCalledWith(expect.objectContaining({ source: "mutation" }));
     unsubscribe();
+  });
+});
+
+
+describe("centralFetch", () => {
+  it("uses the fixed central base and the current session CSRF boundary", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+    setCSRFToken("central-csrf", "central-session");
+    try {
+      await centralFetch("/connections", { method: "POST", body: "{}" });
+      expect(fetcher.mock.calls[0][0]).toBe("/api/central/v1/connections");
+      expect(fetcher.mock.calls[0][1]).toMatchObject({ credentials: "same-origin", headers: { "X-CSRF-Token": "central-csrf" } });
+    } finally { setCSRFToken(""); vi.unstubAllGlobals(); }
   });
 });

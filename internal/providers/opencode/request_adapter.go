@@ -9,12 +9,15 @@ import (
 	"sync"
 
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/execution/remote"
 )
 
 // Prepared is the provider identity of a request that has been set up but not
 // dispatched. Kingdom persists it with the canonical invocation before Execute
 // is allowed to send any work.
 type Prepared struct {
+	Backend           providerexecution.Backend
+	RemoteRuntime     remote.Reference
 	ProviderSessionID string
 	Identity          providerexecution.RequestIdentity
 }
@@ -23,7 +26,7 @@ type Prepared struct {
 type request struct {
 	invocationID string
 	attemptID    string
-	started      *serviceStart
+	started      *requestSession
 	directory    string
 	profile      profile
 	identity     providerexecution.RequestIdentity
@@ -113,7 +116,7 @@ func (s *Service) Prepare(ctx context.Context, req ExecuteRequest) (Prepared, er
 	if err := started.capture.healthy(); err != nil {
 		return Prepared{}, err
 	}
-	directory, err := filepath.EvalSymlinks(filepath.Clean(req.WorkspacePath))
+	directory, err := s.local.ResolveWorkspace(req.WorkspacePath)
 	if err != nil {
 		return Prepared{}, fmt.Errorf("resolve OpenCode workspace: %w", err)
 	}
@@ -146,10 +149,10 @@ func (s *Service) Prepare(ctx context.Context, req ExecuteRequest) (Prepared, er
 		return Prepared{}, err
 	}
 	prepared := &request{
-		invocationID: req.InvocationID, attemptID: req.AttemptID, started: started, directory: directory, profile: p, model: model,
+		invocationID: req.InvocationID, attemptID: req.AttemptID, started: &started.requestSession, directory: directory, profile: p, model: model,
 		stop: make(chan struct{}), done: make(chan struct{}),
 	}
-	sessionID, reused, err := s.prepareSession(ctx, started, req, prepared)
+	sessionID, reused, err := prepareSession(ctx, &started.requestSession, req, prepared)
 	if err == nil {
 		prepared.identity = providerexecution.RequestIdentity{InstanceID: started.instanceID, Generation: generation, Location: directory, SessionID: sessionID, ProfileID: p.id, RequestID: p.requestID}
 		prepared.reused = reused
@@ -160,7 +163,7 @@ func (s *Service) Prepare(ctx context.Context, req ExecuteRequest) (Prepared, er
 		defer cancel()
 		return Prepared{}, errors.Join(err, retireProfile(cleanup, started.client, directory, p.id))
 	}
-	return Prepared{ProviderSessionID: sessionID, Identity: prepared.identity}, nil
+	return Prepared{Backend: providerexecution.BackendLocal, ProviderSessionID: sessionID, Identity: prepared.identity}, nil
 }
 
 func requirePrepareRequest(req ExecuteRequest) error {
@@ -179,10 +182,10 @@ func requirePrepareRequest(req ExecuteRequest) error {
 
 // prepareSession continues the requested session when this server has kept its
 // history since creation, and otherwise creates a fresh one.
-func (s *Service) prepareSession(ctx context.Context, started *serviceStart, req ExecuteRequest, prepared *request) (string, bool, error) {
+func prepareSession(ctx context.Context, started *requestSession, req ExecuteRequest, prepared *request) (string, bool, error) {
 	client, directory := started.client, prepared.directory
 	if req.ResumeFrom != nil {
-		return s.resumeSession(ctx, started, *req.ResumeFrom, prepared)
+		return resumeSession(ctx, started, *req.ResumeFrom, prepared)
 	}
 	if sessionID := req.ProviderSessionID; sessionID != "" && !req.ForceNewSession && started.capture.tracked(sessionID) {
 		info, err := client.Session(ctx, directory, sessionID)
@@ -234,6 +237,12 @@ func requireEmptyInbox(ctx context.Context, client *Client, directory, sessionID
 		return fmt.Errorf("provider session has undelivered input")
 	}
 	return nil
+}
+
+// Drain releases local preparation resources. Local requests have no separate
+// remote sandbox disposal obligation.
+func (s *Service) Drain(ctx context.Context, invocationID string) error {
+	return s.Discard(ctx, invocationID)
 }
 
 // Discard releases a prepared request that will not be executed.

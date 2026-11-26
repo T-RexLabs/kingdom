@@ -961,12 +961,13 @@ func TestExecuteSummonRunsUntilContextCanceled(t *testing.T) {
 	rewriteConfigProviderSettings(t, configPath, "opencode", "/bin/sh")
 	overridePort := reserveFreePort(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1600*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(ctx, stdout, stderr, []string{"summon", "--config", configPath, "--port", overridePort, "--ready-timeout", "10s"})
+	readyOutput := readinessCancelWriter{output: stdout, cancel: cancel}
+	exitCode := Execute(ctx, readyOutput, stderr, []string{"summon", "--config", configPath, "--port", overridePort, "--ready-timeout", "10s"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected summon success, got %d stderr=%q", exitCode, stderr.String())
 	}
@@ -1536,4 +1537,19 @@ func rewriteConfigProviderSettings(t *testing.T, configPath string, engine strin
 	if err := writeInstallConfig(configPath, cfg, true); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
+}
+
+// Cancel from the readiness event so host load cannot expire the test's
+// lifetime before the startup behavior under test has completed.
+type readinessCancelWriter struct {
+	output *bytes.Buffer
+	cancel context.CancelFunc
+}
+
+func (w readinessCancelWriter) Write(p []byte) (int, error) {
+	n, err := w.output.Write(p)
+	if strings.Contains(w.output.String(), "kingdom summoned") {
+		w.cancel()
+	}
+	return n, err
 }

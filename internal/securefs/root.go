@@ -329,3 +329,6 @@ func (r *Root) RemoveTreeBatch(path, cursor string, maxEntries int) (TreeRemoval
 func (r *Root) SyncDir(path string) error {
 	return syncRootDir(r, path)
 }
+
+// DirectoryIdentity identifies the opened root directory, independently of its name.
+func (r *Root) DirectoryIdentity() (FileIdentity, error) { return rootDirectoryIdentity(r) }

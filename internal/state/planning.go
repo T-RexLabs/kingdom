@@ -134,26 +134,28 @@ type PlanningContextSnapshot struct {
 }
 
 type PlanningOperation struct {
-	OperationID                string
-	AcpRunID                   string
-	PlanningSessionID          string
-	PlanningContextSnapshotID  *string
-	Type                       PlanningOperationType
-	Status                     PlanningOperationStatus
-	RequestPayloadJSON         string
-	LeaseOwner                 string
-	LeaseExpiresAt             *string
-	LeaseVersion               int
-	LastHeartbeatAt            *string
-	ProviderSessionID          *string
-	ActiveProviderInvocationID *string
-	ObservedOutputText         string
-	Error                      *string
-	ResultRef                  *string
-	CanonicalSettlementID      *string
-	CreatedAt                  string
-	StartedAt                  *string
-	FinishedAt                 *string
+	ModelSelectionJSON              string
+	ModelSelectionSourceOperationID string
+	OperationID                     string
+	AcpRunID                        string
+	PlanningSessionID               string
+	PlanningContextSnapshotID       *string
+	Type                            PlanningOperationType
+	Status                          PlanningOperationStatus
+	RequestPayloadJSON              string
+	LeaseOwner                      string
+	LeaseExpiresAt                  *string
+	LeaseVersion                    int
+	LastHeartbeatAt                 *string
+	ProviderSessionID               *string
+	ActiveProviderInvocationID      *string
+	ObservedOutputText              string
+	Error                           *string
+	ResultRef                       *string
+	CanonicalSettlementID           *string
+	CreatedAt                       string
+	StartedAt                       *string
+	FinishedAt                      *string
 	// AutomaticRetry is populated only by a due retry claim. It is not stored
 	// on planning_operations; retry_decisions remains durable authority.
 	AutomaticRetry bool
@@ -248,24 +250,27 @@ type CreatePlanningContextSnapshotRequest struct {
 }
 
 type CreatePlanningOperationRequest struct {
-	OperationID                string
-	PlanningSessionID          string
-	Type                       PlanningOperationType
-	Status                     PlanningOperationStatus
-	RequestPayloadJSON         string
-	LeaseOwner                 string
-	LeaseExpiresAt             string
-	LeaseVersion               int
-	LastHeartbeatAt            string
-	ProviderSessionID          string
-	ActiveProviderInvocationID string
-	ObservedOutputText         string
-	Error                      string
-	ResultRef                  string
-	CanonicalSettlementID      string
-	CreatedAt                  string
-	StartedAt                  string
-	FinishedAt                 string
+	// ModelSelectionSourceOperationID binds an automatic title to its causal operation.
+	// Empty captures the current session selection in the enqueue transaction.
+	ModelSelectionSourceOperationID string
+	OperationID                     string
+	PlanningSessionID               string
+	Type                            PlanningOperationType
+	Status                          PlanningOperationStatus
+	RequestPayloadJSON              string
+	LeaseOwner                      string
+	LeaseExpiresAt                  string
+	LeaseVersion                    int
+	LastHeartbeatAt                 string
+	ProviderSessionID               string
+	ActiveProviderInvocationID      string
+	ObservedOutputText              string
+	Error                           string
+	ResultRef                       string
+	CanonicalSettlementID           string
+	CreatedAt                       string
+	StartedAt                       string
+	FinishedAt                      string
 }
 
 type AppendPlanningOperationEventRequest struct {
@@ -443,8 +448,9 @@ type FinalizeGenerateTitleAbortRequest struct {
 }
 
 type PlanningStore struct {
-	db         *sql.DB
-	leaseClock func() time.Time
+	resolveAccess PlanningAccessResolver
+	db            *sql.DB
+	leaseClock    func() time.Time
 }
 
 // SetLeaseClock sets the clock that judges whether an operation lease is still
@@ -479,8 +485,12 @@ type sqlQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-func NewPlanningStore(db *sql.DB) *PlanningStore {
-	return &PlanningStore{db: db}
+func NewPlanningStore(db *sql.DB, options ...PlanningStoreOption) *PlanningStore {
+	s := &PlanningStore{db: db}
+	for _, option := range options {
+		option(s)
+	}
+	return s
 }
 
 func validatePlanningSessionCreate(req CreatePlanningSessionRequest) error {

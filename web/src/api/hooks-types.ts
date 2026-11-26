@@ -49,8 +49,11 @@ export type RunAttemptRetryRelationship = components["schemas"]["RunAttemptRetry
 export type AgentsResponse = components["schemas"]["AgentsResponse"];
 export type Role = components["schemas"]["Role"];
 export type RolesResponse = components["schemas"]["RolesResponse"];
-export type ProviderModel = components["schemas"]["ProviderModel"];
-export type ProviderModelsResponse = components["schemas"]["ProviderModelsResponse"];
+export type ProviderModel = components["schemas"]["ProviderModel"] & {
+  canonical_model?: string;
+  connection?: { id: string; revision: number };
+};
+export type ProviderModelsResponse = Omit<components["schemas"]["ProviderModelsResponse"], "items"> & { items: ProviderModel[] };
 export type WorkspaceCapabilities = components["schemas"]["WorkspaceCapabilities"];
 export type ThinkingEffortOption = components["schemas"]["ThinkingEffortOption"];
 export type RunModelSelection = components["schemas"]["RunModelSelection"];

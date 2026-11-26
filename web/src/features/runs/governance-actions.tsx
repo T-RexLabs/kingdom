@@ -1,3 +1,5 @@
+import { PublishResult } from "@/features/central/publish-result";
+import { runtimeMode } from "@/lib/runtime-mode";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Modal, ModalFooter } from "@/components/ui/modal";
@@ -42,13 +44,15 @@ export function GovernanceActions({ run, recovery = { nodes: [] }, showFinalAppr
   const actionNodes = recovery.nodes;
 
   // Only show governance panel if there are actionable items
-  const hasActions =
+  const canPublish = run.status === "succeeded" && runtimeMode() === "hosted-project";
+  const hasActions = canPublish ||
     (showFinalApproval && isAwaitingApproval) || (showNodeActions && (isFailedRun || isCancelledRun) && actionNodes.length > 0);
 
   if (!hasActions) return null;
 
   return (
     <div className="space-y-3">
+      {canPublish && <PublishResult key={run.run_id} runID={run.run_id} />}
       {showFinalApproval && isAwaitingApproval && <FinalApprovalCard run={run} cardRef={finalApprovalCardRef} />}
       {showNodeActions && (isFailedRun || isCancelledRun) && actionNodes.length > 0 && (
         <RunRecoveryActions key={run.run_id} runId={run.run_id} recovery={recovery} />

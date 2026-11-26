@@ -76,9 +76,9 @@ func (s *Server) handleStartGitHubManifestFlow(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusOK, statusFromManifestFlow(flow))
 		return
 	}
-	manifestCallback := origin + s.basePath + "/connections/github/manifest-flows/manifest-callback"
-	setupCallback := origin + s.basePath + "/connections/github/manifest-flows/setup-callback?state=" + url.QueryEscape(flow.SetupState)
-	oauthCallback := origin + s.basePath + "/connections/github/manifest-flows/oauth-callback"
+	manifestCallback := origin + s.publicAPIBase + "/connections/github/manifest-flows/manifest-callback"
+	setupCallback := origin + s.publicAPIBase + "/connections/github/manifest-flows/setup-callback?state=" + url.QueryEscape(flow.SetupState)
+	oauthCallback := origin + s.publicAPIBase + "/connections/github/manifest-flows/oauth-callback"
 	// hook_attributes is deliberately absent: Kingdom subscribes to no events and
 	// needs no webhook, and GitHub validates the hook URL for public reachability
 	// even when the hook is inactive, which rejects every localhost manifest.
@@ -215,7 +215,7 @@ func (s *Server) handleAuthorizeGitHubManifestFlow(w http.ResponseWriter, r *htt
 		return
 	}
 	setSensitiveIdempotencyExpiry(w, oauth.ExpiresAt)
-	callback := origin + s.basePath + "/connections/github/manifest-flows/oauth-callback"
+	callback := origin + s.publicAPIBase + "/connections/github/manifest-flows/oauth-callback"
 	query := url.Values{"client_id": {oauth.ClientID}, "redirect_uri": {callback}, "state": {oauth.State}, "code_challenge": {oauth.Challenge}, "code_challenge_method": {"S256"}}
 	writeJSON(w, http.StatusOK, map[string]string{"authorization_url": githubexternal.GitHubWebOrigin + "/login/oauth/authorize?" + query.Encode()})
 }
@@ -240,7 +240,7 @@ func (s *Server) handleCompleteGitHubManifestFlow(w http.ResponseWriter, r *http
 	}()
 	completionCtx, cancel := contextWithFlowDeadline(s.lifecycleCtx, s.now, completion.ExpiresAt)
 	defer cancel()
-	callback := origin + s.basePath + "/connections/github/manifest-flows/oauth-callback"
+	callback := origin + s.publicAPIBase + "/connections/github/manifest-flows/oauth-callback"
 	userToken, err := s.githubSetup.ExchangeOAuthCode(completionCtx, completion.ClientID, completion.ClientSecret, completion.OAuthCode, completion.OAuthVerifier, callback)
 	if err != nil {
 		s.failManifestCompletion(flowID, w, "GitHub authorization could not be verified", err)

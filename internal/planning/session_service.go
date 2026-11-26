@@ -184,7 +184,7 @@ func (s *sessionService) CreateGenerateTitleOperation(ctx context.Context, plann
 	if s.runner == nil {
 		return state.PlanningSession{}, state.PlanningOperation{}, fmt.Errorf("planning runner is not configured")
 	}
-	updated, operation, _, err := enqueueGeneratedTitleForSession(ctx, s.deps, s.runner, session, titleTriggerSourceManual, false)
+	updated, operation, _, err := enqueueGeneratedTitleForSession(ctx, s.deps, s.runner, session, titleTriggerSourceManual, false, "")
 	if err != nil {
 		return state.PlanningSession{}, state.PlanningOperation{}, err
 	}

@@ -116,14 +116,10 @@ func TestDeletePlanningSessionRemovesOwnedSnapshotAndActivityData(t *testing.T) 
 	if _, err := store.PublishContextSnapshot(ctx, "delete-owned-session", snapshot.PlanningContextSnapshotID, at); err != nil {
 		t.Fatalf("publish context snapshot: %v", err)
 	}
-	operation, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
-		OperationID: "delete-owned-operation", PlanningSessionID: "delete-owned-session",
-		Type: PlanningOperationTypeReply, Status: PlanningOperationStatusRunning,
-		RequestPayloadJSON: `{}`, LeaseOwner: "worker", LeaseExpiresAt: "2026-10-03T12:05:00Z",
-		LeaseVersion: 1, CreatedAt: at,
-	})
-	if err != nil {
-		t.Fatalf("create operation: %v", err)
+	// This fixture intentionally precedes newer operation snapshot columns.
+	operation := PlanningOperation{OperationID: "delete-owned-operation", PlanningSessionID: "delete-owned-session"}
+	if _, err := db.ExecContext(ctx, `INSERT INTO planning_operations(operation_id,acp_run_id,planning_session_id,planning_context_snapshot_id,type,status,request_payload_json,lease_owner,lease_expires_at,lease_version,created_at) VALUES(?,?,?,?,'reply','running','{}','worker','2026-10-03T12:05:00Z',1,?)`, operation.OperationID, "delete-owned-acp", operation.PlanningSessionID, snapshot.PlanningContextSnapshotID, at); err != nil {
+		t.Fatalf("seed historical operation: %v", err)
 	}
 	// Seed the historical schema directly: current invocation APIs require
 	// the current ownership schema, while this fixture predates migration 0006.

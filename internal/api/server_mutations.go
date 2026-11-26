@@ -14,11 +14,11 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/execution/access"
 	"kingdom/internal/state"
 	"kingdom/internal/workspace"
-
-	"gopkg.in/yaml.v3"
 )
 
 func (s *Server) handleCreateWorkOrder(w http.ResponseWriter, r *http.Request) {
@@ -156,43 +156,31 @@ func (s *Server) handlePublishWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = s.db.ExecContext(
-		r.Context(),
-		`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES (?, ?, ?, ?, ?)`,
-		workflowDefinitionID,
-		req.WorkflowId,
-		req.Version,
-		string(compiled.CanonicalJSON),
-		publishedAt,
-	)
+	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		if isUniqueConstraintError(err) {
-			var existingDefinition string
-			if lookupErr := s.db.QueryRowContext(r.Context(),
-				`SELECT definition_json FROM workflow_definitions WHERE workflow_name = ? AND workflow_version = ?`,
-				req.WorkflowId,
-				req.Version,
-			).Scan(&existingDefinition); lookupErr != nil {
-				s.writeInternalError(w, "read existing workflow version failed")
-				return
-			}
-			message := "workflow version already exists with a different definition"
-			if existingDefinition == string(compiled.CanonicalJSON) {
-				message = "workflow version already exists"
-			}
-			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, message, "api.publish_workflow", nil)
-			return
-		}
 		s.writeInternalError(w, "publish workflow failed")
 		return
 	}
-
-	if err := s.persistWorkflowGraph(r.Context(), workflowDefinitionID, compiled.CanonicalJSON, publishedAt); err != nil {
+	defer tx.Rollback()
+	created, err := state.PublishCompiledWorkflowTx(r.Context(), tx, workflowDefinitionID, req.WorkflowId, req.Version, compiled, publishedAt)
+	if err != nil {
+		if errors.Is(err, state.ErrWorkflowVersionConflict) || isUniqueConstraintError(err) {
+			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, "workflow version already exists with a different definition", "api.publish_workflow", nil)
+			return
+		}
 		if isForeignKeyError(err) {
 			writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, "workflow definition references unknown role", "api.publish_workflow", nil)
 			return
 		}
 		s.writeInternalError(w, "persist workflow graph failed")
+		return
+	}
+	if !created {
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, "workflow version already exists", "api.publish_workflow", nil)
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		s.writeInternalError(w, "publish workflow failed")
 		return
 	}
 
@@ -286,6 +274,11 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	pinnedAccess, err := s.runAccessSnapshot(r.Context(), normalizedModelSelection)
+	if err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		s.writeInternalError(w, "create run failed")
@@ -318,6 +311,19 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		s.writeInternalError(w, "create run failed")
 		return
 	}
+	if pinnedAccess == nil {
+		if err := access.PinSourceBackendTx(r.Context(), tx, "run", runID, providerexecution.BackendLocal); err != nil {
+			s.writeInternalError(w, "capture run execution backend failed")
+			return
+		}
+	}
+	if pinnedAccess != nil {
+		if err := access.CaptureRunTx(r.Context(), tx, runID, *pinnedAccess); err != nil {
+			s.writeInternalError(w, "capture run model access failed")
+			return
+		}
+	}
+
 	if err := state.CaptureRunAgentConfigurationSnapshotTx(r.Context(), tx, runID, now); err != nil {
 		s.writeInternalError(w, "capture run agent configuration failed")
 		return
@@ -431,59 +437,6 @@ func boolToInt(v bool) int {
 	return 0
 }
 
-func (s *Server) persistWorkflowGraph(ctx context.Context, workflowDefinitionID string, rawDefinition []byte, createdAt string) error {
-	var definition workflow.Definition
-	if err := json.Unmarshal(rawDefinition, &definition); err != nil {
-		return fmt.Errorf("decode workflow definition graph: %w", err)
-	}
-
-	for _, node := range definition.Nodes {
-		if strings.TrimSpace(node.NodeID) == "" {
-			continue
-		}
-		if strings.TrimSpace(node.RequiredRole) == "" {
-			continue
-		}
-
-		_, err := s.db.ExecContext(
-			ctx,
-			`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			s.idGenerator("workflow_node"),
-			workflowDefinitionID,
-			node.NodeID,
-			node.RequiredRole,
-			node.NodeClass,
-			createdAt,
-		)
-		if err != nil {
-			return err
-		}
-	}
-
-	for _, edge := range definition.Edges {
-		onCondition := strings.TrimSpace(edge.On)
-		if onCondition == "" {
-			onCondition = "success"
-		}
-
-		_, err := s.db.ExecContext(
-			ctx,
-			`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			s.idGenerator("workflow_edge"),
-			workflowDefinitionID,
-			edge.From,
-			edge.To,
-			onCondition,
-			createdAt,
-		)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func (s *Server) workOrderExists(ctx context.Context, workOrderID string) bool {
 	var marker int
 	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM work_orders WHERE work_order_id = ? LIMIT 1`, workOrderID).Scan(&marker)
@@ -491,6 +444,22 @@ func (s *Server) workOrderExists(ctx context.Context, workOrderID string) bool {
 }
 
 func (s *Server) normalizeRunModelSelection(ctx context.Context, selection *gen.RunModelSelection) (*gen.RunModelSelection, string, error) {
+	if s.hostedSelection != nil {
+		return normalizeHostedRunSelection(selection)
+	}
+	if selection != nil {
+		if selection.Global.Connection != nil {
+			return nil, "", fmt.Errorf("model connections are not accepted in local mode")
+		}
+		if selection.RoleOverrides != nil {
+			for _, entry := range *selection.RoleOverrides {
+				if entry.Connection != nil {
+					return nil, "", fmt.Errorf("model connections are not accepted in local mode")
+				}
+			}
+		}
+	}
+
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -629,26 +598,5 @@ func (s *Server) validateRequiredRunModelSelection(selection *gen.RunModelSelect
 }
 
 func (s *Server) compileWorkflowDefinition(expectedWorkflowID string, rawDefinition []byte) (*workflow.CompileResult, error) {
-	definition, err := workflow.ParseDefinitionJSON(rawDefinition)
-	if err != nil {
-		return nil, fmt.Errorf("decode workflow definition_json: %w", err)
-	}
-
-	if strings.TrimSpace(definition.WorkflowID) == "" {
-		return nil, fmt.Errorf("workflow definition_json.workflow_id is required")
-	}
-	if definition.WorkflowID != expectedWorkflowID {
-		return nil, fmt.Errorf("workflow_id mismatch between request and definition_json")
-	}
-
-	rawYAML, err := yaml.Marshal(definition)
-	if err != nil {
-		return nil, fmt.Errorf("marshal workflow definition yaml: %w", err)
-	}
-
-	result, err := s.workflowCompiler.CompileYAML(rawYAML)
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
+	return s.workflowCompiler.CompileJSON(expectedWorkflowID, rawDefinition)
 }

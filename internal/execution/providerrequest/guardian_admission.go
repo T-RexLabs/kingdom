@@ -15,6 +15,9 @@ func RequireGuardianAdmissionTx(ctx context.Context, tx *sql.Tx, bindingID strin
 	if err != nil {
 		return err
 	}
+	if err := requireNoRemoteReservation(ctx, tx, binding.Owner); err != nil {
+		return err
+	}
 	if ordinal < 1 || binding.Lease != lease {
 		return fmt.Errorf("provider guardian command or lease conflict")
 	}

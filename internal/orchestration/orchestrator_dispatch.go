@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
@@ -317,11 +319,30 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 		agent:                                agentForRole,
 		occurredAt:                           now,
 	}
-	// The provider fixes the request's session and profile without sending any
-	// work. Activation then binds exactly that identity to the canonical
-	// invocation, and only after it commits may the request be dispatched.
+	// Reserve canonical ownership before provider startup. Activation then binds
+	// the prepared session and profile before request dispatch.
+	if _, err := o.executionStore.ReserveProviderInvocation(ctx, executionstore.ReserveProviderInvocationRequest{CreateProviderInvocationRequest: executionstore.CreateProviderInvocationRequest{ProviderInvocationID: providerInvocationID, AttemptID: attemptID, RunID: run.RunID, NodeRunID: attempt.NodeRunID, LogicalSessionID: sessionID, CompletionMode: executionSpec.CompletionMode, IssuedAt: now, CreatedAt: now}, WorkspacePath: workspacePath, ExpectedLeaseOwner: attempt.LeaseOwner, ExpectedLeaseVersion: attempt.LeaseVersion}); err != nil {
+		return fmt.Errorf("reserve provider startup: %w", err)
+	}
+	abandonPreparation := func() error {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		return o.executionStore.InvalidateUnlaunchedProviderInvocation(cleanupCtx, executionstore.InvalidateUnlaunchedProviderInvocationRequest{ProviderInvocationID: providerInvocationID, InvalidReason: "provider_preparation_failed", UpdatedAt: o.now().UTC().Format(time.RFC3339Nano), ExpectedLeaseOwner: attempt.LeaseOwner, ExpectedLeaseVersion: attempt.LeaseVersion})
+	}
+	cleanupIssued := func() error {
+		if err := o.drainProviderRequest(ctx, providerInvocationID); err != nil {
+			return err
+		}
+		if err := o.discardProviderRequest(ctx, providerInvocationID); err != nil {
+			return err
+		}
+		return abandonPreparation()
+	}
 	prepared, prepareErr := o.provider.Prepare(ctx, o.providerRequest(job))
 	if prepareErr != nil {
+		if err := cleanupIssued(); err != nil {
+			return errors.Join(prepareErr, err)
+		}
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "prepare provider request", prepareErr)
 	}
 	if invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, providerInvocationID, prepared, executionSpec.CompletionMode, now); invocationErr != nil {
@@ -329,7 +350,10 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 		if errors.As(invocationErr, &outcomeUnknown) {
 			return fmt.Errorf("provider invocation activation outcome is unresolved for attempt %q: %w", attemptID, invocationErr)
 		}
-		return errors.Join(o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "create provider invocation", invocationErr), o.discardProviderRequest(ctx, providerInvocationID))
+		if err := cleanupIssued(); err != nil {
+			return errors.Join(invocationErr, err)
+		}
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "create provider invocation", invocationErr)
 	}
 
 	_ = o.emitCommunicationMessage(ctx, communicationMessageRequest{
@@ -354,6 +378,9 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 		if errors.As(err, &outcomeUnknown) {
 			return fmt.Errorf("provider execution start outcome is unresolved for attempt %q: %w", attemptID, err)
 		}
+		if drainErr := o.drainProviderRequest(ctx, providerInvocationID); drainErr != nil {
+			return errors.Join(err, drainErr)
+		}
 		rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		rollbackErr := o.executionStore.InvalidateUnlaunchedProviderInvocation(rollbackCtx, executionstore.InvalidateUnlaunchedProviderInvocationRequest{
 			ProviderInvocationID: providerInvocationID,
@@ -363,7 +390,9 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 			ExpectedLeaseVersion: attempt.LeaseVersion,
 		})
 		cancelRollback()
-		rollbackErr = errors.Join(rollbackErr, o.discardProviderRequest(ctx, providerInvocationID))
+		if rollbackErr == nil {
+			rollbackErr = o.discardProviderRequest(ctx, providerInvocationID)
+		}
 		if rollbackErr != nil {
 			return errors.Join(
 				fmt.Errorf("record provider execution start: %w", err),
@@ -375,7 +404,7 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 	attempt.NodeStatus = "starting"
 
 	if err := o.preparationMayLaunch(ctx, &job); err != nil {
-		return errors.Join(err, o.discardProviderRequest(ctx, providerInvocationID))
+		return errors.Join(err, o.drainProviderRequest(ctx, providerInvocationID))
 	}
 	preparation.transferred = true
 	o.startOwnedAsyncExecution(preparation.ctx, job, preparation.cancel)
@@ -773,19 +802,17 @@ func (o *orchestrationLoop) startOwnedAsyncExecution(ctx context.Context, job as
 			startPayloadRaw = "{}"
 		}
 		request := o.providerRequest(job)
-		request.OnCommandGuardianOwnership = func(callbackCtx context.Context, guard opencode.CommandGuardianOwnership) error {
-			return o.acknowledgeProviderCommandGuardian(callbackCtx, job, guard)
-		}
-		request.OnCommandGuardianQuiescence = func(callbackCtx context.Context, guard opencode.CommandGuardianQuiescence) error {
-			return o.ingestProviderCommandGuardianQuiescence(callbackCtx, job, guard)
-		}
 		request.OnInvocationStarted = func() {
 			launchObserved = true
 			launchObservedAt = o.now().UTC().Format(time.RFC3339Nano)
 			o.observeExecutionLaunchAsync(ctx, job, startPayloadRaw, launchObservedAt)
 		}
 		request.OnActivity = o.providerExecutionActivityObserver(ctx, job)
-		response, execErr := o.executeWithDurableProgress(executionCtx, job, request)
+		var response opencode.ExecuteResponse
+		execErr := o.configureProviderGuardianCallbacks(executionCtx, job, &request)
+		if execErr == nil {
+			response, execErr = o.executeWithDurableProgress(executionCtx, job, request)
+		}
 		heartbeatResult := heartbeat.stopAndWait()
 		applyExecuteResponseToAsyncResult(&job, response, execErr)
 		job.outcome = normalizeExecutionOutcome(job.outcome, job.err)
@@ -1259,9 +1286,45 @@ func (o *orchestrationLoop) providerRequest(job asyncExecutionResult) opencode.E
 	return request
 }
 
+// drainProviderRequest closes writers before canonical rollback. Final disposal
+// remains a separate step so a bound request can first record its invalidation.
+func (o *orchestrationLoop) drainProviderRequest(ctx context.Context, invocation string) error {
+	cleanupCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
+	defer cancel()
+	return o.provider.Drain(cleanupCtx, invocation)
+}
+
 // discardProviderRequest releases a prepared request that will not run.
 func (o *orchestrationLoop) discardProviderRequest(ctx context.Context, providerInvocationID string) error {
 	discardCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
 	defer cancel()
 	return o.provider.Discard(discardCtx, providerInvocationID)
+}
+
+func (o *orchestrationLoop) configureProviderGuardianCallbacks(ctx context.Context, job asyncExecutionResult, request *opencode.ExecuteRequest) error {
+	request.OnCommandGuardianOwnership = nil
+	request.OnCommandGuardianQuiescence = nil
+	binding, found, err := providerrequest.ForOwner(ctx, o.db, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: job.providerInvocationID})
+	if err != nil {
+		return err
+	}
+	if !found || binding.Lease.Owner != job.expectedLeaseOwner || binding.Lease.Version != job.expectedLeaseVersion {
+		return fmt.Errorf("provider callback binding or lease is unavailable")
+	}
+	switch binding.Backend {
+	case providerexecution.BackendOpenShell:
+		return nil
+	case providerexecution.BackendLocal:
+	default:
+		return fmt.Errorf("provider callback backend is unsupported")
+	}
+
+	request.OnCommandGuardianOwnership = func(callbackCtx context.Context, guard opencode.CommandGuardianOwnership) error {
+		return o.acknowledgeProviderCommandGuardian(callbackCtx, job, guard)
+	}
+	request.OnCommandGuardianQuiescence = func(callbackCtx context.Context, guard opencode.CommandGuardianQuiescence) error {
+		return o.ingestProviderCommandGuardianQuiescence(callbackCtx, job, guard)
+	}
+
+	return nil
 }

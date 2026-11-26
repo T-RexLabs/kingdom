@@ -20,6 +20,7 @@ OPENAPI_SPEC ?= contracts/openapi/openapi.yaml
 OPENAPI_GENERATED ?= internal/apigen/types.gen.go
 WEB_OPENAPI_GENERATED ?= web/src/api/schema.ts
 CORE_COVERAGE_MIN ?= 72.0
+RACE_TEST_TIMEOUT ?= 30m
 
 WORKDIR_ID := $(shell printf '%s' '$(CURDIR)' | cksum | awk '{print $$1}')
 WEB_NODE_MODULES_STAMP := web/node_modules/.pnpm-ready-$(PNPM_VERSION)-$(WORKDIR_ID).stamp
@@ -34,7 +35,7 @@ KD_GO_SOURCES := $(shell find cmd internal web -type f -name '*.go' ! -name '*_t
 BOOTSTRAP_ASSETS := $(shell find internal/bootstrapassets/files -type f)
 DB_MIGRATIONS := $(shell find internal/dbmigrations -maxdepth 1 -type f -name '*.sql')
 
-.PHONY: help install build dev-web test test-web lint-web test-race test-integration test-e2e test-github-smoke test-opencode-security-smoke vet coverage-core scripts-check verify contracts-generate contracts-check openapi-lint tool-versions
+.PHONY: help install install-central build build-central dev-web test test-plugin test-web lint-web test-race test-integration test-e2e test-github-smoke test-opencode-security-smoke vet coverage-core scripts-check verify contracts-generate contracts-check openapi-lint tool-versions
 
 ##@ Setup and Build
 help: ## Show supported make targets
@@ -44,6 +45,13 @@ install: $(WEB_DIST_INDEX) ## Install `kd` with the embedded web UI
 	$(GO) install ./cmd/kd
 	@printf 'Installed kd to %s\nNext steps:\n  export PATH="$$PATH:%s"\n  kd init\n  kd summon\nPrerequisite: ensure opencode is installed and authenticated.\n' "$(GOBIN)" "$(GOBIN)"
 
+install-central: $(WEB_DIST_INDEX) ## Install the central service command
+	$(GO) install ./cmd/kingdom-central
+
+build-central: $(WEB_DIST_INDEX) ## Build the central service command
+	@mkdir -p bin
+	$(GO) build -o bin/kingdom-central ./cmd/kingdom-central
+
 build: $(KD_BINARY) ## Build the local `kd` binary into `bin/`
 
 dev-web: $(WEB_NODE_MODULES_STAMP) ## Start the web app in Vite dev mode
@@ -52,6 +60,9 @@ dev-web: $(WEB_NODE_MODULES_STAMP) ## Start the web app in Vite dev mode
 ##@ Verification
 test: $(WEB_DIST_INDEX) ## Run `go test ./...`
 	$(GO) test ./...
+
+test-plugin: ## Verify local and hosted OpenCode tool routing
+	node --test scripts/tests/opencode_plugin.test.mjs
 
 test-web: $(WEB_NODE_MODULES_STAMP) ## Run the frontend unit test suite
 	$(WEB_PNPM) test
@@ -66,7 +77,7 @@ lint-web: $(WEB_NODE_MODULES_STAMP) ## Run frontend lint with zero warnings
 # state. Scoped to the planning subtree to keep CI wall-clock reasonable;
 # extend to ./... if you suspect regressions outside this area.
 test-race: $(WEB_DIST_INDEX) ## Run the targeted race-enabled Go test suite
-	$(GO) test -race ./internal/state/... ./internal/planning/... ./internal/api/...
+	$(GO) test -race -timeout=$(RACE_TEST_TIMEOUT) ./internal/state/... ./internal/planning/... ./internal/api/...
 
 test-integration: $(WEB_DIST_INDEX) ## Run the integration test suite
 	$(GO) test ./tests/integration/...
@@ -90,7 +101,7 @@ scripts-check: ## Run lightweight script verification checks
 	bash -n scripts/*.sh
 	python3 -m unittest discover -s scripts/tests -p "test_*.py"
 
-verify: test test-web lint-web test-race vet coverage-core contracts-check ## Run the main verification sweep
+verify: test test-plugin test-web lint-web test-race vet coverage-core contracts-check ## Run the main verification sweep
 
 ##@ Contracts
 contracts-check: $(WEB_NODE_MODULES_STAMP) ## Verify generated OpenAPI types are up to date

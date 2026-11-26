@@ -1,0 +1,47 @@
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, expect, it, vi } from "vitest";
+import type { ReactNode } from "react";
+import { ApiError } from "@/api/client";
+import { useAccessMutation } from "./use-access-mutation";
+const { centralFetch } = vi.hoisted(() => ({ centralFetch: vi.fn() }));
+vi.mock("@/api/client", async () => ({ ...await vi.importActual<typeof import("@/api/client")>("@/api/client"), centralFetch }));
+afterEach(() => centralFetch.mockReset());
+it("keeps a server-acknowledged change confirmed when its list refresh fails", async () => {
+  centralFetch.mockResolvedValue(undefined);
+  const refresh = vi.fn().mockRejectedValueOnce(new Error("read failed")).mockResolvedValue(undefined);
+  const client = new QueryClient();
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  const hook = renderHook(() => useAccessMutation("actor:session:project", refresh, vi.fn()), { wrapper });
+  let confirmed = false;
+  await act(async () => { confirmed = await hook.result.current.submit({ path: "/projects/p/memberships/u", method: "DELETE" }, "Project access was removed."); });
+  expect(confirmed).toBe(true);
+  expect(hook.result.current.uncertain).toBe(false);
+  expect(hook.result.current.error).toBe("");
+  expect(hook.result.current.success).toBe("Project access was removed.");
+  expect(centralFetch).toHaveBeenCalledTimes(1);
+  await act(async () => { await hook.result.current.retry("Must not resend."); });
+  expect(centralFetch).toHaveBeenCalledTimes(1);
+  expect(hook.result.current.refreshFailed).toBe(true);
+  await act(async () => { await hook.result.current.reload(); });
+  expect(hook.result.current.refreshFailed).toBe(false);
+  expect(centralFetch).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(hook.result.current.busy).toBe(false));
+});
+
+it("cannot clear an uncertain request or its later access denial", async () => {
+  centralFetch.mockRejectedValueOnce(new Error("lost reply")).mockRejectedValueOnce(new ApiError(403, { message: "Denied", code: "unknown", retryable: false, category: "core", details: {}, correlationId: "test" }));
+  const client = new QueryClient();
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  const hook = renderHook(() => useAccessMutation("actor:session:project", vi.fn(), vi.fn()), { wrapper });
+  await act(async () => { await hook.result.current.submit({ path: "/projects/p/memberships/u", method: "DELETE" }, "Removed."); });
+  act(() => hook.result.current.clearFeedback());
+  expect(hook.result.current.uncertain).toBe(true);
+  expect(hook.result.current.error).not.toBe("");
+  await act(async () => { await hook.result.current.retry("Removed."); });
+  act(() => hook.result.current.clearFeedback());
+  expect(hook.result.current.denied).toBe(true);
+  expect(hook.result.current.uncertain).toBe(true);
+  expect(hook.result.current.error).not.toBe("");
+  expect(centralFetch.mock.calls[0][1].headers).toEqual(centralFetch.mock.calls[1][1].headers);
+});

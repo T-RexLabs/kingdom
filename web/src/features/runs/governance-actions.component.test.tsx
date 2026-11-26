@@ -155,6 +155,19 @@ describe("governance actions visibility", () => {
     expect(rerunState.mutateAsync).not.toHaveBeenCalled();
   });
 
+  it("keeps managed checkpoints visible and offers Rerun", async () => {
+    resumePlanState.data = { run_id: "run-1", available: false, unavailable_reason: "Resume is unavailable with this execution backend. Use Rerun to start new work. Saved checkpoints are kept.", steps: [{ node_id: "execution_review", source_attempt_id: "attempt-1", checkpoint_captured_at: "2026-10-23T12:00:00Z" }] };
+    render(<GovernanceActions run={failedRun} recovery={{ nodes: [failedNode] }} />);
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    const dialog = within(screen.getByRole("dialog", { name: "Resume Interrupted Work" }));
+    expect(dialog.getByText(/Saved checkpoints are kept/)).toBeVisible();
+    expect(dialog.getByText(/Checkpoint saved/)).toBeVisible();
+    expect(dialog.getByRole("button", { name: "Resume" })).toBeDisabled();
+    await userEvent.click(dialog.getByRole("button", { name: "Rerun Instead" }));
+    expect(screen.getByRole("dialog", { name: "Rerun from Step" })).toBeVisible();
+    expect(resumeState.mutateAsync).not.toHaveBeenCalled();
+  });
+
   it("explains completion rerun promotion before submission", async () => {
     render(<GovernanceActions run={cancelledRun} recovery={{ nodes: [{ ...failedNode, node_id: "completion", state: "cancelled" }] }} />);
     await userEvent.click(screen.getByRole("button", { name: "Rerun" }));

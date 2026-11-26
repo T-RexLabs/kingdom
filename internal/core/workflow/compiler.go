@@ -158,3 +158,19 @@ func definitionHasNodeClass(nodes []Node, nodeClass string) bool {
 	}
 	return false
 }
+
+// CompileJSON uses the same canonical compiler as YAML publication and startup.
+func (c *Compiler) CompileJSON(expectedID string, raw []byte) (*CompileResult, error) {
+	definition, err := ParseDefinitionJSON(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode workflow definition_json: %w", err)
+	}
+	if definition.WorkflowID == "" || definition.WorkflowID != expectedID {
+		return nil, fmt.Errorf("workflow_id mismatch between request and definition_json")
+	}
+	encoded, err := yaml.Marshal(definition)
+	if err != nil {
+		return nil, err
+	}
+	return c.CompileYAML(encoded)
+}

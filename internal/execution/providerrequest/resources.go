@@ -1,6 +1,9 @@
 package providerrequest
 
-import "context"
+import (
+	"context"
+	"kingdom/internal/core/providerexecution"
+)
 
 // RequireResourcesClosedTx is intentionally independent of terminal response
 // validity. Native receipts and command ownership remain debts on cancellation.
@@ -13,6 +16,15 @@ import "context"
 func RequireResourcesClosedTx(ctx context.Context, q Reader, id string) error {
 	b, err := Get(ctx, q, id)
 	if err != nil {
+		return err
+	}
+	if b.Backend == providerexecution.BackendOpenShell {
+		if _, err := ReadRemoteWriterClosure(ctx, q, id); err != nil {
+			return err
+		}
+		return RequireRemoteCapabilitiesClosed(ctx, q, b.Owner, b.RemoteAllocation)
+	}
+	if err := requireNoRemoteReservation(ctx, q, b.Owner); err != nil {
 		return err
 	}
 	if b.AdmissionClosedAt == "" {

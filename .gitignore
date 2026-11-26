@@ -20,3 +20,4 @@ web/dist/
 .claude
 .playwright*
 kingdom-artifacts*
+/deploy/central/config/

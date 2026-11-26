@@ -516,3 +516,39 @@ func listOperations(swagger *openapi3.T) []specOperation {
 
 	return operations
 }
+
+func TestRoleVoiceOverrideHasPortableNullableObjectContract(t *testing.T) {
+	swagger, err := gen.GetSwagger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := swagger.Components.Schemas["UpdateAgentRoleConfigurationRequest"].Value
+	voice := request.Properties["voice_override"].Value
+	if !containsRequiredField(request.Required, "voice_override") || !voice.Nullable || !voice.Type.Is("object") {
+		t.Fatal("required nullable voice must declare its object type")
+	}
+	// allOf branches apply independently in OpenAPI. A non-nullable referenced
+	// object cannot be made nullable merely by adding nullable on its parent.
+	for _, branch := range voice.AllOf {
+		if err := branch.Value.VisitJSON(nil); err != nil {
+			t.Fatal("allOf branch prohibits the documented null value", err)
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		value any
+		valid bool
+	}{
+		{"inherit", nil, true}, {"neutral", map[string]any{"kind": "neutral-v1"}, true}, {"custom", map[string]any{"kind": "custom", "instruction": "Use short sentences."}, true},
+		{"scalar", "neutral-v1", false}, {"empty", map[string]any{}, false}, {"unknown", map[string]any{"kind": "other"}, false}, {"extra", map[string]any{"kind": "neutral-v1", "extra": true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := voice.VisitJSON(tc.value, openapi3.VisitAsRequest()); (err == nil) != tc.valid {
+				t.Fatalf("valid=%t err=%v", tc.valid, err)
+			}
+		})
+	}
+	if err := swagger.Components.Schemas["AgentVoiceSelection"].Value.VisitJSON(nil); err == nil {
+		t.Fatal("workspace voice selection became nullable")
+	}
+}

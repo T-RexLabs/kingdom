@@ -72,7 +72,7 @@ func (s *Service) verifyResumeCheckpoint(ctx context.Context, req ExecuteRequest
 	return s.requests.authority.RequireSessionClosed(ctx, resume.Source)
 }
 
-func (s *Service) resumeSession(ctx context.Context, started *serviceStart, resume SessionResume, prepared *request) (string, bool, error) {
+func resumeSession(ctx context.Context, started *requestSession, resume SessionResume, prepared *request) (string, bool, error) {
 	client, sessionID := started.client, resume.Source.SessionID
 	info, err := client.Session(ctx, resume.Source.Location, sessionID)
 	if err != nil {

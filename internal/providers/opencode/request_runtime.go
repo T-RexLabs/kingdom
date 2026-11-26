@@ -26,7 +26,7 @@ type requestRuntime struct {
 	settleLimit time.Duration
 }
 
-func newRequestRuntime(authority *providerrequest.Authority, runner GuardianRunner, env []string, root string) (*requestRuntime, error) {
+func newRequestRuntime(authority *providerrequest.Authority, local LocalExecutor, env []string, root string) (*requestRuntime, error) {
 	outbox := filepath.Join(root, "outbox")
 	spool := filepath.Join(root, "spool")
 	// Captured events are only meaningful to the server process that emitted them.
@@ -38,7 +38,7 @@ func newRequestRuntime(authority *providerrequest.Authority, runner GuardianRunn
 			return nil, fmt.Errorf("create OpenCode runtime directory: %w", err)
 		}
 	}
-	commands := newCommandBridge(authority, runner, env)
+	commands := newCommandBridge(authority, local, env)
 	gateway, err := newGateway(authority, commands)
 	if err != nil {
 		return nil, err

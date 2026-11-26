@@ -27,12 +27,13 @@ const AttemptEventTypeProgress = "attempt.progress"
 // Provider runs requests on a shared model server. Prepare fixes a request's
 // provider identity without sending work; the caller binds that identity to its
 // canonical invocation, and only then Execute sends the work. Cancel interrupts
-// one attempt's request, and Discard releases a prepared request that will not
-// run.
+// one attempt's request. Drain closes request resources before canonical rollback;
+// Discard performs final disposal after that rollback permits it.
 type Provider interface {
 	Prepare(ctx context.Context, req ExecuteRequest) (Prepared, error)
 	Execute(ctx context.Context, req ExecuteRequest) (ExecuteResponse, error)
 	Cancel(ctx context.Context, attemptID string) error
+	Drain(ctx context.Context, invocationID string) error
 	Discard(ctx context.Context, invocationID string) error
 }
 
@@ -91,12 +92,6 @@ type ExecuteRequest struct {
 	// Content sources are valid only through this synchronous callback; persist
 	// their bytes before returning rather than retaining the process-local opener.
 	OnActivity func(observation ExecuteActivityObservation)
-}
-
-// GuardianRunner starts provider command trees behind a durable launch gate.
-// It is intentionally narrow so adapter tests can supply deterministic handles.
-type GuardianRunner interface {
-	Start(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error)
 }
 
 type CommandGuardianOwnership struct {

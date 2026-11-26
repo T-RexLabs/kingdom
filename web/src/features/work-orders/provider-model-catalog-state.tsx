@@ -1,4 +1,5 @@
 import { CircleAlert, RefreshCw } from "lucide-react";
+import { runtimeMode } from "@/lib/runtime-mode";
 import { Button } from "@/components/ui/button";
 import type { ProviderModelCatalogState } from "./use-provider-model-catalog";
 
@@ -31,6 +32,7 @@ export function ProviderModelCatalogNotice({
       <CircleAlert className="h-4 w-4 shrink-0" />
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <span>{state.message}</span>
+        {runtimeMode() === "hosted-project" && <a className="underline underline-offset-2" href="/#connections-heading">Manage Model Connections</a>}
         {onRetry ? (
           <Button type="button" variant="outline" size="sm" disabled={retryPending} className="h-7 border-status-failed/30 bg-transparent text-status-failed hover:bg-status-failed/10 disabled:cursor-not-allowed disabled:opacity-60" onClick={onRetry}>
             <RefreshCw className="h-3.5 w-3.5" />

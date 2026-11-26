@@ -84,6 +84,7 @@ func enqueueGeneratedTitleForSession(
 	session state.PlanningSession,
 	source titleTriggerSource,
 	startRecovered bool,
+	sourceOperationID string,
 ) (state.PlanningSession, *state.PlanningOperation, bool, error) {
 	if !generatedTitleEligibleSession(session) {
 		return session, nil, false, nil
@@ -99,12 +100,13 @@ func enqueueGeneratedTitleForSession(
 		return state.PlanningSession{}, nil, false, fmt.Errorf("marshal generate title request: %w", err)
 	}
 	operationRequest := state.CreatePlanningOperationRequest{
-		OperationID:        operationID,
-		PlanningSessionID:  session.PlanningSessionID,
-		Type:               state.PlanningOperationTypeGenerateTitle,
-		Status:             state.PlanningOperationStatusQueued,
-		RequestPayloadJSON: string(requestJSON),
-		CreatedAt:          now,
+		OperationID:                     operationID,
+		ModelSelectionSourceOperationID: sourceOperationID,
+		PlanningSessionID:               session.PlanningSessionID,
+		Type:                            state.PlanningOperationTypeGenerateTitle,
+		Status:                          state.PlanningOperationStatusQueued,
+		RequestPayloadJSON:              string(requestJSON),
+		CreatedAt:                       now,
 	}
 	initialEvent := plannerAcpRunCreatedEvent(operationID, session.PlanningSessionID, state.PlanningOperationTypeGenerateTitle, titleRequest, now)
 	bundle := state.CreatePlanningGenerateTitleBundleRequest{
@@ -149,6 +151,7 @@ func maybeAutoGenerateTitleAfterSecondUserMessage(
 	deps runtimeDeps,
 	runner *operationRunner,
 	planningSessionID string,
+	sourceOperationID string,
 	source titleTriggerSource,
 ) (*state.PlanningSession, error) {
 	session, ok, err := deps.store.GetSession(ctx, planningSessionID)
@@ -165,7 +168,7 @@ func maybeAutoGenerateTitleAfterSecondUserMessage(
 	if !eligible {
 		return nil, nil
 	}
-	updated, _, created, err := enqueueGeneratedTitleForSession(ctx, deps, runner, session, source, false)
+	updated, _, created, err := enqueueGeneratedTitleForSession(ctx, deps, runner, session, source, false, sourceOperationID)
 	if err != nil || !created {
 		return nil, err
 	}
@@ -179,6 +182,7 @@ func maybeAutoGenerateTitleForReplyFinalize(
 	session state.PlanningSession,
 	messages state.PlanningMessageSource,
 	request operationRequest,
+	sourceOperationID string,
 	source titleTriggerSource,
 ) (*state.PlanningSession, error) {
 	if !request.ForceNewSession {
@@ -194,7 +198,7 @@ func maybeAutoGenerateTitleForReplyFinalize(
 	if !generatedTitleEligibleUserCount(count) {
 		return nil, nil
 	}
-	updated, _, created, err := enqueueGeneratedTitleForSession(ctx, deps, runner, session, source, false)
+	updated, _, created, err := enqueueGeneratedTitleForSession(ctx, deps, runner, session, source, false, sourceOperationID)
 	if err != nil || !created {
 		return nil, err
 	}
@@ -214,7 +218,11 @@ func maybeAutoGenerateTitleForRecoveryCatchup(
 	if !eligible {
 		return nil, nil
 	}
-	updated, _, created, err := enqueueGeneratedTitleForSession(ctx, deps, runner, session, titleTriggerSourceRecoveryCatchup, true)
+	sourceOperationID, found, err := deps.store.AutomaticTitleSourceOperation(ctx, session.PlanningSessionID)
+	if err != nil || !found {
+		return nil, err
+	}
+	updated, _, created, err := enqueueGeneratedTitleForSession(ctx, deps, runner, session, titleTriggerSourceRecoveryCatchup, true, sourceOperationID)
 	if err != nil || !created {
 		return nil, err
 	}

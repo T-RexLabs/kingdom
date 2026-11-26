@@ -31,6 +31,7 @@ import (
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/execution/access"
 	"kingdom/internal/external"
 	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/planning"
@@ -52,17 +53,22 @@ const (
 var generatedIDCounter uint64
 
 type ServerConfig struct {
+	HostedSelection *HostedSelectionConfig
+	LocalSelection  *LocalSelectionConfig
 	// ThemeStore is owned by the runtime that constructs the API server.
-	ThemeStore                 *theme.Store
-	DB                         *sql.DB
-	StartupContext             context.Context
+	ThemeStore     *theme.Store
+	DB             *sql.DB
+	StartupContext context.Context
+	// LifetimeContext owns serving and background work after construction.
+	// A completed startup context must not revoke an admitted browser session.
+	LifetimeContext            context.Context
 	BasePath                   string
-	ArtifactDownloadURL        string
+	PublicAPIBase              string
 	AutonomousApprovalsDefault *bool
 	ProviderEngine             string
-	// ProviderService runs planner requests. It is shared with run execution and
-	// model discovery, and is closed by the process that created it.
-	ProviderService          *opencode.Service
+	// ProviderService runs planner requests and is shared with run execution.
+	// The assembly owns its lifecycle; model discovery is injected separately.
+	ProviderService          opencode.Provider
 	ProviderModelCatalog     ProviderModelCatalog
 	ProviderPolicyPath       string
 	ProviderPolicySchemaPath string
@@ -84,15 +90,23 @@ type ServerConfig struct {
 	// OperatorCredential is the local bearer credential read from a protected
 	// file by the process entrypoint. It is never persisted by the API.
 	OperatorCredential []byte
+	// Authenticator enables trusted hosted authentication instead of local
+	// operator authentication. It must be bound to this project's identity.
+	// It cannot be combined with OperatorCredential.
+	Authenticator Authenticator
 }
 
 type Server struct {
+	resumeUnavailableReason    string
+	resumeSourceBackend        func(context.Context, string, string) (providerexecution.Backend, error)
+	hostedSelection            *HostedSelectionConfig
+	localSelection             *LocalSelectionConfig
 	themes                     *theme.Store
 	db                         *sql.DB
 	now                        func() time.Time
 	idGenerator                func(prefix string) string
 	basePath                   string
-	artifactDownloadURL        string
+	publicAPIBase              string
 	autonomousApprovalsDefault bool
 	providerEngine             string
 	providerModelCatalog       ProviderModelCatalog
@@ -122,6 +136,7 @@ type Server struct {
 	workflowCompiler        *workflow.Compiler
 	cursors                 *cursorSigner
 	auth                    *authManager
+	authenticator           Authenticator
 	// handler is the fully composed http handler tree (mux + middleware).
 	// We keep it on Server so *Server itself can satisfy http.Handler and
 	// callers can hold a single object that owns both serving and
@@ -207,8 +222,17 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	if startupCtx == nil {
 		startupCtx = context.Background()
 	}
-	lifecycleCtx, lifecycleCancel := context.WithCancel(startupCtx)
-	startupCtx = lifecycleCtx
+	lifetimeCtx := cfg.LifetimeContext
+	if lifetimeCtx == nil {
+		lifetimeCtx = context.Background()
+	}
+	if err := startupCtx.Err(); err != nil {
+		return nil, err
+	}
+	if err := lifetimeCtx.Err(); err != nil {
+		return nil, err
+	}
+	lifecycleCtx, lifecycleCancel := context.WithCancel(lifetimeCtx)
 	lifecycleTransferred := false
 	defer func() {
 		if !lifecycleTransferred {
@@ -233,11 +257,13 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		}
 	}
 
-	artifactDownloadURL := strings.TrimSpace(cfg.ArtifactDownloadURL)
-	if artifactDownloadURL == "" {
-		artifactDownloadURL = basePath + "/artifacts"
+	publicAPIBase := basePath
+	if cfg.PublicAPIBase != "" {
+		publicAPIBase, err = ValidateBasePath(cfg.PublicAPIBase)
+		if err != nil || publicAPIBase != cfg.PublicAPIBase {
+			return nil, fmt.Errorf("public API base must be an exact canonical same-origin path")
+		}
 	}
-	artifactDownloadURL = strings.TrimSuffix(artifactDownloadURL, "/")
 
 	autonomousApprovalsDefault := true
 	if cfg.AutonomousApprovalsDefault != nil {
@@ -273,15 +299,39 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 
 	workflowParser := workflow.NewParser(state.CanonicalRoleIDs())
 	workflowCompiler := workflow.NewCompiler(schemaSet, workflowParser)
-	planningStore := state.NewPlanningStore(cfg.DB)
+	if err := validateHostedSelectionConfig(startupCtx, cfg.DB, cfg); err != nil {
+		return nil, err
+	}
+	if err := validateLocalSelectionConfig(startupCtx, cfg.DB, cfg); err != nil {
+		return nil, err
+	}
+	var planningOptions []state.PlanningStoreOption
+	if cfg.HostedSelection != nil {
+		planningOptions = append(planningOptions, state.WithPlanningAccessResolver(func(ctx context.Context, raw string) (access.Snapshot, error) {
+			return resolveHostedSelection(ctx, cfg.HostedSelection, raw)
+		}))
+	}
+	if cfg.LocalSelection != nil {
+		planningOptions = append(planningOptions, state.WithPlanningAccessResolver(func(ctx context.Context, raw string) (access.Snapshot, error) {
+			return resolveLocalSelection(ctx, cfg.LocalSelection, raw)
+		}))
+	}
+	planningStore := state.NewPlanningStore(cfg.DB, planningOptions...)
 
 	cursorSigner, err := newCursorSigner()
 	if err != nil {
 		return nil, err
 	}
-	auth, err := newAuthManager(cfg.OperatorCredential, now)
-	if err != nil {
-		return nil, fmt.Errorf("initialize local authentication: %w", err)
+	var auth *authManager
+	if cfg.Authenticator != nil {
+		if len(cfg.OperatorCredential) != 0 {
+			return nil, fmt.Errorf("hosted authenticator cannot be combined with local operator credentials")
+		}
+	} else {
+		auth, err = newAuthManager(cfg.OperatorCredential, now)
+		if err != nil {
+			return nil, fmt.Errorf("initialize local authentication: %w", err)
+		}
 	}
 
 	projectRoot := strings.TrimSpace(cfg.ProjectRoot)
@@ -354,12 +404,16 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	}
 
 	s := &Server{
+		resumeUnavailableReason:    providerResumeUnavailableReason(cfg),
+		resumeSourceBackend:        providerResumeSourceBackend(cfg),
+		hostedSelection:            cfg.HostedSelection,
+		localSelection:             cfg.LocalSelection,
 		themes:                     cfg.ThemeStore,
 		db:                         cfg.DB,
 		now:                        now,
 		idGenerator:                idGenerator,
 		basePath:                   basePath,
-		artifactDownloadURL:        artifactDownloadURL,
+		publicAPIBase:              publicAPIBase,
 		eventIngestor:              state.NewAttemptEventIngestor(cfg.DB, schemaSet).WithRoleCommunicationPolicy(roleCommPolicy),
 		transitionService:          state.NewTransitionService(cfg.DB, schemaSet).WithRoleCommunicationPolicy(roleCommPolicy),
 		artifactService:            state.NewArtifactService(cfg.DB),
@@ -387,6 +441,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		lifecycleCancel:            lifecycleCancel,
 		cursors:                    cursorSigner,
 		auth:                       auth,
+		authenticator:              cfg.Authenticator,
 	}
 	var plannerAgent planning.Agent
 	if githubKeys != nil || githubUserTokens != nil {

@@ -13,6 +13,7 @@ import (
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
 
@@ -161,4 +162,53 @@ func mustJSON(t *testing.T, value any) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+type resumeBackendProvider struct {
+	opencode.Provider
+	backend providerexecution.Backend
+}
+
+func (p resumeBackendProvider) ExecutionBackend() providerexecution.Backend { return p.backend }
+func TestServerManagedResumeRetainsCheckpointWithoutEnqueue(t *testing.T) {
+	for _, backend := range []providerexecution.Backend{providerexecution.BackendOpenShell, "unknown"} {
+		t.Run(string(backend), func(t *testing.T) {
+			handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProviderService: resumeBackendProvider{backend: backend}})
+			runID, attemptID := seedResumableRun(t, handler, db)
+			plan := getResumePlan(t, handler, runID)
+			if plan.Available || plan.UnavailableReason == nil || !strings.Contains(*plan.UnavailableReason, "Rerun") || len(plan.Steps) != 1 || plan.Steps[0].CheckpointCapturedAt == nil {
+				t.Fatalf("unsafe resume plan: %+v", plan)
+			}
+			res := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/runs/" + runID + "/resume", idempotencyKey: "resume-managed", body: map[string]any{"reason": "continue", "steps": []any{map[string]any{"node_id": "kickoff", "source_attempt_id": attemptID}}}})
+			if res.Code != http.StatusConflict || resumeAttemptCount(t, db, runID) != 0 {
+				t.Fatalf("resume mutated managed run: %d %s", res.Code, res.Body.String())
+			}
+			if after := getResumePlan(t, handler, runID); len(after.Steps) != 1 || after.Steps[0].CheckpointCapturedAt == nil {
+				t.Fatal("checkpoint lost")
+			}
+		})
+	}
+}
+
+type scopedResumeBackend struct {
+	resumeBackendProvider
+	source providerexecution.Backend
+}
+
+func (p scopedResumeBackend) SourceBackend(context.Context, string, string) (providerexecution.Backend, error) {
+	return p.source, nil
+}
+func TestResumeUsesRetainedRunBackendAfterDefaultSwitch(t *testing.T) {
+	for _, source := range []providerexecution.Backend{providerexecution.BackendLocal, providerexecution.BackendOpenShell} {
+		selected := providerexecution.BackendLocal
+		if source == selected {
+			selected = providerexecution.BackendOpenShell
+		}
+		handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProviderService: scopedResumeBackend{resumeBackendProvider: resumeBackendProvider{backend: selected}, source: source}})
+		runID, _ := seedResumableRun(t, handler, db)
+		plan := getResumePlan(t, handler, runID)
+		if plan.Available != (source == providerexecution.BackendLocal) {
+			t.Fatalf("default %s overrode source %s: %+v", selected, source, plan)
+		}
+	}
 }

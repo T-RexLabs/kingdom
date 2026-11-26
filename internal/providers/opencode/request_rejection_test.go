@@ -16,7 +16,19 @@ import (
 	"kingdom/internal/execution/providerrequest"
 )
 
-func TestRejectedRequestRetainsUnverifiedDiagnostics(t *testing.T) {
+func TestRequestLifecycleRetainsVerifiedEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name                            string
+		reject, failClosure, failExport bool
+	}{
+		{name: "rejected", reject: true}, {name: "rejected_unclosed", reject: true, failClosure: true},
+		{name: "success"}, {name: "success_unclosed", failClosure: true}, {name: "export_failed", failExport: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testRequestLifecycle(t, tc.reject, tc.failClosure, tc.failExport) })
+	}
+}
+
+func testRequestLifecycle(t *testing.T, reject, failClosure, failExport bool) {
 	h := newOwnerFixture(t, t.TempDir())
 	var fixture struct {
 		Identity  providerexecution.RequestIdentity `json:"identity"`
@@ -35,7 +47,7 @@ func TestRejectedRequestRetainsUnverifiedDiagnostics(t *testing.T) {
 	// A mismatched projected finish must fail verification without losing
 	// either the events or the rejected projection.
 	for _, message := range fixture.Messages {
-		if message["type"] == "assistant" {
+		if reject && message["type"] == "assistant" {
 			message["finish"] = "length"
 		}
 	}
@@ -75,13 +87,72 @@ func TestRejectedRequestRetainsUnverifiedDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := &execution{
-		service: &Service{requests: &requestRuntime{authority: authority, commands: newCommandBridge(authority, nil, nil), outboxDir: t.TempDir(), settleLimit: time.Second}},
-		request: &request{identity: fixture.Identity, directory: h.workspace, started: &serviceStart{client: client, capture: c}},
+		runtime: (&requestRuntime{authority: authority, commands: newCommandBridge(authority, nil, nil), outboxDir: t.TempDir(), settleLimit: time.Second}).executionRuntime(),
+		request: &request{identity: fixture.Identity, directory: h.workspace, started: &requestSession{client: client, capture: c}},
 		req:     ExecuteRequest{InvocationID: "invocation"},
 	}
+	closed, exported := false, false
+	exportFailure := errors.New("workspace export failed")
+	closureFailure := errors.New("server closure remains unproven")
+	e.runtime.lifecycle = testExecutionLifecycle{closeFn: func(ctx context.Context) error {
+		var recorded int
+		if err := h.db.QueryRowContext(ctx, `SELECT count(*) FROM provider_requests WHERE terminal_sha256 IS NOT NULL`).Scan(&recorded); err != nil {
+			t.Fatal(err)
+		}
+		if recorded != 0 {
+			t.Fatal("abandonment preceded backend closure")
+		}
+		closed = true
+		if failClosure {
+			return closureFailure
+		}
+		return nil
+	}, exportFn: func(context.Context) error {
+		if !closed {
+			t.Fatal("workspace exported before closure")
+		}
+		exported = true
+		if failExport {
+			return exportFailure
+		}
+		return nil
+	}}
 	response, err := e.finalize(context.Background(), "now")
+	if !closed {
+		t.Fatal("request skipped backend closure")
+	}
+	if failClosure {
+		if !errors.Is(err, closureFailure) {
+			t.Fatalf("closure failure lost: %v", err)
+		}
+		if response.StreamObservation.Request != nil {
+			t.Fatal("unclosed resources produced terminal evidence")
+		}
+		if response.StreamObservation.ReleaseContent != nil {
+			_ = response.StreamObservation.ReleaseContent()
+		}
+		return
+	}
+	if !reject && !failExport {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !exported || response.Outcome.State != "success" || response.StreamObservation.Request == nil {
+			t.Fatal("verified success lost export or terminal")
+		}
+		if response.StreamObservation.ReleaseContent != nil {
+			_ = response.StreamObservation.ReleaseContent()
+		}
+		return
+	}
+	if failExport && (!exported || !errors.Is(err, exportFailure)) {
+		t.Fatalf("export failure lost: %v", err)
+	}
+	if reject && exported {
+		t.Fatal("rejected projection exported workspace")
+	}
 	if err == nil {
-		t.Fatal("conflicting projection was accepted")
+		t.Fatal("conflicting projection or export was accepted")
 	}
 	var protocolErr *ProtocolError
 	if !errors.As(err, &protocolErr) {
@@ -123,3 +194,18 @@ func TestRejectedRequestRetainsUnverifiedDiagnostics(t *testing.T) {
 		}
 	}
 }
+
+// Tests install effects without replacing the protocol verifier or authority.
+type testExecutionLifecycle struct {
+	closeFn  func(context.Context) error
+	exportFn func(context.Context) error
+}
+
+func (l testExecutionLifecycle) close(ctx context.Context) error { return l.closeFn(ctx) }
+func (l testExecutionLifecycle) export(ctx context.Context) error {
+	if l.exportFn != nil {
+		return l.exportFn(ctx)
+	}
+	return nil
+}
+func (testExecutionLifecycle) retire(context.Context, *execution) error { return nil }

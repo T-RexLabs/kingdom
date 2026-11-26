@@ -3335,9 +3335,14 @@ components:
           maxLength: 8000
           description: Null inherits the canonical role default; a string is an explicit override, including an empty string.
         voice_override:
-          allOf:
-            - $ref: "#/components/schemas/AgentVoiceSelection"
+          type: object
           nullable: true
+          oneOf:
+            - $ref: "#/components/schemas/AgentVoiceSelection"
+            - type: object
+              nullable: true
+              enum: [null]
+          x-go-type: AgentVoiceSelection
           description: Explicit role communication style, or null to inherit the workspace style.
     ResetAgentRoleGuidanceRequest:
       type: object
@@ -4842,6 +4847,23 @@ components:
           type: string
           minLength: 1
 
+    ModelConnectionReference:
+      type: object
+      additionalProperties: false
+      required: [id, revision]
+      description: Exact hosted connection revision. Accepted only by a project-bound hosted API with a trusted selection resolver; hosted runtime activation is not yet available. Not accepted in local mode.
+      example:
+        id: "2d53972c-7a93-46f4-9ef1-8d23f4ca760b"
+        revision: 3
+      properties:
+        id:
+          type: string
+          format: uuid
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+
     PlanningAgentModelSelection:
       type: object
       additionalProperties: false
@@ -4850,6 +4872,8 @@ components:
         model:
           type: string
           minLength: 1
+        connection:
+          $ref: "#/components/schemas/ModelConnectionReference"
         thinking_effort:
           type: string
 
@@ -5542,6 +5566,8 @@ components:
         model:
           type: string
           minLength: 1
+        connection:
+          $ref: "#/components/schemas/ModelConnectionReference"
         thinking_effort:
           type: string
           minLength: 1

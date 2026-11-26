@@ -13,6 +13,8 @@ import { isRunsStateFilter, type RunsStateFilter } from "@/lib/run-filters";
 import { validateWorkOrderNewSearch } from "@/features/work-orders/work-order-route-search";
 import { GITHUB_SETUP_RETURN_PATH } from "@/features/connections/github-setup-return-path";
 
+import { appBase } from "@/lib/runtime-mode";
+
 const rootRoute = createRootRoute({
   component: RootLayout,
   notFoundComponent: NotFoundPage,
@@ -182,6 +184,7 @@ const routeTree = rootRoute.addChildren([
 
 export const router = createRouter({
   routeTree,
+  basepath: appBase(),
   defaultPendingComponent: () => (
     <div className="flex h-64 items-center justify-center">
       <div className="h-8 w-8 animate-spin rounded-full border-2 border-accent border-t-transparent" />

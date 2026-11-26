@@ -1,0 +1,20 @@
+# Use an allowlist so local workspaces, databases, and credentials never enter
+# the build context. Keep the frontend lockfile and bundled runtime assets.
+**
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!contracts/
+!contracts/**
+!web/
+!web/**
+web/node_modules
+web/dist
+web/*.tsbuildinfo
+!deploy/
+!deploy/central/
+!deploy/central/Dockerfile
+!deploy/central/Dockerfile.worker

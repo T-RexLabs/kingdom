@@ -214,7 +214,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	if operationType == state.PlanningOperationTypeReply && !request.ForceNewSession {
 		autoCtx, cancel := boundedAutoTitleContext(ctx)
 		defer cancel()
-		if _, autoErr := maybeAutoGenerateTitleAfterSecondUserMessage(autoCtx, s.deps, s.runner, planningSessionID, titleTriggerSourceAutoSecondUserMessageCreate); autoErr != nil {
+		if _, autoErr := maybeAutoGenerateTitleAfterSecondUserMessage(autoCtx, s.deps, s.runner, planningSessionID, operation.OperationID, titleTriggerSourceAutoSecondUserMessageCreate); autoErr != nil {
 			log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceAutoSecondUserMessageCreate, planningSessionID, autoErr)
 		}
 	}
@@ -308,6 +308,8 @@ func planningOperationMatchesCreate(operation state.PlanningOperation, expected 
 		operation.PlanningSessionID != strings.TrimSpace(expected.PlanningSessionID) ||
 		operation.Type != expected.Type ||
 		operation.RequestPayloadJSON != strings.TrimSpace(expected.RequestPayloadJSON) ||
+		operation.ModelSelectionSourceOperationID != strings.TrimSpace(expected.ModelSelectionSourceOperationID) ||
+		strings.TrimSpace(operation.ModelSelectionJSON) == "" ||
 		operation.CreatedAt != strings.TrimSpace(expected.CreatedAt) ||
 		operation.PlanningContextSnapshotID == nil || strings.TrimSpace(*operation.PlanningContextSnapshotID) == "" {
 		return false

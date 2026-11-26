@@ -814,3 +814,14 @@ func createTempAt(parentFD int) (string, *os.File, error) {
 	}
 	return "", nil, fmt.Errorf("could not allocate a unique secure temporary file")
 }
+
+func rootDirectoryIdentity(r *Root) (FileIdentity, error) {
+	var stat unix.Stat_t
+	if r == nil || r.fd < 0 {
+		return FileIdentity{}, ErrIdentityMismatch
+	}
+	if err := unix.Fstat(r.fd, &stat); err != nil {
+		return FileIdentity{}, err
+	}
+	return fileIdentity(stat), nil
+}

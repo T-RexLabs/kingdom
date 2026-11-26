@@ -16,6 +16,9 @@ func (s *Server) handleGetWorkspaceCapabilities(w http.ResponseWriter, _ *http.R
 		GitRepo:              topology.IsGitRepo,
 		GitWorktreeAvailable: topology.WorktreeAvailable,
 	}
+	if s.authenticator != nil {
+		response.ProjectRoot = ""
+	}
 	if reason := strings.TrimSpace(topology.FailureReason); reason != "" {
 		response.GitWorktreeReason = &reason
 	}

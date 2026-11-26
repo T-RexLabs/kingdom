@@ -1,0 +1,348 @@
+package modelproxy
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"kingdom/internal/central/capability"
+	"mime"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+func (b *Broker) Handler() http.Handler { return b }
+func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	deny := func(code int) { http.Error(w, "Model request unavailable.", code) }
+	if r.TLS == nil {
+		deny(http.StatusBadRequest)
+		return
+	}
+	if r.Method != http.MethodPost || (r.URL.Path != "/v1/responses" && r.URL.Path != "/v1/chat/completions" && r.URL.Path != "/v1/messages") || r.URL.RawQuery != "" || r.URL.RawPath != "" {
+		deny(http.StatusNotFound)
+		return
+	}
+	auth := r.Header.Values("Authorization")
+	if len(auth) != 1 || !strings.HasPrefix(auth[0], "Bearer ") || len(auth[0]) != 50 {
+		deny(http.StatusUnauthorized)
+		return
+	}
+	b.mu.Lock()
+	closing := b.closing
+	b.mu.Unlock()
+	if closing {
+		deny(http.StatusServiceUnavailable)
+		return
+	}
+	admission, e := b.cfg.Registry.Begin(r.Context(), strings.TrimPrefix(auth[0], "Bearer "), capability.Model, capability.ModeNew)
+	if e != nil {
+		deny(http.StatusUnauthorized)
+		return
+	}
+	defer admission.Done()
+	ctx, cancel := context.WithTimeout(admission.Context, b.cfg.RequestTimeout)
+	defer cancel()
+	controller := http.NewResponseController(w)
+	deadline, _ := ctx.Deadline()
+	_ = controller.SetReadDeadline(deadline)
+	_ = controller.SetWriteDeadline(deadline)
+	// Revocation must also interrupt blocked client reads/writes. The handler
+	// still owns admission until all work returns; unsupported writers keep debt.
+	finished := make(chan struct{})
+	watchDone := make(chan struct{})
+	defer func() { close(finished); <-watchDone }()
+	go func() {
+		defer close(watchDone)
+		select {
+		case <-ctx.Done():
+			_ = controller.SetReadDeadline(time.Now())
+			_ = controller.SetWriteDeadline(time.Now())
+		case <-finished:
+		}
+	}()
+	binding := admission.Pins.Binding
+	binding.Request = &admission.Request
+	if b.cfg.Authorizer.Check(ctx, binding, StageActive) != nil {
+		deny(http.StatusForbidden)
+		return
+	}
+	// Notifications give prompt cancellation. Polling also covers direct catalog
+	// changes and canonical lease loss, within one second plus query latency.
+	authorityDone := make(chan struct{})
+	authorityContext, stopAuthority := context.WithCancel(ctx)
+	defer func() { stopAuthority(); <-authorityDone }()
+	go func() {
+		defer close(authorityDone)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-authorityContext.Done():
+				return
+			case <-ticker.C:
+				if b.cfg.Authorizer.Check(authorityContext, binding, StageActive) != nil {
+					if authorityContext.Err() != nil {
+						return
+					}
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	contentType, _, e := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if e != nil || contentType != "application/json" || r.Header.Get("Content-Encoding") != "" {
+		deny(http.StatusBadRequest)
+		return
+	}
+	body, e := io.ReadAll(io.LimitReader(r.Body, b.cfg.MaxRequestBytes+1))
+	if e != nil || !utf8.Valid(body) || int64(len(body)) > b.cfg.MaxRequestBytes || ctx.Err() != nil {
+		deny(http.StatusBadRequest)
+		return
+	}
+	object, e := uniqueObject(body)
+	if e != nil || object["model"] != admission.Pins.Route.Model {
+		deny(http.StatusBadRequest)
+		return
+	}
+	for _, field := range []string{"base_url", "api_key", "authorization", "headers"} {
+		if _, ok := object[field]; ok {
+			deny(http.StatusBadRequest)
+			return
+		}
+	}
+	route := admission.Pins.Route
+	if b.validateRoute(route) != nil {
+		deny(http.StatusForbidden)
+		return
+	}
+	if !protocolPath(route.Protocol, r.URL.Path) {
+		deny(http.StatusBadRequest)
+		return
+	}
+	if route.Protocol == ProtocolOpenAIChatGPT {
+		body, e = chatGPTRequest(r.URL.Path, object)
+		if e != nil || int64(len(body)) > b.cfg.MaxRequestBytes {
+			deny(http.StatusBadRequest)
+			return
+		}
+	}
+	credential, e := b.cfg.Resolver.Resolve(ctx, binding, route)
+	if e != nil || credential.token == "" || ctx.Err() != nil {
+		deny(http.StatusForbidden)
+		return
+	}
+	// Recheck current authority after credential lookup, immediately before I/O.
+	if b.cfg.Authorizer.Check(ctx, binding, StageActive) != nil || ctx.Err() != nil {
+		deny(http.StatusForbidden)
+		return
+	}
+	endpoint, _ := url.Parse(route.Endpoint)
+	endpoint.Path = strings.TrimSuffix(endpoint.Path, "/") + strings.TrimPrefix(r.URL.Path, "/v1")
+	upstream, e := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if e != nil {
+		deny(http.StatusBadGateway)
+		return
+	}
+	upstream.Header.Set("Content-Type", "application/json")
+	upstream.Header.Set("Accept", "application/json, text/event-stream")
+	// Encoded responses are rejected below. Request the same representation that
+	// the trusted response contract can relay without decoding upstream content.
+	upstream.Header.Set("Accept-Encoding", "identity")
+	upstream.Header.Set("Authorization", "Bearer "+credential.token)
+	if route.Protocol == ProtocolAnthropic {
+		// Protocol headers come from this trusted adapter. Workload headers cannot
+		// enable provider betas or change the upstream API contract.
+		upstream.Header.Set("Anthropic-Version", "2023-06-01")
+	}
+	if credential.copilot {
+		setCopilotHeaders(upstream.Header, admission.Request.SessionID, route.Protocol, object)
+	}
+	response, e := b.transport.RoundTrip(upstream)
+	if e != nil {
+		b.reportFailure(Failure{Phase: PhaseTransport, TransportClass: classifyTransport(e)})
+		deny(http.StatusBadGateway)
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		b.reportFailure(Failure{Phase: PhaseUpstreamStatus, UpstreamStatus: response.StatusCode})
+		deny(http.StatusBadGateway)
+		return
+	}
+	if values := response.Header.Values("Content-Encoding"); len(values) != 0 {
+		encoding := EncodingOther
+		if len(values) == 1 {
+			encoding = classifyEncoding(values[0])
+		}
+		b.reportFailure(Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode, ContractReason: ContractContentEncoding, ContentEncoding: encoding})
+		deny(http.StatusBadGateway)
+		return
+	}
+	var responseBody io.Reader = response.Body
+	rawType := response.Header.Get("Content-Type")
+	responseType, _, e := mime.ParseMediaType(rawType)
+	if e != nil || (responseType != "application/json" && responseType != "text/event-stream") {
+		failure := Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode, ContractReason: ContractMediaType, MediaType: classifyMediaType(rawType)}
+		if route.Protocol == ProtocolOpenAIChatGPT && object["stream"] == true && strings.TrimSpace(rawType) == "" {
+			var shape ResponseShape
+			responseBody, shape, e = chatGPTResponseStream(ctx, response.Body, b.cfg.MaxResponseBytes)
+			if e != nil {
+				if shape == "" {
+					b.reportFailure(Failure{Phase: PhaseTransport, TransportClass: classifyTransport(e)})
+				} else {
+					failure.ResponseShape = shape
+					b.reportFailure(failure)
+				}
+				deny(http.StatusBadGateway)
+				return
+			}
+			responseType = "text/event-stream"
+		} else {
+			b.reportFailure(failure)
+			deny(http.StatusBadGateway)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", responseType)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(response.StatusCode)
+	buffer := make([]byte, 32<<10)
+	remaining := b.cfg.MaxResponseBytes
+	for remaining > 0 {
+		size := int64(len(buffer))
+		if size > remaining {
+			size = remaining
+		}
+		n, readErr := responseBody.Read(buffer[:size])
+		if n > 0 {
+			remaining -= int64(n)
+			if _, e = w.Write(buffer[:n]); e != nil {
+				return
+			}
+			if responseType == "text/event-stream" {
+				if e = controller.Flush(); e != nil {
+					return
+				}
+			}
+		}
+		if readErr == io.EOF && ctx.Err() == nil {
+			return
+		}
+		if readErr != nil || ctx.Err() != nil {
+			if ctx.Err() != nil {
+				readErr = ctx.Err()
+			}
+			b.reportFailure(Failure{Phase: PhaseTransport, TransportClass: classifyTransport(readErr)})
+			panic(http.ErrAbortHandler)
+		}
+	}
+	// One extra byte distinguishes a valid exact-limit response from truncation.
+	var overflow [1]byte
+	n, readErr := io.ReadFull(responseBody, overflow[:])
+	if n != 0 || readErr != io.EOF || ctx.Err() != nil {
+		if ctx.Err() != nil {
+			b.reportFailure(Failure{Phase: PhaseTransport, TransportClass: classifyTransport(ctx.Err())})
+		} else if n == 0 && readErr != nil && readErr != io.EOF {
+			b.reportFailure(Failure{Phase: PhaseTransport, TransportClass: classifyTransport(readErr)})
+		} else {
+			b.reportFailure(Failure{Phase: PhaseResponseContract, UpstreamStatus: response.StatusCode, ContractReason: ContractSizeLimit})
+		}
+		panic(http.ErrAbortHandler)
+	}
+}
+func uniqueObject(raw []byte) (map[string]any, error) {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	value, e := uniqueValue(d, 0)
+	if e != nil {
+		return nil, e
+	}
+	if _, e = d.Token(); e != io.EOF {
+		return nil, ErrDenied
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, ErrDenied
+	}
+	return object, nil
+}
+func uniqueValue(d *json.Decoder, depth int) (any, error) {
+	if depth > 64 {
+		return nil, ErrDenied
+	}
+	token, e := d.Token()
+	if e != nil {
+		return nil, ErrDenied
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return token, nil
+	}
+	switch delimiter {
+	case '{':
+		result := map[string]any{}
+		for d.More() {
+			key, e := d.Token()
+			if e != nil {
+				return nil, ErrDenied
+			}
+			name, ok := key.(string)
+			if !ok {
+				return nil, ErrDenied
+			}
+			if _, exists := result[name]; exists {
+				return nil, ErrDenied
+			}
+			value, e := uniqueValue(d, depth+1)
+			if e != nil {
+				return nil, e
+			}
+			result[name] = value
+		}
+		end, e := d.Token()
+		if e != nil || end != json.Delim('}') {
+			return nil, ErrDenied
+		}
+		return result, nil
+	case '[':
+		result := []any{}
+		for d.More() {
+			value, e := uniqueValue(d, depth+1)
+			if e != nil {
+				return nil, e
+			}
+			result = append(result, value)
+		}
+		end, e := d.Token()
+		if e != nil || end != json.Delim(']') {
+			return nil, ErrDenied
+		}
+		return result, nil
+	default:
+		return nil, ErrDenied
+	}
+}
+
+// protocolPath checks the pinned native API before credential resolution. The
+// compatible API-key route keeps its two existing OpenAI request forms.
+func protocolPath(protocol, requestPath string) bool {
+	switch protocol {
+	case ProtocolOpenAI:
+		return requestPath == "/v1/responses" || requestPath == "/v1/chat/completions"
+	case ProtocolOpenAIChat:
+		return requestPath == "/v1/chat/completions"
+	case ProtocolOpenAIResponses, ProtocolOpenAIChatGPT:
+		return requestPath == "/v1/responses"
+	case ProtocolAnthropic:
+		return requestPath == "/v1/messages"
+	default:
+		return false
+	}
+}

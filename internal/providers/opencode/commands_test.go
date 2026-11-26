@@ -20,7 +20,7 @@ func newTestBridge(t *testing.T, bound *boundRun) (*commandBridge, *[]int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bridge := newCommandBridge(bound.authority, runner, os.Environ())
+	bridge := newCommandBridge(bound.authority, localExecutor{runner: runner}, os.Environ())
 	req := ExecuteRequest{}
 	ordinals := bound.guardianRecorder(&req, bound.attempt, bound.invoke)
 	if err := bridge.register(bound.identity, &commandRegistration{workspace: bound.workspace, ownership: req.OnCommandGuardianOwnership, quiescence: req.OnCommandGuardianQuiescence}); err != nil {

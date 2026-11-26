@@ -1043,3 +1043,10 @@ func windowsEntryType(mode fs.FileMode) EntryType {
 	}
 	return EntryTypeOther
 }
+
+func rootDirectoryIdentity(r *Root) (FileIdentity, error) {
+	if r == nil || r.rootFile == nil {
+		return FileIdentity{}, ErrIdentityMismatch
+	}
+	return windowsFileIdentity(r.rootFile)
+}

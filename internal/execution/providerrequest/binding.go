@@ -29,6 +29,8 @@ type Lease struct {
 }
 type Binding struct {
 	ID                string
+	Backend           providerexecution.Backend
+	RemoteAllocation  int64
 	Identity          providerexecution.RequestIdentity
 	Owner             Owner
 	Lease             Lease
@@ -90,7 +92,7 @@ func OpenReasonOf(err error) (OpenReason, bool) {
 // operator cancellation, got to first, or that was already issued.
 var ErrDispatchClosed = errors.New("provider dispatch is closed or already issued")
 
-const selectBinding = `SELECT binding_id,run_invocation_id,planning_invocation_id,instance_id,generation,location,provider_session_id,profile_id,request_id,logical_session_id,lease_owner,lease_version,COALESCE(dispatch_issued_at,''),COALESCE(admission_closed_at,''),terminal_sha256,terminal_size_bytes FROM provider_requests`
+const selectBinding = `SELECT binding_id,run_invocation_id,planning_invocation_id,instance_id,generation,location,provider_session_id,profile_id,request_id,logical_session_id,lease_owner,lease_version,COALESCE(dispatch_issued_at,''),COALESCE(admission_closed_at,''),terminal_sha256,terminal_size_bytes,execution_backend,COALESCE(remote_allocation,0) FROM provider_requests`
 
 func Get(ctx context.Context, q Reader, id string) (Binding, error) {
 	return scanBinding(q.QueryRowContext(ctx, selectBinding+` WHERE binding_id=?`, id))
@@ -99,7 +101,7 @@ func scanBinding(row *sql.Row) (Binding, error) {
 	var b Binding
 	var run, planning, hash sql.NullString
 	var size sql.NullInt64
-	err := row.Scan(&b.ID, &run, &planning, &b.Identity.InstanceID, &b.Identity.Generation, &b.Identity.Location, &b.Identity.SessionID, &b.Identity.ProfileID, &b.Identity.RequestID, &b.LogicalSessionID, &b.Lease.Owner, &b.Lease.Version, &b.DispatchIssuedAt, &b.AdmissionClosedAt, &hash, &size)
+	err := row.Scan(&b.ID, &run, &planning, &b.Identity.InstanceID, &b.Identity.Generation, &b.Identity.Location, &b.Identity.SessionID, &b.Identity.ProfileID, &b.Identity.RequestID, &b.LogicalSessionID, &b.Lease.Owner, &b.Lease.Version, &b.DispatchIssuedAt, &b.AdmissionClosedAt, &hash, &size, &b.Backend, &b.RemoteAllocation)
 	if err != nil {
 		return b, err
 	}
@@ -117,6 +119,16 @@ func scanBinding(row *sql.Row) (Binding, error) {
 // BindTx must be called in the invocation activation transaction, after that
 // transaction has linked its exact canonical owner and provider session.
 func BindTx(ctx context.Context, tx *sql.Tx, b Binding, now time.Time) error {
+	if b.Backend != "" && b.Backend != providerexecution.BackendLocal || b.RemoteAllocation != 0 {
+		return fmt.Errorf("local provider requires local runtime identity")
+	}
+	b.Backend = providerexecution.BackendLocal
+	if err := requireLocalBinding(ctx, tx, b); err != nil {
+		return err
+	}
+	return bindRequestTx(ctx, tx, b, now)
+}
+func bindRequestTx(ctx context.Context, tx *sql.Tx, b Binding, now time.Time) error {
 	if err := b.Identity.Validate(); err != nil {
 		return err
 	}
@@ -135,7 +147,7 @@ func BindTx(ctx context.Context, tx *sql.Tx, b Binding, now time.Time) error {
 	}
 	old, err := Get(ctx, tx, b.ID)
 	if err == nil {
-		if old.Identity != b.Identity || old.Owner != b.Owner || old.Lease != b.Lease || old.LogicalSessionID != current.logicalSession {
+		if old.Backend != b.Backend || old.RemoteAllocation != b.RemoteAllocation || old.Identity != b.Identity || old.Owner != b.Owner || old.Lease != b.Lease || old.LogicalSessionID != current.logicalSession {
 			return fmt.Errorf("provider binding identity conflict")
 		}
 		return nil
@@ -147,13 +159,16 @@ func BindTx(ctx context.Context, tx *sql.Tx, b Binding, now time.Time) error {
 	if err := requireSessionReusable(ctx, tx, b, current); err != nil {
 		return err
 	}
-	var run, planning any
+	var run, planning, allocation any
+	if b.RemoteAllocation != 0 {
+		allocation = b.RemoteAllocation
+	}
 	if b.Owner.Kind == OwnerRun {
 		run = b.Owner.InvocationID
 	} else {
 		planning = b.Owner.InvocationID
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO provider_requests(binding_id,run_invocation_id,planning_invocation_id,instance_id,generation,location,provider_session_id,profile_id,request_id,logical_session_id,lease_owner,lease_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, b.ID, run, planning, b.Identity.InstanceID, b.Identity.Generation, b.Identity.Location, b.Identity.SessionID, b.Identity.ProfileID, b.Identity.RequestID, b.LogicalSessionID, b.Lease.Owner, b.Lease.Version, now.UTC().Format(time.RFC3339Nano))
+	_, err = tx.ExecContext(ctx, `INSERT INTO provider_requests(binding_id,run_invocation_id,planning_invocation_id,instance_id,generation,location,provider_session_id,profile_id,request_id,logical_session_id,lease_owner,lease_version,created_at,execution_backend,remote_allocation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, b.ID, run, planning, b.Identity.InstanceID, b.Identity.Generation, b.Identity.Location, b.Identity.SessionID, b.Identity.ProfileID, b.Identity.RequestID, b.LogicalSessionID, b.Lease.Owner, b.Lease.Version, now.UTC().Format(time.RFC3339Nano), b.Backend, allocation)
 	return err
 }
 func RequireOwnerTx(ctx context.Context, tx *sql.Tx, id string, lease Lease, now time.Time) error {
@@ -192,7 +207,19 @@ func IssueDispatchTx(ctx context.Context, tx *sql.Tx, id string, identity provid
 		return ErrDispatchClosed
 	}
 	if err := RequireOwnerTx(ctx, tx, id, lease, now); err != nil {
+		if b.Backend == providerexecution.BackendOpenShell {
+			return fmt.Errorf("%w: remote owner unavailable: %v", ErrDispatchClosed, err)
+		}
 		return err
+	}
+	switch b.Backend {
+	case providerexecution.BackendLocal:
+	case providerexecution.BackendOpenShell:
+		if err := requireRemoteDispatchTx(ctx, tx, b); err != nil {
+			return err
+		}
+	default:
+		return ErrDispatchClosed
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE provider_requests SET dispatch_issued_at=? WHERE binding_id=?`, now.UTC().Format(time.RFC3339Nano), id)
 	return err
@@ -215,11 +242,12 @@ func CloseAdmissionTx(ctx context.Context, tx *sql.Tx, id string, identity provi
 	if now.IsZero() {
 		return fmt.Errorf("admission close time is required")
 	}
-	if b.AdmissionClosedAt != "" {
-		return nil
+	if b.AdmissionClosedAt == "" {
+		if _, err = tx.ExecContext(ctx, `UPDATE provider_requests SET admission_closed_at=? WHERE binding_id=?`, now.UTC().Format(time.RFC3339Nano), id); err != nil {
+			return err
+		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE provider_requests SET admission_closed_at=? WHERE binding_id=?`, now.UTC().Format(time.RFC3339Nano), id)
-	return err
+	return CloseOwnerRemoteAdmissionTx(ctx, tx, b.Owner, now.UTC().Format(time.RFC3339Nano))
 }
 
 // ForOwner resolves the one binding attached to an exact canonical invocation.

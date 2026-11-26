@@ -42,7 +42,7 @@ func generateRunWorktreeCleanupOwner() (string, error) {
 	return "cleanup_" + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-// activateProviderInvocationForExecution creates the canonical invocation for a
+// activateProviderInvocationForExecution opens the reserved invocation for a
 // prepared provider request and binds the request's identity to it in the same
 // transaction, so nothing is dispatched before that binding exists.
 func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, sessionID, providerInvocationID string, prepared opencode.Prepared, completionMode executionstore.ProviderCompletionMode, issuedAt string) error {
@@ -50,6 +50,7 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 		return fmt.Errorf("execution store is required for provider invocation activation")
 	}
 	_, err := o.executionStore.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{
+		Backend: prepared.Backend, RemoteRuntime: prepared.RemoteRuntime,
 		RequestIdentity:      prepared.Identity,
 		ProviderInvocationID: providerInvocationID,
 		AttemptID:            attemptID,
