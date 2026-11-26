@@ -35,6 +35,26 @@ In this workflow, separate advisor roles consider the request before a planner r
 
 Some steps record a decision or hand the work to the next role. They do not call an LLM. The workflow definition lists every role and step.
 
+## The crew
+
+Each role has one job, and Kingdom's [role policy](../policies/role_policy.yaml) limits what it may do.
+
+| Role | What it does |
+| --- | --- |
+| `operator` | You. You issue Work Orders and, with manual approvals on, approve the plan and the finished work. |
+| `governance` | Approves the plan, asks for rework when needed, and closes the Work Order. |
+| `coordinator` | Combines the advisors' input, settles open questions, and gives the next roles clear direction. |
+| `plan-author` | Turns the Work Order into a plan the builder can follow, broken into steps, and updates it during rework. |
+| `architecture-advisor` | Checks that the request fits the existing design and the way the project already works. |
+| `risk-advisor` | Looks at security, trust boundaries, and what could break if something goes wrong. |
+| `systems-advisor` | Looks at performance, scale, resource use, and maintainability. |
+| `usability-advisor` | Looks at how easy the result will be to use, run, and support. |
+| `builder` | Makes the changes the approved plan describes. |
+| `reviewer` | Checks the builder's changes against the Work Order and the plan before validation starts. |
+| `qa-validator` | Checks that the result works and that tests cover what was asked. |
+| `security-validator` | Checks the result for security problems. |
+| `resilience-validator` | Checks how the result handles failures and recovery. |
+
 ## Decide how much to oversee
 
 With `governance.autonomous_approvals: true`, Kingdom approves the plan and final result automatically. Set it to `false` to pause at both gates so you can approve or ask for changes.
