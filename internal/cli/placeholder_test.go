@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -924,6 +925,28 @@ func TestExecuteInitCreatesScaffold(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "initialized kingdom scaffold") {
 		t.Fatalf("expected scaffold output, got %q", stdout.String())
+	}
+}
+
+func TestExecuteInitKeepsKingdomHomeOutOfGit(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if output, err := exec.Command("git", "init", "--quiet", root).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+
+	stderr := &bytes.Buffer{}
+	if code := Execute(context.Background(), &bytes.Buffer{}, stderr, []string{"init", "--path", root}); code != ExitSuccess {
+		t.Fatalf("expected init success, got %d stderr=%q", code, stderr.String())
+	}
+
+	output, err := exec.Command("git", "-C", root, "status", "--porcelain", "--untracked-files=all").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status: %v: %s", err, output)
+	}
+	if len(output) != 0 {
+		t.Fatalf("expected .kingdom to be ignored by Git, got untracked files:\n%s", output)
 	}
 }
 
