@@ -22,6 +22,11 @@ const (
 	schemaDirName    = "schemas"
 	workflowDirName  = "workflows"
 	migrationDirName = "migrations"
+
+	// The Kingdom home holds local secrets, the database, and logs, so it
+	// ignores itself and never ends up in the project's Git history.
+	gitIgnoreFileName = ".gitignore"
+	gitIgnoreContent  = "# Created by Kingdom. This folder holds local secrets and run data.\n*\n"
 )
 
 var canonicalAssetDirs = map[string]string{
@@ -45,6 +50,9 @@ func WriteScaffold(root string, force bool) error {
 		return fmt.Errorf("create scaffold root: %w", err)
 	}
 
+	if err := writeScaffoldFile(filepath.Join(targetRoot, gitIgnoreFileName), []byte(gitIgnoreContent), force); err != nil {
+		return err
+	}
 	if err := writeDir("files/policies", canonicalAssetDirs["files/policies"], filepath.Join(targetRoot, policyDirName), force); err != nil {
 		return err
 	}
@@ -119,17 +127,8 @@ func writeDir(sourceDir string, canonicalDir string, targetDir string, force boo
 			return fmt.Errorf("read asset file %q: %w", filepath.Join(sourceDir, name), readErr)
 		}
 
-		targetPath := filepath.Join(targetDir, name)
-		if !force {
-			if _, statErr := os.Stat(targetPath); statErr == nil {
-				continue
-			} else if !os.IsNotExist(statErr) {
-				return fmt.Errorf("stat target %q: %w", targetPath, statErr)
-			}
-		}
-
-		if writeErr := os.WriteFile(targetPath, content, 0o644); writeErr != nil {
-			return fmt.Errorf("write target %q: %w", targetPath, writeErr)
+		if err := writeScaffoldFile(filepath.Join(targetDir, name), content, force); err != nil {
+			return err
 		}
 	}
 
@@ -151,20 +150,28 @@ func writeMigrations(targetDir string, force bool) error {
 			return fmt.Errorf("read migration asset %q: %w", name, err)
 		}
 
-		targetPath := filepath.Join(targetDir, name)
-		if !force {
-			if _, statErr := os.Stat(targetPath); statErr == nil {
-				continue
-			} else if !os.IsNotExist(statErr) {
-				return fmt.Errorf("stat target %q: %w", targetPath, statErr)
-			}
-		}
-
-		if err := os.WriteFile(targetPath, content, 0o644); err != nil {
-			return fmt.Errorf("write target %q: %w", targetPath, err)
+		if err := writeScaffoldFile(filepath.Join(targetDir, name), content, force); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+// writeScaffoldFile keeps an existing file, which may hold the operator's
+// edits, unless force is set.
+func writeScaffoldFile(targetPath string, content []byte, force bool) error {
+	if !force {
+		if _, err := os.Stat(targetPath); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat target %q: %w", targetPath, err)
+		}
+	}
+
+	if err := os.WriteFile(targetPath, content, 0o644); err != nil {
+		return fmt.Errorf("write target %q: %w", targetPath, err)
+	}
 	return nil
 }
 

@@ -89,6 +89,8 @@ A step stays blocked only when Kingdom cannot prove what it left running: an old
 
 Do not put secrets in this file. GitHub private keys, OAuth tokens, installation tokens, and the local operator token are stored under `.kingdom/secrets/`. The database stores opaque credential handles.
 
+`kd init` adds a `.gitignore` inside `.kingdom/`, so Git ignores the whole folder and your secrets, database, and logs stay out of your repository. Leave that file in place.
+
 ## Related Guides
 
 For commands and the operator workflow, see the [README](../README.md). For GitHub setup and credential handling, see the [GitHub connections guide](github-connections-runbook.md). The [system architecture](system-architecture.md) explains behavior that configuration does not change.
