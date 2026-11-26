@@ -53,25 +53,46 @@ With `publish.mode: direct`, Kingdom works against the project and publishes cha
 
 ## When a run stops
 
-Kingdom may retry some failures automatically, based on the canonical rules in `policies/retry_policy.yaml`. It does not retry every error, and observed work can make an automatic retry unsafe. The run activity shows the decision and its reason.
+Kingdom retries some failures on its own. [`policies/retry_policy.yaml`](../policies/retry_policy.yaml) lists which ones, and the run's activity shows each retry and why it happened. Kingdom doesn't retry a step that may already have changed something, because doing it again could repeat that work.
 
-`provider_protocol_error` means Kingdom could not verify an OpenCode reply. The request fails with its rejected event and message snapshots retained as diagnostic content, separate from accepted response evidence. This is an adapter verification failure, not a provider usage or authentication error, and it does not retry automatically. Inspect the operation or attempt’s failure and invocation diagnostic content before retrying; a completed provider reply alone cannot establish Kingdom success.
+When a run fails or you cancel it, you choose what happens next:
 
-If a provider process may still be running, Kingdom holds the run in a blocked state until it can prove that the process stopped. **Retry Stop** authorizes one more bounded stop request for an eligible blocked attempt. It does not skip the safety checks.
+| Action | Use it when |
+| --- | --- |
+| **Resume** | You want the stopped steps to carry on where they left off. |
+| **Rerun** | You want to start over from a step with a clean copy of your project. |
+| **Retry Stop** | The run shows **Recovery Blocked** and you want Kingdom to try stopping a step again. |
 
-Failed and cancelled runs offer **Resume** and **Rerun**.
+Resume and Rerun wait until everything from the earlier attempt has stopped before they start new work. From the command line, use `kd run resume` or `kd node rerun-from`.
 
-**Resume** continues interrupted work from where it stopped. When a provider step fails or is cancelled, Kingdom first proves its request, tools, and commands have stopped, then saves a checkpoint: the conversation so far and the step's partial files. This happens before the trusted workspace is restored. Resume starts a new attempt for every interrupted step on the run's frontier. Each attempt continues its saved conversation with a short continuation message, starting from the saved partial files. Completed upstream steps and their approvals are kept, and the steps that depend on the resumed work are released. Partial files are never trusted output: the resumed attempt is still checked against the original trusted baseline, then goes through the normal review, validation, and publication rules. If it is interrupted again, Kingdom saves a newer checkpoint. A command that was running when work stopped did not complete, and Resume does not restart it.
+### Resume
 
-The server decides which steps Resume covers and shows when each checkpoint was saved. Resume is unavailable, with the reason shown, if any interrupted step has no usable checkpoint. That covers a step that never started, a step that runs inside Kingdom, a review or validation step that works in a private copy, and a run created before Resume existed. Kingdom never turns a Resume into a Rerun on its own.
+Resume picks up each stopped step from a checkpoint: its conversation with the model so far and the files it had changed. Kingdom saves the checkpoint when the step stops. Steps that had already finished, and their approvals, are kept.
 
-If the workspace was edited after the checkpoint, Resume refuses to start rather than overwrite those edits, and the step fails with that reason. A Resume that ends before reaching the provider keeps its checkpoint: undo the edits and choose **Resume** again. Once a resumed attempt reaches the provider, its checkpoint is used, and a later interruption saves a newer one.
+The resumed step's files are treated like any new work. Kingdom compares them with your project's last trusted state, and they go through review and validation as usual. A shell command that was cut off is not run again.
 
-**Rerun** repeats a step and its downstream workflow from the trusted baseline. Both failed and cancelled steps are eligible, including when the run is failed but every interrupted step is cancelled. The dialog selects the earliest interrupted step when there is one clear starting point; parallel interrupted branches require an explicit choice.
+Resume is unavailable, with the reason shown, when a stopped step has no checkpoint. That happens when the step never started, when Kingdom ran it itself rather than a model, when it was a review or validation step, or when the run is older than Resume. Use Rerun instead. Kingdom never switches to Rerun for you.
 
-Both actions wait for provider cancellation, completion projection, attempt settlement, and session leases to close before starting replacement work. From the command line, use `kd run resume` or `kd node rerun-from`. Earlier manual **Retry** records stay in the run history with their original label.
+If you edited the project after the checkpoint was saved, Resume refuses to start so it doesn't overwrite your edits. Undo the edits and choose **Resume** again.
 
-A lost browser connection does not itself stop the runtime. Reconnect and check the current run before restarting work. If Kingdom reports `idempotency_pending` after an interrupted request, continue with the same request key. A new key could repeat an action whose result is still unknown.
+### Rerun
+
+Rerun starts a step over from your project's last trusted state, and every step after it runs again too. Kingdom picks the earliest stopped step when there is one clear choice. If the run stopped in several parallel branches, you pick the step.
+
+### When Kingdom restarts
+
+Restarting Kingdom stops every step that was running. Once Kingdom has confirmed the old processes are gone, it marks those steps as failed, puts the project back to its last trusted state, and applies the usual retry rules. It never sends the same model request twice. After that, the run offers Resume and Rerun like any other failed run.
+
+### Blocked runs
+
+If Kingdom can't confirm that a step has stopped, for example because a shell command may still be running, it holds the run and shows **Recovery Blocked** with the reason. It keeps checking on its own and never guesses what an unfinished change or command did. **Retry Stop** asks Kingdom to try stopping the step once more. It doesn't skip any safety checks.
+
+### Other messages
+
+* **`provider_protocol_error`** means Kingdom couldn't verify a reply from OpenCode, so the step failed. It isn't a sign-in or usage problem, and Kingdom doesn't retry it on its own. The rejected reply is kept in the step's details so you can see what went wrong before you resume or rerun.
+* **Retry Resume** and **Retry Rerun** appear when Kingdom couldn't confirm that your last request went through. They send the same request again, so the work can't start twice. On the command line, `kd` reports `idempotency_pending`; run the same command again with the `--idempotency-key` it printed.
+* Losing the browser connection doesn't stop a run. Reconnect and check the run before you start anything new.
+* Older runs may show **Retry** in their history. Resume and Rerun have replaced it.
 
 ## Other ways to operate
 
