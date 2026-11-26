@@ -1183,7 +1183,7 @@ export function RunDetailPage() {
                       retryExecutionStop.error
                         ? queryErrorMessage(
                             retryExecutionStop.error,
-                            "The stop request could not be retried.",
+                            "Kingdom could not send the stop request. Try again.",
                           )
                         : null
                     }

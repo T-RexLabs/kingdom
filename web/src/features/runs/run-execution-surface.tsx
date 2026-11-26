@@ -200,14 +200,20 @@ export function RunExecutionSurface({
       {!historical &&
         execution?.status === "paused" &&
         execution.stop_retry_available && (
-          <button
-            type="button"
-            disabled={isStopRetryPending}
-            onClick={() => onRetryStop(execution.attempt_id)}
-            className="ui-button ui-button--outline min-h-11 rounded-lg border border-status-blocked/40 px-4 text-sm text-status-blocked"
-          >
-            {isStopRetryPending ? "Retrying stop…" : "Retry Stop"}
-          </button>
+          <div className="space-y-2">
+            <p className="text-xs text-foreground-muted">
+              Kingdom keeps checking on its own. If the step stays paused, you
+              can ask Kingdom to stop it again.
+            </p>
+            <button
+              type="button"
+              disabled={isStopRetryPending}
+              onClick={() => onRetryStop(execution.attempt_id)}
+              className="ui-button ui-button--outline min-h-11 rounded-lg border border-status-blocked/40 px-4 text-sm text-status-blocked"
+            >
+              {isStopRetryPending ? "Stopping…" : "Try Stopping Again"}
+            </button>
+          </div>
         )}
       {stopRetryErrorMessage && (
         <p role="alert" className="text-sm text-status-failed">

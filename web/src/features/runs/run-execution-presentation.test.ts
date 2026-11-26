@@ -18,6 +18,12 @@ describe("run execution presentation", () => {
 		expect(usageLimit).toMatchObject({ heading: "Usage Limit Reached", requiredAction: "Required Action: Restore provider capacity or select another model, then retry this step." });
 	});
 
+	it("explains an unresponsive step that is still being stopped without asking the operator to act", () => {
+		const presentation = presentRunNodeExecution(node({ status: "paused", recovery: { phase: "paused", trigger: "automatic_retry", reason_code: "agent_unresponsive", source_attempt_id: "a", source_node_run_id: "n", retry_index: 1, retry_max: 3, scheduled_at: "2026-03-01T10:00:00Z", last_updated_at: "2026-03-01T10:00:00Z" } }), { status: "paused" });
+		expect(presentation).toMatchObject({ heading: "Step Paused", description: "This step stopped responding. Kingdom is making sure it has fully stopped before starting anything new, so two attempts never change your project at the same time." });
+		expect(presentation.requiredAction).toBeUndefined();
+	});
+
 	it("maps every durable automatic recovery phase to its Phase 9 milestone", () => {
 		const base = { trigger: "automatic_retry" as const, reason_code: "timeout", retry_index: 1, retry_max: 3, scheduled_at: "2026-03-01T10:00:00Z" };
 		expect(["scheduled", "paused", "running", "recovered", "exhausted"].map((phase) => presentRecoveryTimeline({ ...base, phase: phase as "scheduled" | "paused" | "running" | "recovered" | "exhausted" }).label)).toEqual(["Retry Scheduled - Timeout", "Retry Paused - Previous Attempt Still Running", "Retry Started - Attempt 2", "Retry Recovered - Attempt 2", "Retries Exhausted - Timeout"]);
