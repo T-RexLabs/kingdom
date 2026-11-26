@@ -2013,7 +2013,7 @@ func multiInstallationFixture(t *testing.T) (*ExternalStore, context.Context, Ex
 		ConnectionID: "conn-multi", CredentialStrategy: "user_access_token", DisplayName: "Kingdom Issues",
 		AppID: "1", ClientID: "IvShared", AppSlug: "kingdom",
 		Installations: []ConnectionInstallation{
-			{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"},
+			{InstallationID: "10", AccountID: "100", AccountLogin: "monalisa"},
 			{InstallationID: "11", AccountID: "101", AccountLogin: "T-RexLabs"},
 		},
 		CredentialHandle: "github-user:conn-multi", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-multi",
@@ -2062,7 +2062,7 @@ func TestChangingTheCoveredSetKeepsPinnedAccountsAndReleasesTheRest(t *testing.T
 	at := "2026-08-19T11:00:00Z"
 	updated, err := store.SetConnectionInstallations(ctx, connection.ConnectionID, SetConnectionInstallationsRequest{
 		Installations: []ConnectionInstallation{
-			{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"},
+			{InstallationID: "10", AccountID: "100", AccountLogin: "monalisa"},
 			{InstallationID: "12", AccountID: "102", AccountLogin: "third-org"},
 		},
 		ExpectedRowVersion: connection.RowVersion, ActorID: "local-operator", UpdatedAt: at, AuditEventID: "audit-change",
@@ -2079,7 +2079,7 @@ func TestChangingTheCoveredSetKeepsPinnedAccountsAndReleasesTheRest(t *testing.T
 	if updated.RowVersion != connection.RowVersion+1 {
 		t.Fatalf("changed installation set row version=%d, want %d", updated.RowVersion, connection.RowVersion+1)
 	}
-	if updated.Installations[0].AccountID != "100" || updated.Installations[0].AccountLogin != "enkiid" {
+	if updated.Installations[0].AccountID != "100" || updated.Installations[0].AccountLogin != "monalisa" {
 		t.Fatalf("surviving installation lost pinned identity: %#v", updated.Installations[0])
 	}
 	var auditCount int
@@ -2109,7 +2109,7 @@ func TestSettingTheSameNormalizedInstallationSetDoesNotChurnState(t *testing.T) 
 	updated, err := store.SetConnectionInstallations(ctx, connection.ConnectionID, SetConnectionInstallationsRequest{
 		Installations: []ConnectionInstallation{
 			{InstallationID: " 11 ", AccountID: " 101 ", AccountLogin: " T-RexLabs "},
-			{InstallationID: " 10 ", AccountID: " 100 ", AccountLogin: " enkiid "},
+			{InstallationID: " 10 ", AccountID: " 100 ", AccountLogin: " monalisa "},
 		},
 		ExpectedRowVersion: connection.RowVersion, ActorID: "local-operator", UpdatedAt: "2026-08-19T11:00:00Z", AuditEventID: "audit-noop",
 	})
@@ -2153,13 +2153,13 @@ func TestTombstoneReleasesInstallationsButRetainsAccountIdentity(t *testing.T) {
 	readded, err := store.FinalizeConnection(ctx, FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{
 		ConnectionID: "conn-again", CredentialStrategy: "user_access_token", DisplayName: "Again",
 		AppID: "1", ClientID: "IvShared", AppSlug: "kingdom",
-		Installations:    []ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid-renamed"}},
+		Installations:    []ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "monalisa-renamed"}},
 		CredentialHandle: "github-user:conn-again", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-again",
 	}})
 	if err != nil {
 		t.Fatalf("a released installation must be connectable again: %v", err)
 	}
-	if onlyInstallation(t, readded) != (ConnectionInstallation{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid-renamed"}) {
+	if onlyInstallation(t, readded) != (ConnectionInstallation{InstallationID: "10", AccountID: "100", AccountLogin: "monalisa-renamed"}) {
 		t.Fatalf("re-added installation did not retain its account identity: %#v", readded.Installations)
 	}
 }
@@ -2168,7 +2168,7 @@ func TestReauthorizationReprovesTheSetRatherThanAdoptingOne(t *testing.T) {
 	store, ctx, connection := multiInstallationFixture(t)
 	at := "2026-08-19T11:00:00Z"
 	proved := []ConnectionInstallation{
-		{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"},
+		{InstallationID: "10", AccountID: "100", AccountLogin: "monalisa"},
 		{InstallationID: "11", AccountID: "101", AccountLogin: "T-RexLabs-renamed"},
 	}
 	updated, err := store.ReauthorizeSharedConnection(ctx, connection, "kingdom", proved, "local-operator", "audit-reauth", at)

@@ -1857,11 +1857,11 @@ func (a *externalAPITestAdapter) ListInstallations(_ context.Context, _ state.Ex
 }
 
 // twoAccountConnectionFixture is a healthy private-App connection covering
-// @enkiid, with @T-RexLabs available to add.
+// @monalisa, with @T-RexLabs available to add.
 func twoAccountConnectionFixture(t *testing.T, id string) (http.Handler, *state.ExternalStore, *externalAPITestAdapter, state.ExternalConnection) {
 	t.Helper()
 	adapter := &externalAPITestAdapter{installations: []external.Installation{
-		{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid", DisplayName: "enkiid", AppID: "1", ClientID: "Iv1", AppSlug: "app"},
+		{InstallationID: "10", AccountID: "100", AccountLogin: "monalisa", DisplayName: "monalisa", AppID: "1", ClientID: "Iv1", AppSlug: "app"},
 		{InstallationID: "11", AccountID: "101", AccountLogin: "T-RexLabs", DisplayName: "T-RexLabs", AppID: "1", ClientID: "Iv1", AppSlug: "app"},
 	}}
 	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
@@ -1870,7 +1870,7 @@ func twoAccountConnectionFixture(t *testing.T, id string) (http.Handler, *state.
 	if _, err := store.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{
 		ConnectionID: id, CredentialStrategy: "app_private_key", DisplayName: "Kingdom Issues",
 		AppID: "1", ClientID: "Iv1", AppSlug: "app",
-		Installations:    []state.ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"}},
+		Installations:    []state.ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "monalisa"}},
 		CredentialHandle: "github-app:" + id, ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-" + id,
 	}}); err != nil {
 		t.Fatal(err)
@@ -1898,7 +1898,7 @@ func TestInstallationCandidatesFlagWhatTheConnectionAlreadyCovers(t *testing.T) 
 	for _, item := range page.Items {
 		connected[item["account_login"].(string)] = item["connected"]
 	}
-	if len(page.Items) != 2 || connected["enkiid"] != true || connected["T-RexLabs"] != false {
+	if len(page.Items) != 2 || connected["monalisa"] != true || connected["T-RexLabs"] != false {
 		t.Fatalf("candidates=%#v", page.Items)
 	}
 }
@@ -1917,7 +1917,7 @@ func TestChangingInstallationsAddsASecondAccountToOneConnection(t *testing.T) {
 		t.Fatalf("installations=%v, want both accounts on one connection", got)
 	}
 	// The already-pinned account survives the change untouched.
-	if stored.Installations[0].AccountLogin != "enkiid" || stored.Installations[1].AccountLogin != "T-RexLabs" {
+	if stored.Installations[0].AccountLogin != "monalisa" || stored.Installations[1].AccountLogin != "T-RexLabs" {
 		t.Fatalf("accounts=%#v", stored.Installations)
 	}
 	if stored.HealthClass != "never_checked" || stored.ValidatedGeneration != 0 || stored.HasCurrentValidation() {
@@ -1934,7 +1934,7 @@ func TestChangingInstallationsAddsASecondAccountToOneConnection(t *testing.T) {
 			t.Fatalf("%s %s before Check status=%d body=%s", request.method, request.path, response.Code, response.Body.String())
 		}
 	}
-	adapter.validation = []state.ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"}}
+	adapter.validation = []state.ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "monalisa"}}
 	partial := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/connections/conn-add/health-checks", idempotencyKey: "partial-check-after-installation-change"})
 	if partial.Code != http.StatusConflict {
 		t.Fatalf("partial Check status=%d body=%s", partial.Code, partial.Body.String())
@@ -1968,7 +1968,7 @@ func TestChangingInstallationsAddsASecondAccountToOneConnection(t *testing.T) {
 
 func TestSharedInstallationCandidatesAndChangeUseProviderAdapter(t *testing.T) {
 	adapter := &externalAPITestAdapter{installations: []external.Installation{
-		{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid", DisplayName: "enkiid", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom"},
+		{InstallationID: "10", AccountID: "100", AccountLogin: "monalisa", DisplayName: "monalisa", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom"},
 		{InstallationID: "11", AccountID: "101", AccountLogin: "T-RexLabs", DisplayName: "T-RexLabs", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom"},
 	}}
 	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
@@ -1976,7 +1976,7 @@ func TestSharedInstallationCandidatesAndChangeUseProviderAdapter(t *testing.T) {
 	if _, err := store.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{
 		ConnectionID: "conn-shared-change", CredentialStrategy: "user_access_token", DisplayName: "Kingdom Shared App",
 		AppID: "1", ClientID: "IvShared", AppSlug: "kingdom",
-		Installations:    []state.ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"}},
+		Installations:    []state.ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "monalisa"}},
 		CredentialHandle: "github-user:conn-shared-change", ActorID: "local-operator", CreatedAt: "2026-08-19T10:00:00Z", AuditEventID: "audit-shared-change",
 	}}); err != nil {
 		t.Fatal(err)

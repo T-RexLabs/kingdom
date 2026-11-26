@@ -1428,14 +1428,14 @@ func TestDoJSONKeepsTransportAndAuthenticationRetryBudgetsIndependent(t *testing
 	}
 }
 
-// twoInstallationConnection covers @enkiid (installation 10) and @T-RexLabs
+// twoInstallationConnection covers @monalisa (installation 10) and @T-RexLabs
 // (installation 11) through one App key.
 func twoInstallationConnection(connectionID string) state.ExternalConnection {
 	return state.ExternalConnection{
 		ConnectionID: connectionID, Provider: "github", AppID: "1", ClientID: "Iv1", CredentialStrategy: "app_private_key",
 		CredentialGeneration: 1,
 		Installations: []state.ConnectionInstallation{
-			{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"},
+			{InstallationID: "10", AccountID: "100", AccountLogin: "monalisa"},
 			{InstallationID: "11", AccountID: "101", AccountLogin: "T-RexLabs"},
 		},
 	}
@@ -1458,14 +1458,14 @@ func TestTransferredIssueUsesDestinationInstallationCredentialAndClearsValidator
 		case "/installation/repositories":
 			switch r.Header.Get("Authorization") {
 			case "Bearer token-10":
-				_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"enkiid/old","html_url":"https://github.com/enkiid/old","owner":{"id":100}}]}`))
+				_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"monalisa/old","html_url":"https://github.com/monalisa/old","owner":{"id":100}}]}`))
 			case "Bearer token-11":
 				_, _ = w.Write([]byte(`{"repositories":[{"id":300,"full_name":"T-RexLabs/new","html_url":"https://github.com/T-RexLabs/new","owner":{"id":101}}]}`))
 			default:
 				t.Errorf("repository request used unexpected credential %q", r.Header.Get("Authorization"))
 				w.WriteHeader(http.StatusUnauthorized)
 			}
-		case "/repos/enkiid/old/issues/7":
+		case "/repos/monalisa/old/issues/7":
 			sourceIssues++
 			if r.Header.Get("Authorization") != "Bearer token-10" {
 				t.Errorf("source issue used %q", r.Header.Get("Authorization"))
@@ -1675,11 +1675,11 @@ func TestTransferredIssueMasked404ProbesInstallationsInStableOrder(t *testing.T)
 		switch r.URL.Path {
 		case "/installation/repositories":
 			if r.Header.Get("Authorization") == "Bearer token-10" {
-				_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"enkiid/old","html_url":"https://github.com/enkiid/old","owner":{"id":100}}]}`))
+				_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"monalisa/old","html_url":"https://github.com/monalisa/old","owner":{"id":100}}]}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"repositories":[{"id":300,"full_name":"T-RexLabs/new","html_url":"https://github.com/T-RexLabs/new","owner":{"id":101}}]}`))
-		case "/repos/enkiid/old/issues/7":
+		case "/repos/monalisa/old/issues/7":
 			sourceCredentials = append(sourceCredentials, r.Header.Get("Authorization"))
 			if r.Header.Get("Authorization") == "Bearer token-10" {
 				w.WriteHeader(http.StatusNotFound)
@@ -1731,11 +1731,11 @@ func TestTransferredIssueRejectsOutsideGrantAndChangedIdentity(t *testing.T) {
 				switch r.URL.Path {
 				case "/installation/repositories":
 					if r.Header.Get("Authorization") == "Bearer token-10" {
-						_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"enkiid/old","html_url":"https://github.com/enkiid/old","owner":{"id":100}}]}`))
+						_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"monalisa/old","html_url":"https://github.com/monalisa/old","owner":{"id":100}}]}`))
 						return
 					}
 					_, _ = w.Write([]byte(`{"repositories":[{"id":300,"full_name":"T-RexLabs/new","html_url":"https://github.com/T-RexLabs/new","owner":{"id":101}}]}`))
-				case "/repos/enkiid/old/issues/7":
+				case "/repos/monalisa/old/issues/7":
 					w.Header().Set("Location", test.location)
 					w.WriteHeader(http.StatusMovedPermanently)
 				case "/repos/T-RexLabs/new/issues/9":
@@ -1777,11 +1777,11 @@ func TestTransferredIssueRejectsCrossOriginLocationWithoutFollowingIt(t *testing
 		switch r.URL.Path {
 		case "/installation/repositories":
 			if r.Header.Get("Authorization") == "Bearer token-10" {
-				_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"enkiid/old","html_url":"https://github.com/enkiid/old","owner":{"id":100}}]}`))
+				_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"monalisa/old","html_url":"https://github.com/monalisa/old","owner":{"id":100}}]}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"repositories":[{"id":300,"full_name":"T-RexLabs/new","html_url":"https://github.com/T-RexLabs/new","owner":{"id":101}}]}`))
-		case "/repos/enkiid/old/issues/7":
+		case "/repos/monalisa/old/issues/7":
 			w.Header().Set("Location", destination.URL+"/repos/T-RexLabs/new/issues/9")
 			w.WriteHeader(http.StatusMovedPermanently)
 		default:
@@ -1825,11 +1825,11 @@ func TestMaskedTransferProbeDoesNotMaskNon404Failures(t *testing.T) {
 				switch r.URL.Path {
 				case "/installation/repositories":
 					if r.Header.Get("Authorization") == "Bearer token-10" {
-						_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"enkiid/old","html_url":"https://github.com/enkiid/old","owner":{"id":100}}]}`))
+						_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"monalisa/old","html_url":"https://github.com/monalisa/old","owner":{"id":100}}]}`))
 						return
 					}
 					_, _ = w.Write([]byte(`{"repositories":[{"id":300,"full_name":"T-RexLabs/new","html_url":"https://github.com/T-RexLabs/new","owner":{"id":101}}]}`))
-				case "/repos/enkiid/old/issues/7":
+				case "/repos/monalisa/old/issues/7":
 					issueCredentials = append(issueCredentials, r.Header.Get("Authorization"))
 					w.WriteHeader(test.status)
 				default:
@@ -1843,7 +1843,7 @@ func TestMaskedTransferProbeDoesNotMaskNon404Failures(t *testing.T) {
 			if test.transportErr {
 				transport := httpClient.Transport
 				httpClient = &http.Client{Transport: deviceRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-					if request.URL.Path == "/repos/enkiid/old/issues/7" {
+					if request.URL.Path == "/repos/monalisa/old/issues/7" {
 						issueCredentials = append(issueCredentials, request.Header.Get("Authorization"))
 						return nil, errors.New("test transport failure")
 					}
@@ -1878,10 +1878,10 @@ func TestSharedUserTokenDoesNotProbeMasked404PerInstallation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/user/installations/10/repositories":
-			_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"enkiid/old","html_url":"https://github.com/enkiid/old","owner":{"id":100}}]}`))
+			_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"monalisa/old","html_url":"https://github.com/monalisa/old","owner":{"id":100}}]}`))
 		case "/user/installations/11/repositories":
 			_, _ = w.Write([]byte(`{"repositories":[{"id":300,"full_name":"T-RexLabs/new","html_url":"https://github.com/T-RexLabs/new","owner":{"id":101}}]}`))
-		case "/repos/enkiid/old/issues/7":
+		case "/repos/monalisa/old/issues/7":
 			atomic.AddInt32(&sourceRequests, 1)
 			w.WriteHeader(http.StatusNotFound)
 		default:
@@ -2015,10 +2015,10 @@ func TestRepositoryListingWalksEveryInstallationExactlyOnce(t *testing.T) {
 			case "Bearer token-10":
 				if r.URL.Query().Get("page") == "1" {
 					w.Header().Set("Link", `<x>; rel="next"`)
-					_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"enkiid/api","html_url":"https://github.com/enkiid/api","owner":{"id":100}}]}`))
+					_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"monalisa/api","html_url":"https://github.com/monalisa/api","owner":{"id":100}}]}`))
 					return
 				}
-				_, _ = w.Write([]byte(`{"repositories":[{"id":201,"full_name":"enkiid/web","html_url":"https://github.com/enkiid/web","owner":{"id":100}}]}`))
+				_, _ = w.Write([]byte(`{"repositories":[{"id":201,"full_name":"monalisa/web","html_url":"https://github.com/monalisa/web","owner":{"id":100}}]}`))
 			case "Bearer token-11":
 				_, _ = w.Write([]byte(`{"repositories":[{"id":300,"full_name":"T-RexLabs/infra","html_url":"https://github.com/T-RexLabs/infra","owner":{"id":101}}]}`))
 			default:
@@ -2052,7 +2052,7 @@ func TestRepositoryListingWalksEveryInstallationExactlyOnce(t *testing.T) {
 		}
 		cursor = page.NextCursor
 	}
-	want := []string{"enkiid/api@10", "enkiid/web@10", "T-RexLabs/infra@11"}
+	want := []string{"monalisa/api@10", "monalisa/web@10", "T-RexLabs/infra@11"}
 	if strings.Join(seen, ",") != strings.Join(want, ",") {
 		t.Fatalf("walk=%v, want %v with no repeats or omissions", seen, want)
 	}
@@ -2389,7 +2389,7 @@ func TestAnIssueIsFetchedWithTheTokenOfTheInstallationThatGrantsItsRepository(t 
 			_, _ = fmt.Fprintf(w, `{"token":"token-%s","expires_at":%q}`, id, now.Add(time.Hour).Format(time.RFC3339))
 		case r.URL.Path == "/installation/repositories":
 			if r.Header.Get("Authorization") == "Bearer token-10" {
-				_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"enkiid/api","html_url":"https://github.com/enkiid/api","owner":{"id":100}}]}`))
+				_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"monalisa/api","html_url":"https://github.com/monalisa/api","owner":{"id":100}}]}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"repositories":[{"id":300,"full_name":"T-RexLabs/infra","html_url":"https://github.com/T-RexLabs/infra","owner":{"id":101}}]}`))
@@ -2422,14 +2422,14 @@ func TestValidationRejectsTheWholeConnectionWhenOneInstallationIsSuspended(t *te
 		case "/app":
 			_, _ = w.Write([]byte(`{"id":1,"client_id":"Iv1","slug":"kingdom","permissions":{"metadata":"read","issues":"read"},"events":[]}`))
 		case "/app/installations/10":
-			_, _ = w.Write([]byte(`{"id":10,"app_id":1,"target_id":100,"account":{"id":100,"login":"enkiid"},"permissions":{"metadata":"read","issues":"read"}}`))
+			_, _ = w.Write([]byte(`{"id":10,"app_id":1,"target_id":100,"account":{"id":100,"login":"monalisa"},"permissions":{"metadata":"read","issues":"read"}}`))
 		case "/app/installations/11":
 			_, _ = w.Write([]byte(`{"id":11,"app_id":1,"target_id":101,"account":{"id":101,"login":"T-RexLabs"},"suspended_at":"2026-08-01T00:00:00Z","permissions":{"metadata":"read","issues":"read"}}`))
 		case "/app/installations/10/access_tokens":
 			w.WriteHeader(http.StatusCreated)
 			_, _ = fmt.Fprintf(w, `{"token":"token-10","expires_at":%q}`, now.Add(time.Hour).Format(time.RFC3339))
 		case "/installation/repositories":
-			_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"enkiid/api","html_url":"https://github.com/enkiid/api","owner":{"id":100}}]}`))
+			_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"monalisa/api","html_url":"https://github.com/monalisa/api","owner":{"id":100}}]}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -2452,7 +2452,7 @@ func TestOneInstallationCannotVouchForAnothersRepositories(t *testing.T) {
 		case "/app":
 			_, _ = w.Write([]byte(`{"id":1,"client_id":"Iv1","slug":"kingdom","permissions":{"metadata":"read","issues":"read"},"events":[]}`))
 		case "/app/installations/10":
-			_, _ = w.Write([]byte(`{"id":10,"app_id":1,"target_id":100,"account":{"id":100,"login":"enkiid"},"permissions":{"metadata":"read","issues":"read"}}`))
+			_, _ = w.Write([]byte(`{"id":10,"app_id":1,"target_id":100,"account":{"id":100,"login":"monalisa"},"permissions":{"metadata":"read","issues":"read"}}`))
 		case "/app/installations/10/access_tokens":
 			w.WriteHeader(http.StatusCreated)
 			_, _ = fmt.Fprintf(w, `{"token":"token-10","expires_at":%q}`, now.Add(time.Hour).Format(time.RFC3339))
@@ -2494,7 +2494,7 @@ func TestListRepositoriesAggregatesAcrossInstallations(t *testing.T) {
 		// that produced the one-row picker.
 		switch r.Header.Get("Authorization") {
 		case "Bearer token-2":
-			_, _ = w.Write([]byte(`{"repositories":[{"id":1,"full_name":"enkiid/personal","html_url":"https://github.com/enkiid/personal","owner":{"id":10}}]}`))
+			_, _ = w.Write([]byte(`{"repositories":[{"id":1,"full_name":"monalisa/personal","html_url":"https://github.com/monalisa/personal","owner":{"id":10}}]}`))
 		default:
 			_, _ = w.Write([]byte(`{"repositories":[{"id":2,"full_name":"T-RexLabs/kingdom","html_url":"https://github.com/T-RexLabs/kingdom","owner":{"id":20}}]}`))
 		}
@@ -2529,7 +2529,7 @@ func TestListRepositoriesFiltersAcrossInstallations(t *testing.T) {
 		}
 		switch r.Header.Get("Authorization") {
 		case "Bearer token-2":
-			_, _ = w.Write([]byte(`{"repositories":[{"id":1,"full_name":"enkiid/personal","html_url":"https://github.com/enkiid/personal","owner":{"id":10}}]}`))
+			_, _ = w.Write([]byte(`{"repositories":[{"id":1,"full_name":"monalisa/personal","html_url":"https://github.com/monalisa/personal","owner":{"id":10}}]}`))
 		default:
 			_, _ = w.Write([]byte(`{"repositories":[{"id":2,"full_name":"T-RexLabs/kingdom","html_url":"https://github.com/T-RexLabs/kingdom","owner":{"id":20}}]}`))
 		}
