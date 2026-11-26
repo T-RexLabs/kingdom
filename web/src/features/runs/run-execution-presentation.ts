@@ -121,16 +121,20 @@ function presentRecovery(
 		};
 	}
 	if (recovery.phase === "paused") {
-		const unsafe = handoffState === "workspace_restore_failed" || recovery.reason_code === "agent_unresponsive";
+		const restoreFailed = handoffState === "workspace_restore_failed";
+		const unresponsive = !restoreFailed && recovery.reason_code === "agent_unresponsive";
+		const unsafe = restoreFailed || unresponsive;
 		return {
 			...base,
 			tone: "paused", iconKey: "alert", heading: unsafe ? "Step Paused" : "Retry Paused",
-			description: unsafe
-				? "Kingdom could not confirm that the previous agent stopped. Resolve the process before retrying."
-				: "Kingdom is waiting for the previous attempt to stop before starting the retry.",
+			description: unresponsive
+				? "This step stopped responding. Kingdom is making sure it has fully stopped before starting anything new, so two attempts never change your project at the same time."
+				: restoreFailed
+					? "Kingdom could not confirm that the previous agent stopped. Resolve the process before retrying."
+					: "Kingdom is waiting for the previous attempt to stop before starting the retry.",
 			announcement: { role: "status", ariaLive: "polite" },
-			pauseReason: unsafe ? "Previous agent process requires resolution." : "Previous attempt is still running.",
-			requiredAction: unsafe ? "Required Action: Resolve the previous agent process before retrying." : undefined,
+			pauseReason: unresponsive ? "Waiting for the unresponsive step to stop." : restoreFailed ? "Previous agent process requires resolution." : "Previous attempt is still running.",
+			requiredAction: restoreFailed ? "Required Action: Resolve the previous agent process before retrying." : undefined,
 			timeline: { label: unsafe ? "Step Paused - Previous Agent Still Running" : "Retry Paused - Previous Attempt Still Running", status: "paused", iconKey: "alert" },
 		};
 	}

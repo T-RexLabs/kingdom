@@ -338,7 +338,7 @@ describe("focused execution inspector", () => {
       screen.queryByText("This step is still running."),
     ).not.toBeInTheDocument();
   });
-  it("offers Retry Stop only for the current paused attempt", async () => {
+  it("offers Try Stopping Again only for the current paused attempt", async () => {
     const props = renderSurface({
       nodes: [
         node({
@@ -349,7 +349,7 @@ describe("focused execution inspector", () => {
         }),
       ],
     });
-    await userEvent.click(screen.getByRole("button", { name: "Retry Stop" }));
+    await userEvent.click(screen.getByRole("button", { name: "Try Stopping Again" }));
     expect(props.onRetryStop).toHaveBeenCalledWith("attempt-current");
   });
   it("preserves failure/recovery evidence and exposes paged attempt history", async () => {

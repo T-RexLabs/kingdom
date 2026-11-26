@@ -61,7 +61,7 @@ When a run fails or you cancel it, you choose what happens next:
 | --- | --- |
 | **Resume** | You want the stopped steps to carry on where they left off. |
 | **Rerun** | You want to start over from a step with a clean copy of your project. |
-| **Retry Stop** | The run shows **Recovery Blocked** and you want Kingdom to try stopping a step again. |
+| **Try Stopping Again** | A step is paused because it stopped responding and hasn't fully stopped yet. |
 
 Resume and Rerun wait until everything from the earlier attempt has stopped before they start new work. From the command line, use `kd run resume` or `kd node rerun-from`.
 
@@ -83,9 +83,13 @@ Rerun starts a step over from your project's last trusted state, and every step 
 
 Restarting Kingdom stops every step that was running. Once Kingdom has confirmed the old processes are gone, it marks those steps as failed, puts the project back to its last trusted state, and applies the usual retry rules. It never sends the same model request twice. After that, the run offers Resume and Rerun like any other failed run.
 
-### Blocked runs
+### Paused and blocked steps
 
-If Kingdom can't confirm that a step has stopped, for example because a shell command may still be running, it holds the run and shows **Recovery Blocked** with the reason. It keeps checking on its own and never guesses what an unfinished change or command did. **Retry Stop** asks Kingdom to try stopping the step once more. It doesn't skip any safety checks.
+Sometimes a step stops responding, for example when the model goes quiet or a shell command hangs. Kingdom then stops the step, but it won't start anything new until it knows the step has fully stopped. Otherwise the old step and the new one could both change your project at the same time.
+
+While Kingdom waits, the step shows as **Step Paused**. Kingdom keeps checking on its own, and most steps clear without you doing anything. If one stays paused, select **Try Stopping Again** to have Kingdom send the stop request once more. It doesn't skip any checks; it just asks again.
+
+If Kingdom can't tell what a step left running, the run shows **Recovery Blocked** with the reason. Kingdom never guesses what an unfinished change or command did, so it keeps the run blocked until it knows.
 
 ### Other messages
 
