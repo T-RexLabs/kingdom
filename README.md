@@ -19,9 +19,9 @@
   <a href="#contribute">Build With Us</a>
 </p>
 
-Kingdom is a local web app and command-line tool that runs a crew of AI agents on your codebase. Through [OpenCode](https://opencode.ai/docs/), the crew plans the work, builds it, reviews it, and validates the result. You decide whether to approve the plan and the finished work yourself.
+In a world of rising token costs, raising your own Kingdom puts you in charge of the treasury. Kingdom is open source and runs on your hardware by default. Pick your models, hosted or local, choose where your data lives, and keep planning, execution, and audit under your control.
 
-Kingdom is open source and runs on your own machine. You choose the models, including local ones, decide where your data lives, and keep a record of every plan, change, and decision.
+Under the hood, Kingdom is a local web app and command-line tool that runs your LLM crew on your codebase through [OpenCode](https://opencode.ai/docs/). The crew plans the work, builds it, and checks the result. You decide how much of it to approve yourself.
 
 <h2 id="watch">Watch the Work Unfold</h2>
 
@@ -66,9 +66,7 @@ kd summon
 ```
 
 > [!WARNING]
-> Kingdom's agents run shell commands and change files in your project with your permissions. There is no sandbox. By default, Kingdom also approves the plan and the finished work for you.
->
-> To approve both yourself, run `kd init --autonomous-approvals false`. If your project is a Git repository, add `--publish-mode git_worktree` to keep each run's changes in their own worktree. You can change both later in `.kingdom/config.yaml`; see the [Config Reference](docs/config%2Dreference.md).
+> Kingdom's agents run shell commands and change files in your project with your permissions. Kingdom doesn't sandbox them yet. By default, Kingdom also approves the plan and the finished work for you.
 
 Open the local URL printed by Kingdom. In Planning, work through the task and shape a plan, then issue a Work Order. Or create a Work Order directly if you already know what needs doing. Choose a model before each run, even if OpenCode already has a default model set.
 
