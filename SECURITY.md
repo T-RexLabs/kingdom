@@ -22,7 +22,7 @@ Kingdom has no releases yet. Security fixes go to the latest `main`.
 
 Kingdom runs AI agents on your machine, as your user, in the project you start it in. Please read this before reporting.
 
-* **There is no sandbox.** Agents run shell commands and change files in your project with your permissions. Kingdom checks agent actions against its policies, but that is not operating-system isolation.
+* **There is no sandbox yet.** Agents run shell commands and change files in your project with your permissions. Kingdom checks agent actions against its policies, but that is not operating-system isolation.
 * **Approvals are off by default.** A new setup moves through the plan and final approval gates without waiting for you. You can turn manual approvals on, or keep each run in its own Git worktree; see the [Config Reference](docs/config-reference.md).
 * **Your models see your code.** Prompts and project files go to the model providers you set up in OpenCode. What those providers do with your data is up to them.
 
