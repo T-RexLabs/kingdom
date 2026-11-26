@@ -2,7 +2,7 @@
  "identity": {
   "instanceID": "instance-probe",
   "generation": "generation-probe",
-  "location": "/Users/simon/project/kingdom/kd-sandbox/opencode-v2-production-20261018/batch-3/probes/run/q6-x4tqt7uj/real",
+  "location": "/private/tmp/kingdom-content-filter/project",
   "sessionID": "ses_d04d905fe58f6ac3a7f879d36e",
   "profileID": "prof-a",
   "requestID": "msg_10d24dee550a2db6adf986b68b"
@@ -23,7 +23,7 @@
     "version": 1
    },
    "location": {
-    "directory": "/Users/simon/project/kingdom/kd-sandbox/opencode-v2-production-20261018/batch-3/probes/run/q6-x4tqt7uj/real"
+    "directory": "/private/tmp/kingdom-content-filter/project"
    }
   },
   {

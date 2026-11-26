@@ -488,7 +488,7 @@ func TestReconnectFinalizationPolicyRequiresExactSavedSetAndPinnedCandidates(t *
 	connection := state.ExternalConnection{
 		ConnectionID: "conn-shared", CredentialStrategy: "user_access_token", AppID: "1", ClientID: "IvShared",
 		Installations: []state.ConnectionInstallation{
-			{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"},
+			{InstallationID: "10", AccountID: "100", AccountLogin: "monalisa"},
 			{InstallationID: "11", AccountID: "101", AccountLogin: "T-RexLabs"},
 		},
 	}

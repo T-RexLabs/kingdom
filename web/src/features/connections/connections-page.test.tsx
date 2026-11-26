@@ -1833,7 +1833,7 @@ describe("ConnectionsPage", () => {
               expires_at: "2099-08-15T13:00:00Z",
               interval_seconds: 5,
               install_url: "https://github.com/apps/kingdom/installations/new",
-              candidates: [candidate("10", "enkiid"), candidate("11", "T-RexLabs")],
+              candidates: [candidate("10", "monalisa"), candidate("11", "T-RexLabs")],
             }),
             { status: 201, headers: { "Content-Type": "application/json" } },
           );
@@ -1850,7 +1850,7 @@ describe("ConnectionsPage", () => {
     await startSharedUI(user);
 
     // Both accounts are tickable at once; neither deselects the other.
-    await user.click(await screen.findByRole("checkbox", { name: /@enkiid/ }));
+    await user.click(await screen.findByRole("checkbox", { name: /@monalisa/ }));
     await user.click(screen.getByRole("checkbox", { name: /@T-RexLabs/ }));
     expect(screen.getByText("2 selected")).toBeInTheDocument();
 
@@ -1862,9 +1862,9 @@ describe("ConnectionsPage", () => {
   it("disables competing shared-flow actions while finalization is active", async () => {
     const candidate = {
       installation_id: "10",
-      display_name: "enkiid",
+      display_name: "monalisa",
       account_id: "100",
-      account_login: "enkiid",
+      account_login: "monalisa",
       app_id: "1",
       client_id: "Iv1",
       app_slug: "kingdom",
@@ -1904,14 +1904,14 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     render(<ConnectionsPage />);
     await startSharedUI(user);
-    await user.click(await screen.findByRole("checkbox", { name: /@enkiid/ }));
+    await user.click(await screen.findByRole("checkbox", { name: /@monalisa/ }));
     expect(screen.getByRole("link", { name: "Install on Another Account" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Manage Repositories on GitHub" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Connect Selected Installations" }));
     await waitFor(() => expect(finalizeStarted).toBe(true));
 
     const dialog = screen.getByRole("dialog", { name: "Connect GitHub" });
-    expect(within(dialog).getByRole("checkbox", { name: /@enkiid/ })).toBeDisabled();
+    expect(within(dialog).getByRole("checkbox", { name: /@monalisa/ })).toBeDisabled();
     expect(within(dialog).getByRole("button", { name: "Refresh Installations" })).toBeDisabled();
     expect(within(dialog).getByRole("button", { name: "Discard Setup" })).toBeDisabled();
     expect(within(dialog).getByRole("button", { name: "Connect Selected Installations" })).toBeDisabled();
@@ -1932,7 +1932,7 @@ describe("ConnectionsPage", () => {
       ...connection("Shared"),
       credential_strategy: "user_access_token" as const,
       installations: [
-        { installation_id: "10", account_id: "100", account_login: "enkiid" },
+        { installation_id: "10", account_id: "100", account_login: "monalisa" },
         { installation_id: "11", account_id: "101", account_login: "T-RexLabs" },
       ],
     };
@@ -1965,7 +1965,7 @@ describe("ConnectionsPage", () => {
               expires_at: "2099-08-15T13:00:00Z",
               interval_seconds: 5,
               candidates: [
-                candidate("10", "enkiid", "100"),
+                candidate("10", "monalisa", "100"),
                 candidate("11", "T-RexLabs", "101"),
                 candidate("12", "not-part-of-this-connection"),
               ],
@@ -1986,7 +1986,7 @@ describe("ConnectionsPage", () => {
     await screen.findByText("Shared");
     await user.click(screen.getByRole("button", { name: "Reconnect Connection" }));
 
-    const first = await screen.findByRole("checkbox", { name: /@enkiid/ });
+    const first = await screen.findByRole("checkbox", { name: /@monalisa/ });
     const second = screen.getByRole("checkbox", { name: /@T-RexLabs/ });
     expect(first).toBeChecked();
     expect(first).toBeDisabled();
@@ -2224,7 +2224,7 @@ describe("ConnectionsPage", () => {
       ...connection("Shared"),
       credential_strategy: "user_access_token" as const,
       installations: [
-        { installation_id: "10", account_id: "100", account_login: "enkiid" },
+        { installation_id: "10", account_id: "100", account_login: "monalisa" },
         { installation_id: "11", account_id: "101", account_login: "T-RexLabs" },
       ],
     };
@@ -2242,7 +2242,7 @@ describe("ConnectionsPage", () => {
             reconnect_connection_id: "conn-1",
             expires_at: "2099-08-15T13:00:00Z",
             interval_seconds: 5,
-            candidates: [{ installation_id: "10", display_name: "enkiid", account_id: "100", account_login: "enkiid", app_id: "1", client_id: "Iv1", app_slug: "kingdom" }],
+            candidates: [{ installation_id: "10", display_name: "monalisa", account_id: "100", account_login: "monalisa", app_id: "1", client_id: "Iv1", app_slug: "kingdom" }],
           }), { status: 201, headers: { "Content-Type": "application/json" } });
         throw new Error(`unexpected request ${url}`);
       }),
