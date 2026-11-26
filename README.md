@@ -16,12 +16,12 @@
 <p align="center">
   <a href="#firstmission">Start Your First Mission</a> ·
   <a href="#watch">See How It Works</a> ·
-  <a href="#contribute">Contribute to the Kingdom</a>
+  <a href="#contribute">Build With Us</a>
 </p>
 
-In a world of rising token costs, raising your own Kingdom can help protect the treasury. Kingdom is open source and runs on your hardware by default. You choose where your data lives, and keep planning, execution, and audit under your control.
+In a world of rising token costs, raising your own Kingdom puts you in charge of the treasury. Kingdom is open source and runs on your hardware by default. Pick your models, hosted or local, choose where your data lives, and keep planning, execution, and audit under your control.
 
-Your LLM crew plans the work, builds it, and checks the result.
+Under the hood, Kingdom is a local web app and command-line tool that runs your LLM crew on your codebase through [OpenCode](https://opencode.ai/docs/). The crew plans the work, builds it, and checks the result. You decide how much of it to approve yourself.
 
 <h2 id="watch">Watch the Work Unfold</h2>
 
@@ -46,11 +46,13 @@ The current crew includes advisors, a planner, a builder, a reviewer, and valida
 
 <h2 id="firstmission">Start Your First Mission</h2>
 
-You’ll need Go 1.27.0, Node 26.2.0 with Corepack, and [OpenCode](https://opencode.ai/docs/) V2 installed and authenticated for the providers you want to use.
+You’ll need Go 1.27.0, Node 26.2.0 with Corepack, and [OpenCode](https://opencode.ai/docs/) V2 installed and authenticated for the providers you want to use. `make tool-versions` prints the exact versions Kingdom builds with.
 
-From the Kingdom repository, build and install the `kd` command:
+Get Kingdom, then build and install the `kd` command:
 
 ```bash
+git clone https://github.com/T-RexLabs/kingdom.git
+cd kingdom
 make install
 export PATH="$PATH:$(go env GOPATH)/bin"
 ```
@@ -63,11 +65,12 @@ kd init
 kd summon
 ```
 
+> [!WARNING]
+> Kingdom's agents run shell commands and change files in your project with your permissions. Kingdom doesn't sandbox them yet. By default, Kingdom also approves the plan and the finished work for you.
+
 Open the local URL printed by Kingdom. In Planning, work through the task and shape a plan, then issue a Work Order. Or create a Work Order directly if you already know what needs doing. Choose a model before each run, even if OpenCode already has a default model set.
 
-For failed or cancelled runs, use **Resume** to continue interrupted steps from their saved conversation and partial files, or **Rerun** to repeat a step and its downstream workflow from the trusted baseline. Both wait until earlier work has safely stopped. A lost browser connection does not stop the runtime; reconnect and inspect the run before restarting work.
-
-Kingdom uses OpenCode to list models and run them. Your OpenCode setup can use local or hosted models. If Kingdom cannot verify an OpenCode reply, it reports a protocol error and retains the rejected evidence for diagnosis. This failure does not retry automatically; see [failure and recovery guidance](docs/how-runs-work.md#when-a-run-stops).
+If a run fails or you stop it, [When a Run Stops](docs/how%2Druns%2Dwork.md#when-a-run-stops) explains how to pick it back up.
 
 ## Make It Yours
 
@@ -95,27 +98,10 @@ The Go runtime serves the embedded web app and the `kd` command. SQLite stores w
 * [System Architecture](docs/system%2Darchitecture.md): design boundaries and invariants
 * [OpenAPI Contract](contracts/openapi/openapi.yaml): HTTP API source of truth
 * [Runtime Policies](policies/): retry and provider behavior
+* [The Crew](docs/how%2Druns%2Dwork.md#the-crew): what each role does
 * [Prompt Authoring](docs/prompt-authoring.md): protected role duties and contracts, editable working guidance, and prompt snapshot rules
 * [Seeded Workflows](internal/bootstrapassets/files/workflows/): workflow definitions
 * [Local Setup and Verification](docs/local%2Dsetup%2Dand%2Dverification.md): development and verification steps
-
-### Canonical Roles
-
-| Role ID | Responsibility |
-| --- | --- |
-| `operator` | Human operator who issues work orders and makes plan and final approval decisions when manual approvals are enabled. |
-| `governance` | Supreme governance authority that approves plans, requests rework when needed, and closes work orders. |
-| `coordinator` | Chief coordinator that synthesizes advisor input, resolves ambiguity, preserves scope coherence, and delegates clear downstream direction. |
-| `plan-author` | Strategic planner that turns work order intent into an execution-ready plan, breaks work into implementation slices, and refines plan deltas during rework. |
-| `architecture-advisor` | Advisor that focuses on functional fit, architecture fit, contract fit, precedent, and long-term system coherence. |
-| `risk-advisor` | Advisor that focuses on security, trust boundaries, resilience, and blast-radius risk. |
-| `systems-advisor` | Advisor that focuses on performance, scalability, resource efficiency, and maintainability. |
-| `usability-advisor` | Advisor that focuses on usability, operability, support burden, and day-2 practicality. |
-| `builder` | Implementation specialist that turns approved plans into scoped, verified, maintainable code changes and deliverable outputs. |
-| `reviewer` | Reviews builder output against the work order and approved plan, checks scope and correctness before validation begins. |
-| `qa-validator` | Validates functional behavior, test evidence, and requirement coverage before completion. |
-| `security-validator` | Validates security posture, security findings, and risk concerns before completion. |
-| `resilience-validator` | Resilience validator for chaos, recovery, and failure-mode concerns. |
 
 ## Keep Exploring
 
