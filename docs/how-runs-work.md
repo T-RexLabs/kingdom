@@ -87,7 +87,7 @@ Restarting Kingdom stops every step that was running. Once Kingdom has confirmed
 
 Sometimes a step stops responding, for example when the model goes quiet or a shell command hangs. Kingdom then stops the step, but it won't start anything new until it knows the step has fully stopped. Otherwise the old step and the new one could both change your project at the same time.
 
-While Kingdom waits, the step shows as **Step Paused**. Kingdom keeps checking on its own, and most steps clear without you doing anything. If one stays paused, select **Try Stopping Again** to have Kingdom send the stop request once more. It doesn't skip any checks; it just asks again.
+While Kingdom waits, the step shows as **Step Paused**. Kingdom keeps checking on its own. If one stays paused, select **Try Stopping Again** to have Kingdom send the stop request once more. It doesn't skip any checks; it just asks again.
 
 If Kingdom can't tell what a step left running, the run shows **Recovery Blocked** with the reason. Kingdom never guesses what an unfinished change or command did, so it keeps the run blocked until it knows.
 
