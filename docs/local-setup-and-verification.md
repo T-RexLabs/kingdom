@@ -40,15 +40,15 @@ kd init
 kd summon --port 18080
 ```
 
-Pick a free port other than 8080 and replace `18080` if it is already in use. Open the URL printed by Kingdom.
+Kingdom uses port 8080 by default, so that port usually belongs to the Kingdom you use day to day. Give every check its own free port, such as `18080`, so it never talks to or changes your own Kingdom. Open the URL printed by Kingdom.
 
-In the browser, open **Planning**, select **OpenAI - GPT-6 Luna** with **Medium** thinking effort, and start a planning session or create a Work Order. Follow its run under **Runs** and inspect the workflow, execution, result, and approval state. If manual approvals are on, try both approval gates.
+In the browser, open **Planning**, select any model you have access to, and start a planning session or create a Work Order. Follow its run under **Runs** and inspect the workflow, execution, result, and approval state. If manual approvals are on, try both approval gates.
 
 The fresh directory keeps this check separate from the repository and from your other projects. When you are done, stop Kingdom in that directory with `kd summon stop`. Do not use `kd clean` unless you intend to remove that directory’s entire `.kingdom/` state.
 
 ## Run the web app while developing
 
-`make dev-web` starts Vite at `http://localhost:5173`. The proxy in `web/vite.config.ts` currently sends API and health requests to `localhost:8080`. For an installed runtime check, use the embedded web app at the URL printed by `kd summon --port <free port>` instead.
+`make dev-web` starts Vite at `http://localhost:5173` with live reload. It sends API requests to the Kingdom on the default port, 8080, so start one with `kd summon` first. This is for working on the web app. To check a change the way users will see it, use a sandbox on its own port as described above.
 
 Kingdom serves the built web app from the Go process. Rebuild it with `make install` when you need to check the embedded version.
 
