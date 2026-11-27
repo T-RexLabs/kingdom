@@ -1,8 +1,9 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { useTheme } from "@/theme";
 import { REXIE_ROAR_EVENT, isTypingTarget, registerKey } from "./rexie";
+import { playSound } from "./rexie-sound";
 
-const PARADE_MS = 6500;
+const PARADE_MS = 9000;
 const PARADE_SIZE = 5;
 
 const GREETING = String.raw`
@@ -33,8 +34,15 @@ export function RexieMischief() {
       if (event.metaKey || event.ctrlKey || event.altKey || isTypingTarget(event.target)) return;
       const result = registerKey(trail, event.key);
       trail = result.trail;
-      if (result.egg === "parade") setParade((count) => count + 1);
-      if (result.egg === "roar") window.dispatchEvent(new Event(REXIE_ROAR_EVENT));
+      if (result.egg === "parade") {
+        playSound("bell");
+        playSound("gulls-flyby");
+        setParade((count) => count + 1);
+      }
+      if (result.egg === "roar") {
+        playSound("foghorn");
+        window.dispatchEvent(new Event(REXIE_ROAR_EVENT));
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -49,6 +57,7 @@ export function RexieMischief() {
   if (!ludicrous || parade === 0) return null;
   return <div className="rexie-parade" key={parade} aria-hidden="true">
     <span className="rexie-parade-banner">All hands on deck!</span>
+    <span className="rexie-parade-ship"><img src="/ship/ship-back.avif" alt="" /><img src="/ship/ship-front.avif" alt="" /></span>
     {Array.from({ length: PARADE_SIZE }, (_, index) =>
       <span key={index} className="rexie-parade-rex" style={{ "--rexie-index": index } as CSSProperties}><span /></span>)}
   </div>;

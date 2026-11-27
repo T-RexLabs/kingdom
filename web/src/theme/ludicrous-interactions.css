@@ -125,6 +125,25 @@
     pointer-events: none;
     box-shadow: 2px 2px 0 color-mix(in srgb, var(--theme-accent-base) 35%, transparent);
   }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-sound-toggle {
+    position: absolute;
+    top: 8px;
+    inset-inline-end: 8px;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--theme-border-default);
+    border-radius: 999px;
+    background: var(--theme-surface-base);
+    color: var(--theme-text-secondary);
+    cursor: pointer;
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-sound-toggle:hover { color: var(--theme-accent-base); border-color: var(--theme-accent-base); }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-sound-toggle:focus-visible { outline: 2px solid var(--theme-focus-ring); outline-offset: 2px; }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-sound-toggle[aria-pressed="true"] { color: var(--theme-accent-base); }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-sound-toggle > svg { width: 16px; height: 16px; }
+  :scope[data-ornamentation="ludicrous"] .theme-preview-content .ludicrous-sound-toggle { display: none; }
   :scope[data-ornamentation="ludicrous"] .ludicrous-regalia[data-mood="roar"] .ludicrous-speech {
     font-size: 1.6rem;
     letter-spacing: .04em;
@@ -151,7 +170,7 @@
   inset-inline: 0;
   bottom: 0;
   z-index: 60;
-  height: 120px;
+  height: 140px;
   overflow: hidden;
   pointer-events: none;
   color: var(--theme-accent-base);
@@ -170,6 +189,19 @@
   font-size: 1.1rem;
   white-space: nowrap;
 }
+.rexie-parade-ship {
+  position: absolute;
+  bottom: -6px;
+  left: calc(50% - 360px);
+  width: 210px;
+  aspect-ratio: 3340 / 1884;
+}
+.rexie-parade-ship > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
 .rexie-parade-rex {
   position: absolute;
   bottom: 8px;
@@ -187,9 +219,13 @@
 @media (prefers-reduced-motion: no-preference) {
   .rexie-parade-rex {
     left: -80px;
-    animation: rexie-march 6s linear calc(var(--rexie-index) * 280ms) both;
+    animation: rexie-march 6s linear calc(1.4s + var(--rexie-index) * 280ms) both;
   }
   .rexie-parade-rex > span { animation: ludicrous-rex-stomp 420ms ease-in-out infinite; }
+  .rexie-parade-ship {
+    left: -240px;
+    animation: rexie-march 6.4s linear both, rexie-bob 1.6s ease-in-out infinite;
+  }
   .rexie-parade-banner { animation: rexie-speech-pop 300ms cubic-bezier(.2, 1.5, .4, 1) both; }
 }
 @media (forced-colors: active) {
@@ -215,7 +251,11 @@
   30% { transform: rotate(-8deg) scale(1.12); }
   60% { transform: rotate(4deg) scale(1.08); }
 }
+@keyframes rexie-bob {
+  0%, 100% { rotate: -1.5deg; }
+  50% { rotate: 1.5deg; }
+}
 @keyframes rexie-march {
   from { transform: translateX(0); }
-  to { transform: translateX(calc(100vw + 160px)); }
+  to { transform: translateX(calc(100vw + 260px)); }
 }
