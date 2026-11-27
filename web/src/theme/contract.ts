@@ -5,6 +5,7 @@ import obsidianText from "../../../contracts/theme/builtin/obsidian-court.json?r
 import nautilusText from "../../../contracts/theme/builtin/nautilus.json?raw";
 import astralText from "../../../contracts/theme/builtin/astral-council.json?raw";
 import labText from "../../../contracts/theme/builtin/software-lab.json?raw";
+import trexText from "../../../contracts/theme/builtin/t-rex-labs.json?raw";
 import workstationText from "../../../contracts/theme/builtin/workstation-98.json?raw";
 
 export type ThemeManifest = components["schemas"]["ThemeManifest"];
@@ -63,7 +64,7 @@ export function validReference(value: unknown): value is ThemeReference {
   const ref = value as Partial<ThemeReference>;
   return typeof ref.id === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(ref.id) && typeof ref.resolvedDigest === "string" && /^[a-f0-9]{64}$/.test(ref.resolvedDigest);
 }
-export const builtInThemes: readonly ResolvedThemeManifest[] = [obsidianText, nautilusText, astralText, labText, workstationText].map((raw) => resolvedManifest(JSON.parse(raw)));
+export const builtInThemes: readonly ResolvedThemeManifest[] = [obsidianText, nautilusText, astralText, labText, trexText, workstationText].map((raw) => resolvedManifest(JSON.parse(raw)));
 export const defaultTheme = builtInThemes[0];
 const neutralTheme = builtInThemes[3];
 export function canonicalRoleName(role: string): string {

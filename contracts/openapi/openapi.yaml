@@ -6986,6 +6986,7 @@ components:
                   "nautilus",
                   "astral-council",
                   "software-lab",
+                  "t-rex-labs",
                   "workstation-98"
                 ],
                 "type": "string"

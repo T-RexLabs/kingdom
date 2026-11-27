@@ -3856,7 +3856,7 @@ export interface components {
             agentVoice?: string;
             base?: {
                 /** @enum {string} */
-                id: "obsidian-court" | "nautilus" | "astral-council" | "software-lab" | "workstation-98";
+                id: "obsidian-court" | "nautilus" | "astral-council" | "software-lab" | "t-rex-labs" | "workstation-98";
                 version: string;
             };
             palette?: {

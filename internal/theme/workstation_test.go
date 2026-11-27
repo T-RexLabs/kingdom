@@ -59,17 +59,25 @@ func TestWorkstationThemePresentation(t *testing.T) {
 	t.Fatal("Workstation 98 built-in is missing")
 }
 
+// builtinRevisions pins each shipped theme's exact version and resolved
+// identity, so any content change must come with a new version.
+var builtinRevisions = map[string]struct{ version, digest string }{
+	"astral-council": {"1.1.0", "847a058fa380856124a1f903a8eacc30feb26a971dab78d173f2cd2b871251d1"},
+	"nautilus":       {"1.1.0", "be98e68c4213f234735e796afed39ab114131931ecc73d25422b8d3756eba5fe"},
+	"obsidian-court": {"1.1.0", "e6cbf420833435bb56451a9c7aec44b896a5c0662d522b5f6bb55a352ca2fa19"},
+	"software-lab":   {"1.1.0", "7058d319649896731b28f56c5a6c548ec2481041018ebc97fd7f755ca79f9ccc"},
+	"t-rex-labs":     {"1.0.0", "f1638ca6244aea8b14743c980da6f135e5bb3738b063bcecf9d8220aca3f0171"},
+	"workstation-98": {"1.1.0", "1df4437cdcfbe2fd77ada6cb2d2a21b0519f002efea2ffb1644630f61277d9c2"},
+}
+
 func TestBuiltinThemeRevisionDigests(t *testing.T) {
-	want := map[string]string{
-		"astral-council": "847a058fa380856124a1f903a8eacc30feb26a971dab78d173f2cd2b871251d1",
-		"nautilus":       "be98e68c4213f234735e796afed39ab114131931ecc73d25422b8d3756eba5fe",
-		"obsidian-court": "e6cbf420833435bb56451a9c7aec44b896a5c0662d522b5f6bb55a352ca2fa19",
-		"software-lab":   "7058d319649896731b28f56c5a6c548ec2481041018ebc97fd7f755ca79f9ccc",
-		"workstation-98": "1df4437cdcfbe2fd77ada6cb2d2a21b0519f002efea2ffb1644630f61277d9c2",
+	builtins := resolverForTest(t).Builtins()
+	if len(builtins) != len(builtinRevisions) {
+		t.Fatalf("got %d built-in themes, want %d", len(builtins), len(builtinRevisions))
 	}
-	for _, p := range resolverForTest(t).Builtins() {
-		if digest := want[p.Manifest.ID]; p.Manifest.Version != "1.1.0" || p.ResolvedDigest != digest {
-			t.Errorf("%s revision changed: %s", p.Manifest.ID, p.ResolvedDigest)
+	for _, p := range builtins {
+		if want, ok := builtinRevisions[p.Manifest.ID]; !ok || p.Manifest.Version != want.version || p.ResolvedDigest != want.digest {
+			t.Errorf("%s revision changed: %s %s", p.Manifest.ID, p.Manifest.Version, p.ResolvedDigest)
 		}
 	}
 }

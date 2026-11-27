@@ -31,8 +31,8 @@ func rawForTest(t *testing.T, value any) []byte {
 }
 func TestBuiltinsAndInheritedThemeAreComplete(t *testing.T) {
 	r := resolverForTest(t)
-	if len(r.Builtins()) != 5 {
-		t.Fatal("expected all five themes")
+	if len(r.Builtins()) != len(builtinRevisions) {
+		t.Fatalf("expected all %d themes", len(builtinRevisions))
 	}
 	for _, p := range r.Builtins() {
 		t.Run(p.Manifest.ID, func(t *testing.T) {

@@ -8,7 +8,7 @@ import { iconNames } from "lucide-react/dynamic";
 
 describe("canonical presentation contract", () => {
   it("ships all five complete themes from the shared contract", () => {
-    expect(builtInThemes.map((theme) => theme.id)).toEqual(["obsidian-court", "nautilus", "astral-council", "software-lab", "workstation-98"]);
+    expect(builtInThemes.map((theme) => theme.id)).toEqual(["obsidian-court", "nautilus", "astral-council", "software-lab", "t-rex-labs", "workstation-98"]);
     for (const theme of builtInThemes) {
       expect(Object.keys(resolvedManifest(theme).identities)).toHaveLength(14);
       expect(theme.identities.builder).not.toHaveProperty("icon");
