@@ -73,7 +73,11 @@
     "chart.category5": "#c18321",
     "chart.category6": "#c265a5",
     "chart.category7": "#369ea2",
-    "chart.category8": "#dd555e"
+    "chart.category8": "#dd555e",
+    "action.base": "#e3ac42",
+    "action.hover": "#ecbd5e",
+    "action.foreground": "#0b1c20",
+    "action.border": "#0b1c20"
   },
   "typography": {
     "body": "bundled:dm-sans",
@@ -86,7 +90,8 @@
     "radius": 10,
     "borderWidth": 1,
     "elevation": "soft",
-    "ornamentation": "ludicrous"
+    "ornamentation": "ludicrous",
+    "chrome": "storybook"
   },
   "icons": {
     "nav.overview": "lucide:ship-wheel",

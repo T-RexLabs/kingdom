@@ -66,7 +66,7 @@ var builtinRevisions = map[string]struct{ version, digest string }{
 	"nautilus":       {"1.1.0", "be98e68c4213f234735e796afed39ab114131931ecc73d25422b8d3756eba5fe"},
 	"obsidian-court": {"1.1.0", "e6cbf420833435bb56451a9c7aec44b896a5c0662d522b5f6bb55a352ca2fa19"},
 	"software-lab":   {"1.1.0", "7058d319649896731b28f56c5a6c548ec2481041018ebc97fd7f755ca79f9ccc"},
-	"t-rex-labs":     {"1.0.0", "624e9084d7e60472ab253bb017c08af96f1f0d2b905d818948032d5732c77b5d"},
+	"t-rex-labs":     {"1.0.0", "2384307f2450365d1ba46a8cac148d53955438b651c9e9b4b45470bcc4481c4f"},
 	"workstation-98": {"1.1.0", "1df4437cdcfbe2fd77ada6cb2d2a21b0519f002efea2ffb1644630f61277d9c2"},
 }
 

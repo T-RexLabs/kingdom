@@ -80,6 +80,11 @@ export function LudicrousRegalia() {
         <circle cx="664" cy="99" r="2" /><circle cx="655" cy="96" r="1.3" /><circle cx="645" cy="100" r="1" />
       </g>
     </svg>
+    <div aria-hidden="true" className="ludicrous-sea">
+      <span className="ludicrous-sea-island" /><span className="ludicrous-sea-sailboat" /><span className="ludicrous-sea-islet" />
+      <span className="ludicrous-sea-cypress" /><span className="ludicrous-sea-lighthouse" /><span className="ludicrous-sea-water" />
+      <span className="ludicrous-sea-perch" />
+    </div>
     <span aria-hidden="true" className="ludicrous-regalia-rex" onClick={poke}><span /></span>
     {speech && <span aria-hidden="true" className="ludicrous-speech" key={speech}>{speech}</span>}
     <button type="button" className="ludicrous-sound-toggle" aria-pressed={sound} aria-label="Ship Sounds" title={sound ? "Turn ship sounds off" : "Turn ship sounds on"} onClick={toggleSound}>

@@ -114,6 +114,14 @@ func contrastWarnings(m Manifest) []Diagnostic {
 	for _, bg := range []string{"accent.base", "accent.hover", "accent.pressed"} {
 		check("accent.foreground", bg, 4.5)
 	}
+	// The optional primary-action colors are checked only when a package sets them.
+	if _, ok := t["action.foreground"]; ok {
+		for _, bg := range []string{"action.base", "action.hover"} {
+			if _, ok := t[bg]; ok {
+				check("action.foreground", bg, 4.5)
+			}
+		}
+	}
 	check("selection.foreground", "selection.background", 4.5)
 	check("code.foreground", "code.background", 4.5)
 	for _, bg := range []string{"canvas", "surface.base", "surface.overlay"} {

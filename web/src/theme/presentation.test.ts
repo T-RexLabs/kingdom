@@ -50,6 +50,21 @@ describe("canonical presentation contract", () => {
     expect(root.getAttribute("data-color-scheme")).toBe("dark");
     expect(root.style.getPropertyValue("--theme-font-display")).toBe("");
   });
+  it("gives every boundary its own primary-action colors, falling back to the accent", () => {
+    const storybook = builtInThemes.find((item) => item.id === "t-rex-labs")!;
+    const app = document.createElement("div");
+    const sample = document.createElement("div");
+    app.append(sample);
+    const restoreApp = applyPresentation({ theme: storybook, activePackage: null, assetURLs: {} }, app);
+    const restoreSample = applyPresentation({ theme: defaultTheme, activePackage: null, assetURLs: {} }, sample);
+    expect(app.dataset.chrome).toBe("storybook");
+    expect(app.style.getPropertyValue("--theme-action-base")).toBe(storybook.tokens["action.base"]);
+    expect(sample.style.getPropertyValue("--theme-action-base")).toBe(defaultTheme.tokens["accent.base"]);
+    expect(sample.style.getPropertyValue("--theme-action-border")).toBe(defaultTheme.tokens["text.primary"]);
+    restoreSample();
+    restoreApp();
+    expect(app.style.getPropertyValue("--theme-action-base")).toBe("");
+  });
   it("applies classic chrome and browser branding without changing scoped samples", () => {
     const theme = builtInThemes.find((item) => item.id === "workstation-98")!;
     const restoreBrowserBrand = vi.fn();

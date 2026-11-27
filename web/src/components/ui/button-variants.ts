@@ -5,7 +5,7 @@ export const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "ui-button--default bg-accent text-accent-foreground hover:bg-accent-bright",
+        default: "ui-button--default bg-action text-action-foreground hover:bg-action-hover",
         secondary: "ui-button--secondary bg-surface-raised text-foreground hover:bg-border-strong",
         outline: "ui-button--outline border border-border text-foreground hover:bg-surface-raised hover:border-border-strong",
         ghost: "ui-button--ghost text-foreground-muted hover:text-foreground hover:bg-surface-raised",

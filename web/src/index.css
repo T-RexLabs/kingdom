@@ -3,6 +3,7 @@
 @import "./theme/classic-theme.css";
 @import "./theme/ornamentation.css";
 @import "./theme/ludicrous-interactions.css";
+@import "./theme/storybook-theme.css";
 
 /* Semantic application vocabulary. Values come from the canonical resolved
    theme; layout, interaction, focus and state meaning remain application-owned. */
@@ -19,6 +20,9 @@
   --color-accent-bright: var(--theme-accent-hover);
   --color-accent-foreground: var(--theme-accent-foreground);
   --color-accent-subtle: var(--theme-accent-subtle);
+  --color-action: var(--theme-action-base);
+  --color-action-hover: var(--theme-action-hover);
+  --color-action-foreground: var(--theme-action-foreground);
   --color-border: var(--theme-border-default);
   --color-border-strong: var(--theme-border-strong);
   --color-surface: var(--theme-surface-base);

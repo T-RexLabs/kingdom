@@ -7,12 +7,24 @@ export function tokenVariable(slot: string): string {
   return `--theme-${slot.replaceAll(".", "-").replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
 }
 
+const actionFallbacks = [
+  ["action.base", "accent.base"],
+  ["action.hover", "accent.hover"],
+  ["action.foreground", "accent.foreground"],
+  ["action.border", "text.primary"],
+] as const;
+
 // Only a schema-validated manifest reaches this function. Token values are
 // hex colors; all other CSS values below come from fixed application rules.
 export function applyPresentation(state: Pick<ThemeState, "theme" | "assetURLs" | "activePackage">, root: HTMLElement = document.documentElement): () => void {
   const { theme, assetURLs, activePackage } = state;
   const fonts = themeFonts(theme, assetURLs, activePackage?.resolvedDigest ?? "builtin");
   const properties: Record<string, string> = Object.fromEntries(Object.entries(theme.tokens).map(([slot, value]) => [tokenVariable(slot), value]));
+  // The optional primary-action colors fall back to the accent. Setting them on
+  // every boundary keeps a preview from inheriting the surrounding theme's.
+  for (const [slot, fallback] of actionFallbacks) {
+    properties[tokenVariable(slot)] = theme.tokens[slot] ?? theme.tokens[fallback];
+  }
   Object.assign(properties, {
     "--theme-font-body": fonts.families.body,
     "--theme-font-display": fonts.families.display,

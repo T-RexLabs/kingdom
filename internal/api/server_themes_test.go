@@ -91,7 +91,7 @@ func TestThemeLifecycleKeepsPreviewPrivateAndRevisionsPinned(t *testing.T) {
 	if err := json.Unmarshal(request("GET", "/themes", "", nil, 200), &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Items) != 5 || catalog.WorkspaceID == "" {
+	if customThemes(catalog) != 0 || catalog.WorkspaceID == "" {
 		t.Fatalf("preview persisted or missing workspace: %#v", catalog)
 	}
 	var saved gen.ThemeSource
@@ -149,7 +149,7 @@ func TestThemeArchiveValidationDoesNotPublishOrSaveSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Items) != 5 || len(catalog.Sources) != 0 {
+	if customThemes(catalog) != 0 || len(catalog.Sources) != 0 {
 		t.Fatalf("validation wrote shared state: %#v", catalog)
 	}
 	if _, err := store.ReadSource(pkg.Manifest.ID); !errors.Is(err, theme.ErrNotFound) {
@@ -201,4 +201,16 @@ func TestThemeStylingWarningsDoNotBlockPreviewSaveOrPublish(t *testing.T) {
 	if published.ResolvedDigest != preview.ResolvedDigest {
 		t.Fatal("preview and published theme differ")
 	}
+}
+
+// customThemes counts published non-built-in themes, so the assertions do not
+// depend on how many built-in themes ship.
+func customThemes(catalog theme.Catalog) int {
+	count := 0
+	for _, item := range catalog.Items {
+		if !item.Builtin {
+			count++
+		}
+	}
+	return count
 }
