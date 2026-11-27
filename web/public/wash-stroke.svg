@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 180">
+  <!-- Watercolor brush stroke used as a CSS mask behind ludicrous page headings.
+       Only alpha matters; the app tints it with theme tokens. -->
+  <defs>
+    <filter id="bleed" x="-15%" y="-35%" width="130%" height="170%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.012 0.035" numOctaves="4" seed="7" result="warp"/>
+      <feDisplacementMap in="SourceGraphic" in2="warp" scale="44" xChannelSelector="R" yChannelSelector="G" result="edge"/>
+      <feGaussianBlur in="edge" stdDeviation="2.2" result="soft"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.014" numOctaves="3" seed="3" result="grain"/>
+      <feColorMatrix in="grain" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -0.9 1.15" result="pigment"/>
+      <feComposite in="soft" in2="pigment" operator="in"/>
+    </filter>
+  </defs>
+  <g filter="url(#bleed)" fill="#000" stroke="#000" stroke-opacity=".3" stroke-width="3">
+    <path fill-opacity=".5" d="M34 96C120 42 330 30 556 68c26 18 14 56-36 62-140 22-340 30-460 10-40-8-50-28-26-44Z"/>
+    <path fill-opacity=".4" d="M84 82c116-26 296-22 416 4 22 14-18 30-78 32-122 8-262 2-332-8-24-6-24-22-6-28Z"/>
+    <path fill-opacity=".3" d="M150 120c90 10 220 8 300-4 16 4 0 14-30 18-90 10-200 8-260-2-14-4-20-12-10-12Z"/>
+  </g>
+</svg>

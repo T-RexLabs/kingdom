@@ -231,3 +231,71 @@
   from { clip-path: inset(0 50%); }
   to { clip-path: inset(0); }
 }
+
+/* Watercolor and paper. Washes sit behind headings in their own stacking
+   context, tinted by theme tokens through static masks, so they never cover
+   text, change layout, or take a pointer. */
+@scope ([data-ornamentation="ludicrous"]) to ([data-ornamentation]:not([data-ornamentation="ludicrous"])) {
+  .ui-page-content {
+    background-image: url("/paper-grain.svg");
+    background-attachment: local;
+  }
+
+  :is(.ui-page-content h1, .theme-preview-heading) {
+    position: relative;
+    isolation: isolate;
+  }
+  :is(.ui-page-content h1, .theme-preview-heading)::before,
+  :is(.ui-page-content h1, .theme-preview-heading)::after {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    pointer-events: none;
+    mask-repeat: no-repeat;
+    mask-size: 100% 100%;
+  }
+  :is(.ui-page-content h1, .theme-preview-heading)::before {
+    inset-inline-start: -.5em;
+    top: .05em;
+    bottom: -.5em;
+    /* Ends at the heading's own edge, so a full-width title never scrolls sideways. */
+    width: min(calc(100% + .5em), 15em);
+    background: color-mix(in oklch, var(--theme-text-primary) 40%, var(--theme-canvas));
+    /* Lift the ink's own hue into a lighter, more saturated pigment. */
+    background: oklch(from var(--theme-text-primary) .72 calc(c + .045) h);
+    mask-image: url("/wash-stroke.svg");
+    opacity: .4;
+  }
+  :is(.ui-page-content h1, .theme-preview-heading)::after {
+    inset-inline-start: -.75em;
+    top: -.55em;
+    width: 3.2em;
+    height: 1.9em;
+    background: oklch(from var(--theme-accent-base) .74 calc(c + .05) h);
+    mask-image: url("/wash-splash.svg");
+    opacity: .75;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    :is(.ui-page-content h1, .theme-preview-heading)::before {
+      animation: watercolor-bleed 1.1s ease-out both;
+    }
+    :is(.ui-page-content h1, .theme-preview-heading)::after {
+      animation: watercolor-splash 700ms 250ms cubic-bezier(.2, 1.4, .4, 1) both;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .ui-page-content { background-image: none; }
+    :is(.ui-page-content h1, .theme-preview-heading)::before,
+    :is(.ui-page-content h1, .theme-preview-heading)::after { content: none; }
+  }
+}
+
+@keyframes watercolor-bleed {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+@keyframes watercolor-splash {
+  from { transform: scale(.2); opacity: 0; }
+}
