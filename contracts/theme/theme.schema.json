@@ -49,6 +49,7 @@
             "nautilus",
             "astral-council",
             "software-lab",
+            "t-rex-labs",
             "workstation-98"
           ]
         },
@@ -266,8 +267,21 @@
         },
         "chart.category8": {
           "$ref": "#/definitions/color"
+        },
+        "action.base": {
+          "$ref": "#/definitions/color"
+        },
+        "action.hover": {
+          "$ref": "#/definitions/color"
+        },
+        "action.foreground": {
+          "$ref": "#/definitions/color"
+        },
+        "action.border": {
+          "$ref": "#/definitions/color"
         }
-      }
+      },
+      "description": "Semantic colors. The action.* tokens are optional and style the primary action; without them it uses the accent."
     },
     "typography": {
       "type": "object",
@@ -323,7 +337,8 @@
         "chrome": {
           "enum": [
             "flat",
-            "classic"
+            "classic",
+            "storybook"
           ],
           "description": "Application-owned structural styling. Omission uses flat chrome."
         },
@@ -680,7 +695,11 @@
             "chart.category5": {},
             "chart.category6": {},
             "chart.category7": {},
-            "chart.category8": {}
+            "chart.category8": {},
+            "action.base": {},
+            "action.hover": {},
+            "action.foreground": {},
+            "action.border": {}
           },
           "required": [
             "canvas",

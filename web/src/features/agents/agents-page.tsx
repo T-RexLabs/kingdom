@@ -449,7 +449,7 @@ function AgentDetails({
   return (
     <Modal open onClose={onClose} title={identity.name} caption={identity.canonicalName} size="md">
       <div className="space-y-6">
-        <RolePortrait role={group.id} className="h-24 w-24 rounded-xl object-cover" />
+        <RolePortrait role={group.id} className="h-24 w-24 rounded-xl object-contain" />
         {identity.lore && (
           <p className="font-display text-2xl leading-relaxed text-foreground-muted">{identity.lore}</p>
         )}

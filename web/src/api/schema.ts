@@ -3856,7 +3856,7 @@ export interface components {
             agentVoice?: string;
             base?: {
                 /** @enum {string} */
-                id: "obsidian-court" | "nautilus" | "astral-council" | "software-lab" | "workstation-98";
+                id: "obsidian-court" | "nautilus" | "astral-council" | "software-lab" | "t-rex-labs" | "workstation-98";
                 version: string;
             };
             palette?: {
@@ -3865,6 +3865,7 @@ export interface components {
                 surface?: components["schemas"]["ThemeColor"];
                 text?: components["schemas"]["ThemeColor"];
             };
+            /** @description Semantic colors. The action.* tokens are optional and style the primary action; without them it uses the accent. */
             tokens?: {
                 canvas?: components["schemas"]["ThemeColor"];
                 "surface.base"?: components["schemas"]["ThemeColor"];
@@ -3927,6 +3928,10 @@ export interface components {
                 "chart.category6"?: components["schemas"]["ThemeColor"];
                 "chart.category7"?: components["schemas"]["ThemeColor"];
                 "chart.category8"?: components["schemas"]["ThemeColor"];
+                "action.base"?: components["schemas"]["ThemeColor"];
+                "action.hover"?: components["schemas"]["ThemeColor"];
+                "action.foreground"?: components["schemas"]["ThemeColor"];
+                "action.border"?: components["schemas"]["ThemeColor"];
             };
             typography?: {
                 body?: components["schemas"]["ThemeFont"];
@@ -3946,7 +3951,7 @@ export interface components {
                  * @description Application-owned structural styling. Omission uses flat chrome.
                  * @enum {string}
                  */
-                chrome?: "flat" | "classic";
+                chrome?: "flat" | "classic" | "storybook";
                 /**
                  * @description Render validated SVG icon assets as a foreground mask or in their original colors. Omission uses mask.
                  * @enum {string}

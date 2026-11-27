@@ -2,7 +2,7 @@
 
 Appearance lets you choose how Kingdom looks. A theme can change colors, fonts, icons, artwork, and some descriptive text. A theme may also define an optional communication style for agents, but it cannot change what a role is allowed to do, what a status means, or provider settings.
 
-Kingdom includes five themes: Obsidian Court, Nautilus, Astral Council, Software Lab, and Workstation 98. Obsidian Court is the default.
+Kingdom includes six themes: Obsidian Court, Nautilus, Astral Council, Software Lab, T-Rex Labs, and Workstation 98. Obsidian Court is the default.
 
 ## Choose a Theme
 
@@ -42,7 +42,9 @@ Themes can set semantic colors, typography, surfaces, icons, artwork, role names
 
 Theme text is plain text. An optional Communication Style describes phrasing and tone only. It does not change agent responsibilities, Kingdom rules, evidence requirements, or output formats, and it has no effect until an operator selects that exact theme revision on the Agents page. Kingdom copies the resolved style into shared agent settings, so editing or unpublishing a theme does not change an already selected style. Visual theme selection remains local to each browser; agent communication settings are shared workspace state and affect only runs or planning sessions created after the change. Themes cannot provide HTML, Markdown, CSS, scripts, or provider settings. Assets must be declared in the package and served by Kingdom. Remote assets, links, and undeclared files are rejected. See the [theme package guide](../contracts/theme/README.md) for supported asset formats, safety checks, and size limits.
 
-The `surfaces.ornamentation` setting accepts `minimal`, `balanced`, `high`, or `ludicrous`. **Ludicrous Mode** adds the Rexie mountain scene and interaction flourishes. Reduced motion disables animation while keeping the decoration visible.
+The `surfaces.chrome` setting accepts `flat`, `classic`, or `storybook`. **Storybook** looks like a picture book: pill buttons with ink outlines, panels drawn as rules on paper, and, with Ludicrous Mode, a painted sea in Rexie's band. T-Rex Labs uses it, with gold primary buttons from the optional `action.*` tokens.
+
+The `surfaces.ornamentation` setting accepts `minimal`, `balanced`, `high`, or `ludicrous`. **Ludicrous Mode** adds the Rexie mountain scene, watercolor washes behind page headings, paper grain, a sky that follows the time of day, and interaction flourishes. Rexie also has a few easter eggs; they never change a control or what the crew does. Reduced motion disables animation while keeping the decoration visible.
 
 ## Export and Remove
 

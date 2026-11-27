@@ -14,7 +14,7 @@ func TestBuiltinTechnologyRexBrandIsValidatedAndPortable(t *testing.T) {
 			if p.Manifest.Icons["brand"] != "asset:brand" {
 				t.Fatalf("builtin brand = %q, want the shared Technology Rex asset", p.Manifest.Icons["brand"])
 			}
-			if p.Manifest.Version != "1.1.0" {
+			if p.Manifest.Version != builtinRevisions[p.Manifest.ID].version {
 				t.Fatalf("new branding reused an existing package version: %s", p.Manifest.Version)
 			}
 			color := "black"

@@ -6986,6 +6986,7 @@ components:
                   "nautilus",
                   "astral-council",
                   "software-lab",
+                  "t-rex-labs",
                   "workstation-98"
                 ],
                 "type": "string"
@@ -7204,8 +7205,21 @@ components:
               },
               "chart.category8": {
                 "$ref": "#/components/schemas/ThemeColor"
+              },
+              "action.base": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "action.hover": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "action.foreground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "action.border": {
+                "$ref": "#/components/schemas/ThemeColor"
               }
-            }
+            },
+            "description": "Semantic colors. The action.* tokens are optional and style the primary action; without them it uses the accent."
           },
           "typography": {
             "type": "object",
@@ -7263,7 +7277,8 @@ components:
               "chrome": {
                 "enum": [
                   "flat",
-                  "classic"
+                  "classic",
+                  "storybook"
                 ],
                 "description": "Application-owned structural styling. Omission uses flat chrome.",
                 "type": "string"

@@ -1,0 +1,131 @@
+/* Application-owned storybook chrome: a picture-book page rather than a
+   dashboard. Ink-outlined pill controls, panels drawn as rules on paper, and
+   (with ludicrous ornamentation) a painted seascape in place of the mountains.
+   Like classic chrome, the lower boundary keeps nested previews in their own style. */
+.ludicrous-sea { display: none; }
+
+@scope ([data-chrome="storybook"]) to ([data-chrome]) {
+  :scope {
+    --storybook-ink: var(--theme-action-border);
+    --storybook-rule: color-mix(in srgb, var(--theme-action-base) 55%, var(--theme-accent-base));
+  }
+
+  .ui-button,
+  .theme-preview-button {
+    border-radius: 999px;
+  }
+  .ui-button--default {
+    border: 1px solid var(--storybook-ink);
+  }
+  :is(.ui-button--outline, .ui-button--secondary, .theme-preview-button) {
+    border: 1px solid var(--storybook-ink);
+    background: transparent;
+    color: var(--theme-text-primary);
+  }
+  :is(.ui-button--outline, .ui-button--secondary):hover:not(:disabled) {
+    background: color-mix(in srgb, var(--theme-action-base) 14%, transparent);
+    border-color: var(--storybook-ink);
+  }
+
+  /* Panels become a rule on the page: no box, no shadow, no frame. */
+  :is(.ui-card, .ui-inset-panel, .ui-form-panel) {
+    border: 0;
+    border-top: 2px solid var(--storybook-rule);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .ui-form-panel {
+    padding-inline: 0;
+  }
+
+  .ui-field,
+  input:not([type="checkbox"], [type="radio"], [type="range"]),
+  textarea {
+    background-color: color-mix(in srgb, var(--theme-surface-base) 70%, transparent);
+  }
+
+  /* The paper is a greyscale fibre texture, blended into the canvas color. */
+  .ui-page-content {
+    background-color: var(--theme-canvas);
+    background-image: url("/storybook/paper.avif");
+    background-size: 372px;
+    background-blend-mode: soft-light;
+    background-attachment: local;
+  }
+
+  /* Sea-glass washes become sage, like the pigment on the printed page. */
+  :is(.ui-page-content h1, .theme-preview-heading)::before {
+    background: oklch(from var(--theme-text-primary) .74 .05 calc(h - 55));
+  }
+
+  @media (forced-colors: active) {
+    .ui-page-content { background-image: none; }
+  }
+}
+
+/* The seascape only exists where storybook chrome meets ludicrous ornamentation.
+   Images are CSS backgrounds, so nobody else downloads them. Selectors match
+   the weight of the ludicrous band rules, and this file loads after them. */
+@scope ([data-chrome="storybook"][data-ornamentation="ludicrous"]) to ([data-chrome]) {
+  :scope[data-ornamentation] .ludicrous-regalia[data-sky] {
+    background: linear-gradient(to bottom, color-mix(in srgb, var(--theme-action-base) 14%, var(--theme-canvas)), var(--theme-canvas) 75%);
+  }
+  :scope[data-ornamentation] .ludicrous-regalia:is([data-sky="dawn"], [data-sky="dusk"]) {
+    background: linear-gradient(to bottom, color-mix(in srgb, var(--theme-action-base) 32%, var(--theme-canvas)), var(--theme-canvas) 80%);
+  }
+  :scope[data-ornamentation] .ludicrous-regalia[data-sky="night"] {
+    background: linear-gradient(to bottom, color-mix(in srgb, var(--theme-text-primary) 22%, var(--theme-canvas)), var(--theme-canvas) 85%);
+  }
+  :scope[data-ornamentation] .ludicrous-landscape { display: none; }
+  /* The painted scene brings its own light; only the night sky is drawn. */
+  :scope[data-ornamentation] .ludicrous-sun { display: none; }
+  :scope[data-ornamentation] .ludicrous-sea {
+    display: block;
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .ludicrous-sea > span {
+    position: absolute;
+    background-position: center bottom;
+    background-size: contain;
+    background-repeat: no-repeat;
+  }
+  .ludicrous-sea > .ludicrous-sea-water {
+    inset: auto 0 0 0;
+    height: 30px;
+    background: url("/storybook/waves-calm.avif") left bottom / auto 30px repeat-x;
+  }
+  .ludicrous-sea > .ludicrous-sea-island { bottom: 22px; left: 5%; width: 100px; height: 22px; background-image: url("/storybook/island.avif"); }
+  .ludicrous-sea > .ludicrous-sea-sailboat { bottom: 26px; left: 24%; width: 26px; height: 30px; background-image: url("/storybook/sailboat.avif"); }
+  .ludicrous-sea > .ludicrous-sea-islet { bottom: 22px; left: 38%; width: 38px; height: 18px; background-image: url("/storybook/islet.avif"); }
+  .ludicrous-sea > .ludicrous-sea-cypress { bottom: 22px; left: 68%; width: 72px; height: 26px; background-image: url("/storybook/island-cypress.avif"); }
+  .ludicrous-sea > .ludicrous-sea-lighthouse { bottom: 22px; right: 7%; width: 82px; height: 40px; background-image: url("/storybook/lighthouse.avif"); }
+  /* Rexie keeps a dry island of their own. */
+  .ludicrous-sea > .ludicrous-sea-perch {
+    bottom: 10px;
+    left: min(calc(50% + 6px), calc(100% - 94px));
+    width: 112px;
+    height: 26px;
+    background-image: url("/storybook/island.avif");
+  }
+  :scope[data-ornamentation] .ludicrous-regalia .ludicrous-regalia-rex { bottom: 28px; z-index: 1; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .ludicrous-sea > .ludicrous-sea-water { animation: storybook-swell 9s ease-in-out infinite alternate; }
+    .ludicrous-sea > .ludicrous-sea-sailboat { animation: storybook-bob 3.2s ease-in-out infinite; }
+  }
+  @media (forced-colors: active) {
+    :scope[data-ornamentation] .ludicrous-sea { display: none; }
+  }
+}
+
+@keyframes storybook-swell {
+  from { background-position-x: 0; }
+  to { background-position-x: -160px; }
+}
+@keyframes storybook-bob {
+  0%, 100% { transform: translateY(0) rotate(-2deg); }
+  50% { transform: translateY(-2px) rotate(2deg); }
+}

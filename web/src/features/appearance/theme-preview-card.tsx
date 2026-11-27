@@ -108,6 +108,8 @@ export function ThemePreviewCard({ manifest, pkg, files, compact = false, role =
   useLayoutEffect(() => root.current ? applyPresentation({ theme: manifest, activePackage: pkg ?? null, assetURLs: urls }, root.current) : undefined, [manifest, pkg, urls]);
   const colors = manifest.tokens;
   const classic = manifest.surfaces.chrome === "classic";
+  // Classic and storybook chrome draw their own control shapes.
+  const ownsControlShape = classic || manifest.surfaces.chrome === "storybook";
   const sampleStyle: CSSProperties = { background: colors.canvas, color: colors["text.primary"], borderColor: classic ? undefined : colors["border.default"], fontFamily: "var(--theme-font-body)", fontWeight: "var(--theme-weight-body)" };
   const selectPane = (next: ThemePreviewContext) => setSelection({ context, pane: next });
   return <div className="theme-preview-container">
@@ -124,7 +126,7 @@ export function ThemePreviewCard({ manifest, pkg, files, compact = false, role =
         <div className="ui-window-titlebar theme-preview-titlebar" style={classic ? undefined : { color: colors["text.secondary"] }}><span>Theme Sample</span><span>{compact ? "Typography & Color" : contexts.find((item) => item.value === pane)?.label}</span></div>
         <LudicrousRegalia />
         <div className="theme-ornament theme-preview-ornament" aria-hidden="true" />
-        {compact ? <><SampleHeading>An Idea Becomes Reality</SampleHeading><div className="theme-preview-actions" aria-hidden="true">{["Plan", "Build", "Review"].map((step) => <span key={step} className="ui-button ui-button--outline theme-preview-button" style={classic ? undefined : { borderRadius: "var(--theme-radius)" }}>{step}</span>)}</div></> : <div id={`${id}-panel`} role="tabpanel" aria-labelledby={`${id}-${pane}`} tabIndex={0} className="theme-preview-panel-content" key={pane}>
+        {compact ? <><SampleHeading>An Idea Becomes Reality</SampleHeading><div className="theme-preview-actions" aria-hidden="true">{["Plan", "Build", "Review"].map((step) => <span key={step} className="ui-button ui-button--outline theme-preview-button" style={ownsControlShape ? undefined : { borderRadius: "var(--theme-radius)" }}>{step}</span>)}</div></> : <div id={`${id}-panel`} role="tabpanel" aria-labelledby={`${id}-${pane}`} tabIndex={0} className="theme-preview-panel-content" key={pane}>
           {pane === "overview" && <OverviewSample manifest={manifest} urls={urls} />}
           {pane === "planning" && <PlanningSample manifest={manifest} urls={urls} />}
           {pane === "agent" && <AgentSample manifest={manifest} urls={urls} role={role} />}

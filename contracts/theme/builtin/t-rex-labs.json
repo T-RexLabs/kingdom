@@ -1,0 +1,306 @@
+{
+  "schemaVersion": 1,
+  "resolverVersion": 1,
+  "id": "t-rex-labs",
+  "version": "1.0.0",
+  "name": "T-Rex Labs",
+  "description": "Watercolor seas, brass fittings and a small crowned captain.",
+  "colorScheme": "light",
+  "palette": {
+    "canvas": "#f3f0e7",
+    "surface": "#faf8f1",
+    "text": "#213f43",
+    "accent": "#7a5c1e"
+  },
+  "tokens": {
+    "canvas": "#f3f0e7",
+    "surface.base": "#faf8f1",
+    "surface.inset": "#f6f3eb",
+    "surface.elevated": "#f0f0e9",
+    "surface.overlay": "#ebebe5",
+    "text.primary": "#213f43",
+    "text.secondary": "#4d6364",
+    "text.subtle": "#536261",
+    "text.inverse": "#ffffff",
+    "border.default": "#cacfcb",
+    "border.strong": "#727d7b",
+    "accent.base": "#7a5c1e",
+    "accent.hover": "#6f5922",
+    "accent.pressed": "#8b713a",
+    "accent.foreground": "#ffffff",
+    "accent.subtle": "#ebe5d8",
+    "focus.ring": "#7a5c1e",
+    "focus.offset": "#faf8f1",
+    "selection.background": "#7a5c1e",
+    "selection.foreground": "#ffffff",
+    "control.disabledBackground": "#f7f4ec",
+    "control.disabledForeground": "#8e9c9a",
+    "code.background": "#f3f0e7",
+    "code.foreground": "#213f43",
+    "tool.background": "#f8f6ef",
+    "tool.border": "#cacfcb",
+    "chart.axis": "#4d6364",
+    "chart.grid": "#d9dcd7",
+    "dag.edge": "#718281",
+    "dag.edgeCompleted": "#7a5c1e",
+    "dag.edgeActive": "#7a5c1e",
+    "dag.nodeActiveBackground": "#ede8dc",
+    "status.neutral.background": "#edede8",
+    "status.neutral.foreground": "#616c74",
+    "status.neutral.border": "#7b8993",
+    "status.running.background": "#e8edf1",
+    "status.running.foreground": "#336ab6",
+    "status.running.border": "#438cef",
+    "status.attention.background": "#f7eedd",
+    "status.attention.foreground": "#916219",
+    "status.attention.border": "#c18321",
+    "status.succeeded.background": "#e5efe4",
+    "status.succeeded.foreground": "#1e7854",
+    "status.succeeded.border": "#28a271",
+    "status.failed.background": "#f7e8e2",
+    "status.failed.foreground": "#b3454c",
+    "status.failed.border": "#dd555e",
+    "status.cancelled.background": "#f0eaed",
+    "status.cancelled.foreground": "#7d5ca2",
+    "status.cancelled.border": "#9970c5",
+    "status.rework.background": "#f4e9e9",
+    "status.rework.foreground": "#9b5184",
+    "status.rework.border": "#c265a5",
+    "chart.category1": "#7a5c1e",
+    "chart.category2": "#438cef",
+    "chart.category3": "#28a271",
+    "chart.category4": "#9970c5",
+    "chart.category5": "#c18321",
+    "chart.category6": "#c265a5",
+    "chart.category7": "#369ea2",
+    "chart.category8": "#dd555e",
+    "action.base": "#e3ac42",
+    "action.hover": "#ecbd5e",
+    "action.foreground": "#0b1c20",
+    "action.border": "#0b1c20"
+  },
+  "typography": {
+    "body": "bundled:dm-sans",
+    "display": "bundled:instrument-serif",
+    "mono": "bundled:jetbrains-mono",
+    "bodyWeight": 400,
+    "headingWeight": 400
+  },
+  "surfaces": {
+    "radius": 10,
+    "borderWidth": 1,
+    "elevation": "soft",
+    "ornamentation": "ludicrous",
+    "chrome": "storybook"
+  },
+  "icons": {
+    "nav.overview": "lucide:ship-wheel",
+    "nav.planning": "lucide:notebook-pen",
+    "nav.runs": "lucide:workflow",
+    "nav.agents": "lucide:users-round",
+    "nav.analytics": "lucide:chart-no-axes-combined",
+    "nav.connections": "lucide:link",
+    "nav.appearance": "lucide:palette",
+    "work-order": "lucide:file-text",
+    "node.work-intake": "lucide:inbox",
+    "node.advisor-consultation": "lucide:messages-square",
+    "node.advisory-synthesis": "lucide:combine",
+    "node.plan-drafting": "lucide:notebook-pen",
+    "node.plan-decision": "lucide:circle-check",
+    "node.execution-kickoff": "lucide:play",
+    "node.implementation": "lucide:wrench",
+    "node.execution-review": "lucide:shield-check",
+    "node.quality-validation": "lucide:binoculars",
+    "node.security-validation": "lucide:radar",
+    "node.completion": "lucide:circle-check-big",
+    "brand": "asset:brand",
+    "role.operator": "lucide:crown",
+    "role.governance": "lucide:anchor",
+    "role.coordinator": "lucide:compass",
+    "role.plan-author": "lucide:map",
+    "role.architecture-advisor": "lucide:telescope",
+    "role.risk-advisor": "lucide:life-buoy",
+    "role.systems-advisor": "lucide:coins",
+    "role.usability-advisor": "lucide:sailboat",
+    "role.builder": "lucide:wrench",
+    "role.reviewer": "lucide:shield-check",
+    "role.qa-validator": "lucide:binoculars",
+    "role.security-validator": "lucide:radar",
+    "role.resilience-validator": "lucide:waves",
+    "role.planning-assistant": "lucide:notebook-pen"
+  },
+  "identities": {
+    "operator": {
+      "name": "Captain",
+      "description": "Issues work and makes human approval decisions.",
+      "lore": "Wears the crown. Gives the orders. Arms a little short for the wheel, so the crew steers on request."
+    },
+    "governance": {
+      "name": "Bridge",
+      "description": "Records runtime-owned plan decisions and completion.",
+      "lore": "Writes every decision in the logbook in very neat handwriting. Has never once lost a page."
+    },
+    "coordinator": {
+      "name": "First Mate",
+      "description": "Synthesizes advisory perspectives and coordinates clear handoffs.",
+      "lore": "Hears every advisor out, then turns the noise into one clear heading. Owns three whistles.",
+      "portrait": "asset:crew-first-mate"
+    },
+    "plan-author": {
+      "name": "Navigator",
+      "description": "Turns intent into an execution-ready plan and refines rework.",
+      "lore": "Draws the route before anyone sails. Redraws it without sulking when the Captain says no.",
+      "portrait": "asset:crew-navigator"
+    },
+    "architecture-advisor": {
+      "name": "Cartographer",
+      "description": "Advises on functional, architectural and contract fit.",
+      "lore": "Knows where every reef and old shipwreck in the codebase lies. Keeps the maps rolled, never folded.",
+      "portrait": "asset:crew-cartographer"
+    },
+    "risk-advisor": {
+      "name": "Lookout",
+      "description": "Advises on security, trust boundaries, resilience and risk.",
+      "lore": "Up the mast with a spyglass, shouting about rocks before they are close enough to hit.",
+      "portrait": "asset:crew-lookout"
+    },
+    "systems-advisor": {
+      "name": "Purser",
+      "description": "Advises on performance, scalability, efficiency and maintainability.",
+      "lore": "Counts the biscuits, the rope and the CPU cycles. Gets twitchy about waste.",
+      "portrait": "asset:crew-purser"
+    },
+    "usability-advisor": {
+      "name": "Deckhand",
+      "description": "Advises on usability, operability and support burden.",
+      "lore": "Has to live with whatever gets built, so asks the awkward questions early.",
+      "portrait": "asset:crew-deckhand"
+    },
+    "builder": {
+      "name": "Chief Engineer",
+      "description": "Implements the approved plan and verifies the resulting changes.",
+      "lore": "Disappears below deck and comes back with the thing working. Will not review their own work.",
+      "portrait": "asset:crew-chief-engineer"
+    },
+    "reviewer": {
+      "name": "Quartermaster",
+      "description": "Reviews implementation against the work brief and approved plan.",
+      "lore": "Checks every crate against the manifest. Sends things back politely and is usually right.",
+      "portrait": "asset:crew-quartermaster"
+    },
+    "qa-validator": {
+      "name": "Surveyor",
+      "description": "Validates functional behavior, tests and requirement coverage.",
+      "lore": "Measures twice, tests three times, writes it all down.",
+      "portrait": "asset:crew-surveyor"
+    },
+    "security-validator": {
+      "name": "Watchkeeper",
+      "description": "Validates security posture and reported security concerns.",
+      "lore": "Stays up through the night watch. Has already flagged the kraken.",
+      "portrait": "asset:crew-watchkeeper"
+    },
+    "resilience-validator": {
+      "name": "Stormchaser",
+      "description": "Validates recovery, chaos and failure-mode behavior.",
+      "lore": "Sails straight into the storm on purpose to see what breaks first.",
+      "portrait": "asset:crew-stormchaser"
+    },
+    "planning-assistant": {
+      "name": "Logkeeper",
+      "description": "Helps clarify intent and produce a reviewable plan in conversation.",
+      "lore": "Keeps you company while you think out loud, and writes the good parts down.",
+      "portrait": "asset:crew-logkeeper"
+    }
+  },
+  "copy": {
+    "overview.welcome": "A steady course. A capable crew. A captain with very short arms.",
+    "planning.emptyTitle": "Every Voyage Starts with an Idea",
+    "planning.emptyDescription": "Tell the crew where you want to go. Talk through the details, then turn the conversation into a chart.",
+    "agents.heading": "The Crew",
+    "appearance.description": "Choose the waters your work sails in.",
+    "workOrder.singular": "Mission",
+    "workOrder.plural": "Missions",
+    "brand.tagline": "A steady course. A capable crew."
+  },
+  "artwork": {
+    "overview": "asset:scene-day",
+    "planningEmpty": "asset:scene-chart-scroll"
+  },
+  "assets": {
+    "brand": {
+      "path": "assets/brand/technology-rex-black.svg",
+      "mediaType": "image/svg+xml"
+    },
+    "crew-first-mate": {
+      "path": "assets/t-rex-labs/first-mate.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    },
+    "crew-navigator": {
+      "path": "assets/t-rex-labs/navigator.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    },
+    "crew-cartographer": {
+      "path": "assets/t-rex-labs/cartographer.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    },
+    "crew-lookout": {
+      "path": "assets/t-rex-labs/lookout.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    },
+    "crew-purser": {
+      "path": "assets/t-rex-labs/purser.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    },
+    "crew-deckhand": {
+      "path": "assets/t-rex-labs/deckhand.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    },
+    "crew-chief-engineer": {
+      "path": "assets/t-rex-labs/chief-engineer.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    },
+    "crew-quartermaster": {
+      "path": "assets/t-rex-labs/quartermaster.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    },
+    "crew-surveyor": {
+      "path": "assets/t-rex-labs/surveyor.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    },
+    "crew-watchkeeper": {
+      "path": "assets/t-rex-labs/watchkeeper.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    },
+    "crew-stormchaser": {
+      "path": "assets/t-rex-labs/stormchaser.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    },
+    "crew-logkeeper": {
+      "path": "assets/t-rex-labs/logkeeper.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    },
+    "scene-day": {
+      "path": "assets/t-rex-labs/day.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    },
+    "scene-chart-scroll": {
+      "path": "assets/t-rex-labs/chart-scroll.avif",
+      "mediaType": "image/avif",
+      "license": "T-Rex Labs artwork from t-rexlabs.com."
+    }
+  }
+}

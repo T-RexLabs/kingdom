@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 120">
+  <!-- Watercolor splash with splatter, used as a CSS mask. Only alpha matters. -->
+  <defs>
+    <filter id="bleed" x="-25%" y="-25%" width="150%" height="150%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.03" numOctaves="4" seed="11" result="warp"/>
+      <feDisplacementMap in="SourceGraphic" in2="warp" scale="22" xChannelSelector="R" yChannelSelector="G" result="edge"/>
+      <feGaussianBlur in="edge" stdDeviation="1.4" result="soft"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="2" seed="5" result="grain"/>
+      <feColorMatrix in="grain" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -0.9 1.15" result="pigment"/>
+      <feComposite in="soft" in2="pigment" operator="in"/>
+    </filter>
+  </defs>
+  <g filter="url(#bleed)" fill="#000" stroke="#000" stroke-opacity=".35" stroke-width="2">
+    <path fill-opacity=".55" d="M58 34c22-16 58-14 76 2 18 16 16 42-4 54-22 14-58 14-76-2-16-14-16-40 4-54Z"/>
+    <path fill-opacity=".35" d="M74 46c14-8 34-6 42 6 8 12 0 24-14 28-16 4-32-2-36-14-2-8 0-16 8-20Z"/>
+    <circle cx="160" cy="30" r="7" fill-opacity=".5"/>
+    <circle cx="172" cy="52" r="4" fill-opacity=".45"/>
+    <circle cx="30" cy="88" r="5" fill-opacity=".45"/>
+    <circle cx="150" cy="96" r="3" fill-opacity=".5"/>
+    <circle cx="24" cy="40" r="3" fill-opacity=".4"/>
+  </g>
+</svg>

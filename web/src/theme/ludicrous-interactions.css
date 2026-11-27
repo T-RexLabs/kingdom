@@ -76,3 +76,186 @@
   60% { transform: translateY(-4px) scale(1.1); }
   100% { transform: translateY(0) scale(1); }
 }
+
+/* Rexie's sky, speech and moods live in the ornament band, which holds no
+   controls. Rexie is the band's only pointer target. */
+@scope ([data-ornamentation]) to ([data-ornamentation]) {
+  :scope[data-ornamentation="ludicrous"] .ludicrous-sky {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-sun {
+    fill: color-mix(in srgb, var(--theme-accent-base) 30%, var(--theme-canvas));
+    stroke: color-mix(in srgb, var(--theme-accent-base) 55%, var(--theme-canvas));
+    stroke-width: 1.5;
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-regalia:is([data-sky="dawn"], [data-sky="dusk"]) {
+    background: linear-gradient(to bottom, color-mix(in srgb, var(--theme-accent-base) 14%, var(--theme-canvas)), var(--theme-canvas));
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-regalia[data-sky="night"] {
+    background: linear-gradient(to bottom, color-mix(in srgb, var(--theme-text-primary) 16%, var(--theme-canvas)), var(--theme-canvas));
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-moon {
+    fill: var(--theme-surface-base);
+    stroke: currentColor;
+    stroke-width: 1.5;
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-stars { opacity: .7; }
+
+  :scope[data-ornamentation="ludicrous"] .ludicrous-regalia-rex {
+    pointer-events: auto;
+    cursor: pointer;
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-speech {
+    position: absolute;
+    bottom: 44px;
+    left: min(calc(50% + 96px), calc(100% - 316px));
+    max-width: min(300px, calc(100% - 16px));
+    padding: .35rem .65rem;
+    border: 1px solid var(--theme-accent-base);
+    border-radius: 14px 14px 14px 3px;
+    background: var(--theme-surface-base);
+    color: var(--theme-text-primary);
+    font-family: var(--theme-font-display);
+    font-size: .95rem;
+    line-height: 1.2;
+    pointer-events: none;
+    box-shadow: 2px 2px 0 color-mix(in srgb, var(--theme-accent-base) 35%, transparent);
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-sound-toggle {
+    position: absolute;
+    top: 8px;
+    inset-inline-end: 8px;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--theme-border-default);
+    border-radius: 999px;
+    background: var(--theme-surface-base);
+    color: var(--theme-text-secondary);
+    cursor: pointer;
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-sound-toggle:hover { color: var(--theme-accent-base); border-color: var(--theme-accent-base); }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-sound-toggle:focus-visible { outline: 2px solid var(--theme-focus-ring); outline-offset: 2px; }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-sound-toggle[aria-pressed="true"] { color: var(--theme-accent-base); }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-sound-toggle > svg { width: 16px; height: 16px; }
+  :scope[data-ornamentation="ludicrous"] .theme-preview-content .ludicrous-sound-toggle { display: none; }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-regalia[data-mood="roar"] .ludicrous-speech {
+    font-size: 1.6rem;
+    letter-spacing: .04em;
+    color: var(--theme-accent-base);
+  }
+
+  @media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+    :scope[data-ornamentation="ludicrous"] .ludicrous-stars { animation: rexie-twinkle 3.2s ease-in-out infinite alternate; }
+    :scope[data-ornamentation="ludicrous"] .ludicrous-speech { animation: rexie-speech-pop 260ms cubic-bezier(.2, 1.5, .4, 1) both; transform-origin: bottom left; }
+    :scope[data-ornamentation="ludicrous"] .ludicrous-regalia[data-mood="hop"] .ludicrous-regalia-rex { animation: ludicrous-rex-stomp 700ms ease-in-out both; }
+    :scope[data-ornamentation="ludicrous"] .ludicrous-regalia[data-mood="roar"] { animation: rexie-roar-shake 480ms ease-in-out 2; }
+    :scope[data-ornamentation="ludicrous"] .ludicrous-regalia[data-mood="roar"] .ludicrous-regalia-rex { animation: rexie-roar 800ms ease-in-out 2; }
+    :scope[data-ornamentation="ludicrous"] .ludicrous-regalia[data-mood="roar"] .ludicrous-dust { animation: ludicrous-terrain-dust 400ms ease-out 4; }
+  }
+
+  @media (forced-colors: active) {
+    :scope[data-ornamentation="ludicrous"] .ludicrous-speech { display: none; }
+  }
+}
+
+/* The parade only exists while a ludicrous theme is active. */
+.rexie-parade {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 60;
+  height: 140px;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--theme-accent-base);
+}
+.rexie-parade-banner {
+  position: absolute;
+  left: 50%;
+  bottom: 84px;
+  translate: -50% 0;
+  padding: .3rem .9rem;
+  border: 1px solid var(--theme-accent-base);
+  border-radius: 999px;
+  background: var(--theme-surface-base);
+  color: var(--theme-text-primary);
+  font-family: var(--theme-font-display);
+  font-size: 1.1rem;
+  white-space: nowrap;
+}
+.rexie-parade-ship {
+  position: absolute;
+  bottom: -6px;
+  left: calc(50% - 360px);
+  width: 210px;
+  aspect-ratio: 3340 / 1884;
+}
+.rexie-parade-ship > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.rexie-parade-rex {
+  position: absolute;
+  bottom: 8px;
+  left: calc(50% - 150px + var(--rexie-index) * 60px);
+  width: 56px;
+  height: 56px;
+}
+.rexie-parade-rex > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: currentColor;
+  mask: url("/t-rex-black.svg") center / contain no-repeat;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rexie-parade-rex {
+    left: -80px;
+    animation: rexie-march 6s linear calc(1.4s + var(--rexie-index) * 280ms) both;
+  }
+  .rexie-parade-rex > span { animation: ludicrous-rex-stomp 420ms ease-in-out infinite; }
+  .rexie-parade-ship {
+    left: -240px;
+    animation: rexie-march 6.4s linear both, rexie-bob 1.6s ease-in-out infinite;
+  }
+  .rexie-parade-banner { animation: rexie-speech-pop 300ms cubic-bezier(.2, 1.5, .4, 1) both; }
+}
+@media (forced-colors: active) {
+  .rexie-parade { display: none; }
+}
+
+@keyframes rexie-twinkle {
+  from { opacity: .35; }
+  to { opacity: .85; }
+}
+@keyframes rexie-speech-pop {
+  from { transform: scale(.4); opacity: 0; }
+}
+@keyframes rexie-roar-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-3px); }
+  40% { transform: translateX(3px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(2px); }
+}
+@keyframes rexie-roar {
+  0%, 100% { transform: rotate(0) scale(1); }
+  30% { transform: rotate(-8deg) scale(1.12); }
+  60% { transform: rotate(4deg) scale(1.08); }
+}
+@keyframes rexie-bob {
+  0%, 100% { rotate: -1.5deg; }
+  50% { rotate: 1.5deg; }
+}
+@keyframes rexie-march {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(100vw + 260px)); }
+}

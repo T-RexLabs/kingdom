@@ -8,7 +8,7 @@ import { iconNames } from "lucide-react/dynamic";
 
 describe("canonical presentation contract", () => {
   it("ships all five complete themes from the shared contract", () => {
-    expect(builtInThemes.map((theme) => theme.id)).toEqual(["obsidian-court", "nautilus", "astral-council", "software-lab", "workstation-98"]);
+    expect(builtInThemes.map((theme) => theme.id)).toEqual(["obsidian-court", "nautilus", "astral-council", "software-lab", "t-rex-labs", "workstation-98"]);
     for (const theme of builtInThemes) {
       expect(Object.keys(resolvedManifest(theme).identities)).toHaveLength(14);
       expect(theme.identities.builder).not.toHaveProperty("icon");
@@ -49,6 +49,21 @@ describe("canonical presentation contract", () => {
     expect(root.style.getPropertyValue("--theme-canvas")).toBe("#112233");
     expect(root.getAttribute("data-color-scheme")).toBe("dark");
     expect(root.style.getPropertyValue("--theme-font-display")).toBe("");
+  });
+  it("gives every boundary its own primary-action colors, falling back to the accent", () => {
+    const storybook = builtInThemes.find((item) => item.id === "t-rex-labs")!;
+    const app = document.createElement("div");
+    const sample = document.createElement("div");
+    app.append(sample);
+    const restoreApp = applyPresentation({ theme: storybook, activePackage: null, assetURLs: {} }, app);
+    const restoreSample = applyPresentation({ theme: defaultTheme, activePackage: null, assetURLs: {} }, sample);
+    expect(app.dataset.chrome).toBe("storybook");
+    expect(app.style.getPropertyValue("--theme-action-base")).toBe(storybook.tokens["action.base"]);
+    expect(sample.style.getPropertyValue("--theme-action-base")).toBe(defaultTheme.tokens["accent.base"]);
+    expect(sample.style.getPropertyValue("--theme-action-border")).toBe(defaultTheme.tokens["text.primary"]);
+    restoreSample();
+    restoreApp();
+    expect(app.style.getPropertyValue("--theme-action-base")).toBe("");
   });
   it("applies classic chrome and browser branding without changing scoped samples", () => {
     const theme = builtInThemes.find((item) => item.id === "workstation-98")!;

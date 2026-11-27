@@ -12,6 +12,7 @@ import { LocalSessionBoundary } from "@/features/local-session/local-session-bou
 import { shouldRetryApiMutation, shouldRetryApiQuery } from "@/api/client";
 import "./index.css";
 import { ThemeProvider, initializeDefaultPresentation } from "@/theme";
+import { RexieMischief } from "@/components/rexie-mischief";
 
 initializeDefaultPresentation();
 
@@ -39,6 +40,7 @@ createRoot(document.getElementById(SCENE_ROOT_ID)!).render(
                 Generation Cancelled). Mounted exactly once at the
                 app root so the latch lives across route changes. */}
             <FormalizeNotifierMount />
+            <RexieMischief />
             <RunsCollectionEventStreamMount />
             <Suspense
               fallback={
